@@ -12,7 +12,7 @@ class LocalConanFile(ConanFile):
     author = "Matthew Rindel (matthew@thesiegehub.com)"
     build_requires = "cmake/3.22.0"
     settings = "os", "compiler", "build_type", "arch"
-    requires = "3space/0.6.3", "wxwidgets/3.1.5@bincrafters/stable", "imgui-sfml/2.5@bincrafters/stable", "zlib/1.2.12"
+    requires = "3space/0.6.3", "wxwidgets/3.2.6", "imgui/1.91.4", "sfml/2.6.1", "zlib/1.3.1"
     generators = "cmake_find_package"
 
     def requirements(self):
@@ -29,19 +29,16 @@ class LocalConanFile(ConanFile):
             self.requires("tbb/2020.3")
 
     def configure(self):
-        self.options["wxwidgets"].jpeg = "off"
-        self.options["wxwidgets"].tiff = "off"
-        self.options["wxwidgets"].expat = "off"
+        # wxwidgets 3.2.x option set (3.1.x had tiff/expat/secretstore; removed here)
+        self.options["wxwidgets"].jpeg = "libjpeg"
         self.options["wxwidgets"].aui = True
         self.options["wxwidgets"].opengl = True
         self.options["wxwidgets"].mediactrl = False
-        self.options["wxwidgets"].secretstore = False
         self.options["wxwidgets"].propgrid = False
         self.options["wxwidgets"].ribbon = False
         self.options["wxwidgets"].richtext = False
         self.options["wxwidgets"].sockets = False
         self.options["wxwidgets"].stc = False
-        self.options["wxwidgets"].richtext = False
         self.options["wxwidgets"].webview = False
         self.options["wxwidgets"].xml = False
         self.options["wxwidgets"].xrc = False

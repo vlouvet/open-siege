@@ -1,0 +1,4 @@
+[submodule "siege-studio/vendor/imgui-sfml"]
+	path = siege-studio/vendor/imgui-sfml
+	url = https://github.com/SFML/imgui-sfml.git
+	branch = v2.6.1
