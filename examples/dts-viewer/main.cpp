@@ -1913,7 +1913,7 @@ int main(int argc, char** argv)
                     (int)(bone_vertex_count / 2));
     }
 
-    std::printf("keys: Space=play/pause  Left/Right=scrub +/-0.05s  R=reset  Tab=next seq (Shift+Tab=prev)  B=bones  Q/Esc=quit\n");
+    std::printf("keys: Space=play/pause  Left/Right=scrub +/-0.05s  R=reset  Tab=next seq (Shift+Tab=prev)  1-9=pick seq by index  B=bones  Q/Esc=quit\n");
     bool show_bones = false;
 
     glEnable(GL_DEPTH_TEST);
@@ -2018,6 +2018,23 @@ int main(int argc, char** argv)
                             int step = (ev.key.keysym.mod & KMOD_SHIFT) ? -1 : 1;
                             int n = (int)loaded.sequences.size();
                             current_sequence = (current_sequence + step + n) % n;
+                            current_time = 0.0f;
+                            print_hud();
+                        }
+                    }
+                    // spec 07: number keys 1-9 pick sequences[0..8] by index.
+                    // Index-based (not name-based) is mandatory: LOD fan-out
+                    // produces duplicate sequence names (e.g. larmor has `wave`
+                    // at index 39 AND 42), and a name lookup would make the
+                    // higher-LOD copy unreachable. SDL exposes the row keys as
+                    // SDLK_1..SDLK_9 (contiguous), so a direct subtraction
+                    // gives the target index; out-of-range presses are
+                    // silently ignored so meshes with <9 sequences don't
+                    // crash or wrap surprisingly.
+                    if (ev.key.keysym.sym >= SDLK_1 && ev.key.keysym.sym <= SDLK_9) {
+                        int idx = ev.key.keysym.sym - SDLK_1;
+                        if (idx < (int)loaded.sequences.size()) {
+                            current_sequence = idx;
                             current_time = 0.0f;
                             print_hud();
                         }
