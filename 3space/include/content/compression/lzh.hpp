@@ -36,6 +36,18 @@ namespace studio::content::compression
     std::istream& in,
     std::size_t expected_output_size);
 
+  // Same as above but additionally writes the number of compressed
+  // input bytes consumed from `in` into `bytes_consumed_out`. Callers
+  // that need to chain multiple LZH bit-streams back-to-back use this
+  // overload to rewind the stream to the exact byte boundary after the
+  // last meaningful bit (the internal bit-reader may read one extra
+  // byte to top up its bit-buffer that should not count toward the
+  // chained-stream cursor).
+  std::vector<std::byte> lzh_decompress(
+    std::istream& in,
+    std::size_t expected_output_size,
+    std::size_t& bytes_consumed_out);
+
   // Convenience wrapper around the in-memory case: takes a raw byte
   // span and decodes a known number of output bytes from it.
   std::vector<std::byte> lzh_decompress(

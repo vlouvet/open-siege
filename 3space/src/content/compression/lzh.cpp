@@ -419,6 +419,18 @@ namespace studio::content::compression
   }
 
   std::vector<std::byte> lzh_decompress(
+    std::istream& in,
+    std::size_t expected_output_size,
+    std::size_t& bytes_consumed_out)
+  {
+    const auto before = static_cast<std::size_t>(in.tellg());
+    auto result = lzh_decompress(in, expected_output_size);
+    const auto after = static_cast<std::size_t>(in.tellg());
+    bytes_consumed_out = after - before;
+    return result;
+  }
+
+  std::vector<std::byte> lzh_decompress(
     const std::byte* data,
     std::size_t size,
     std::size_t expected_output_size)
