@@ -30,6 +30,7 @@
 
 #include "pbmp.hpp"
 #include "ppl.hpp"
+#include "materials.hpp"
 #include <set>
 #include <cstdint>
 
@@ -1059,6 +1060,47 @@ int main(int argc, char** argv)
     for (std::size_t i = 0; i < loaded.materials.size(); ++i) {
         std::fprintf(stderr, "  material[%zu]: %s\n",
             i, loaded.materials[i].filename.c_str());
+    }
+
+    // ---- spec 05 material-VOL resolution ----
+    //
+    // Build a MaterialResolver seeded with `argv[1]` + every sibling .vol in
+    // the same directory. Most Tribes meshes resolve entirely from
+    // Entities.vol, but some (UI atlases, per-world variants) need Shell.vol
+    // or `<world>World.vol`, so a single-VOL scan would under-count.
+    // Acceptance: log "<dts>: <N> materials, <M> resolved, <K> missing".
+    {
+        dts_viewer::MaterialResolver resolver;
+        resolver.add_vol(vol_path);
+        const fs::path dir = vol_path.parent_path();
+        if (!dir.empty() && fs::exists(dir)) {
+            for (const auto& ent : fs::directory_iterator(dir)) {
+                if (!ent.is_regular_file()) continue;
+                auto p = ent.path();
+                auto ext = p.extension().string();
+                for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+                if (ext != ".vol") continue;
+                if (fs::equivalent(p, vol_path)) continue;
+                resolver.add_vol(p);
+            }
+        }
+
+        std::string dts_label = dts_match.empty() ? std::string("dts") : dts_match;
+        std::size_t n_mat = loaded.materials.size();
+        std::size_t n_resolved = 0;
+        std::size_t n_missing  = 0;
+        for (const auto& m : loaded.materials) {
+            // Empty material strings are valid "no material" sentinels — they
+            // don't count toward resolved OR missing per the spec; skip them
+            // and shrink the denominator so the counts add up to a meaningful
+            // total.
+            if (m.filename.empty()) { --n_mat; continue; }
+            auto bytes = resolver.resolve(m.filename);
+            if (bytes && !bytes->empty()) ++n_resolved;
+            else                          ++n_missing;
+        }
+        std::fprintf(stderr, "%s: %zu materials, %zu resolved, %zu missing\n",
+            dts_label.c_str(), n_mat, n_resolved, n_missing);
     }
 
     // ---- spec 02 node hierarchy summary ----
