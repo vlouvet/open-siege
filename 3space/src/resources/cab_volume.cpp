@@ -126,7 +126,7 @@ namespace studio::resources::cab
 
           auto new_path = query.archive_path;
 
-          for (auto& segment : relative_path)
+          for (const auto& segment : relative_path)
           {
             cab_file_archive::folder_info folder{};
             new_path = new_path / segment;
