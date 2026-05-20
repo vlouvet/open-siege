@@ -29,6 +29,9 @@
 #include "content/dts/darkstar_structures.hpp"
 
 #include "pbmp.hpp"
+#include "ppl.hpp"
+#include <set>
+#include <cstdint>
 
 namespace fs = std::filesystem;
 namespace dv = studio::resources::vol::darkstar;
@@ -771,6 +774,223 @@ static int dump_pbmp_from_vol(const fs::path& vol_path, const std::string& bmp_m
     return 2;
 }
 
+// ---------------------- spec 04: palette resolution → RGBA8 ----------------------
+//
+// Resolve a PBMP's indexed pixels against a PPL palette map to produce a
+// width*height*4 RGBA8 buffer ready for GL upload. The map is keyed by the
+// PL98 palette `index`, which the PBMP's `PiDX` chunk (`palette_index`) refers
+// to directly — empirically verified: `Shell.ppl` palette index 1136 matches
+// `base.larmor.bmp`'s palette_index 1136.
+//
+// Fallback: if the PBMP references a palette ID we don't have loaded
+// (world-specific palettes live in `<world>World.vol/<world>.day.ppl`), emit
+// a magenta-checkered texture so the failure is obvious in-viewer. A small
+// std::set tracks which missing IDs we've already warned about so a mesh with
+// dozens of materials doesn't spam the same warning N times.
+//
+// `flags` byte handling (v1): treat every palette entry as opaque (alpha=255).
+// PL98 stores something OTHER than alpha in that fourth byte (see
+// wiki-contributions/PPL.md); colour-key transparency belongs in a later spec.
+
+static std::vector<std::uint8_t> expand_to_rgba8(
+    const PbmpImage& bmp,
+    const std::map<std::uint32_t, const Palette*>& palettes)
+{
+    const std::size_t w = bmp.width;
+    const std::size_t h = bmp.height;
+    std::vector<std::uint8_t> out(w * h * 4, 0);
+
+    auto it = palettes.find(bmp.palette_index);
+    if (it == palettes.end() || it->second == nullptr) {
+        // Magenta-checkered fallback. 8×8 checker so the pattern is visible
+        // even on small textures and tiles obviously even on large ones.
+        static std::set<std::uint32_t> warned;
+        if (warned.insert(bmp.palette_index).second) {
+            std::fprintf(stderr,
+                "warning: PBMP references palette_index=%u not present in loaded PPL "
+                "— rendering as magenta checker\n",
+                bmp.palette_index);
+        }
+        for (std::size_t y = 0; y < h; ++y) {
+            for (std::size_t x = 0; x < w; ++x) {
+                const bool on = ((x >> 3) ^ (y >> 3)) & 1;
+                const std::size_t i = (y * w + x) * 4;
+                out[i + 0] = on ? 255 : 0;
+                out[i + 1] = 0;
+                out[i + 2] = on ? 255 : 0;
+                out[i + 3] = 255;
+            }
+        }
+        return out;
+    }
+
+    const Palette& pal = *it->second;
+    const std::size_t pixel_count = std::min<std::size_t>(
+        bmp.indexed_pixels.size(), w * h);
+    for (std::size_t i = 0; i < pixel_count; ++i) {
+        const std::uint8_t idx = bmp.indexed_pixels[i];
+        const PaletteEntry& e = pal.colours[idx];
+        const std::size_t o = i * 4;
+        out[o + 0] = e.r;
+        out[o + 1] = e.g;
+        out[o + 2] = e.b;
+        out[o + 3] = 255;  // v1: flags-as-alpha is incorrect; opaque is safe.
+    }
+    return out;
+}
+
+// ---------------------- spec 04 smoke test: --dump-rgba ----------------------
+//
+// Pull a single PBMP and a single PPL out of the VOLs in the same directory as
+// the argv[1] VOL, resolve PBMP pixels through the PPL palette map, and write
+// the result as a binary PPM (P6) file alongside a small header dump. PPM
+// is the path-of-least-resistance image format that Preview.app opens natively
+// — alpha is dropped (RGB only) since PPM has no alpha channel.
+
+static bool read_named_file_from_vol(const fs::path& vol_path,
+                                     const std::string& match_lower,
+                                     const std::string& required_ext,
+                                     std::vector<char>& out_bytes,
+                                     std::string& out_filename)
+{
+    std::ifstream in(vol_path, std::ios::binary);
+    if (!in) return false;
+    dv::vol_file_archive plugin;
+    if (!plugin.stream_is_supported(in)) return false;
+    in.clear(); in.seekg(0);
+
+    auto all = sr::get_all_content(vol_path, in, plugin);
+    for (auto& entry : all) {
+        auto* f = std::get_if<sr::file_info>(&entry);
+        if (!f) continue;
+        auto name = f->filename.string();
+        auto lower = name;
+        for (auto& c : lower) c = std::tolower((unsigned char)c);
+        if (!required_ext.empty()) {
+            if (lower.size() < required_ext.size()) continue;
+            if (lower.substr(lower.size() - required_ext.size()) != required_ext) continue;
+        }
+        if (!match_lower.empty() && lower.find(match_lower) == std::string::npos) continue;
+
+        std::stringstream buf;
+        in.clear(); in.seekg(0);
+        plugin.extract_file_contents(in, *f, buf);
+        auto s = buf.str();
+        out_bytes.assign(s.begin(), s.end());
+        out_filename = name;
+        return true;
+    }
+    return false;
+}
+
+static int dump_rgba_to_ppm(const fs::path& seed_vol_path,
+                            const std::string& bmp_match_lower,
+                            const std::string& ppl_match_lower)
+{
+    // Search seed_vol first, then every sibling .vol — most assets live in
+    // Entities.vol, but PPLs live in Shell.vol / <world>World.vol, so a
+    // single-VOL scan would miss every cross-archive case.
+    std::vector<fs::path> vol_search;
+    vol_search.push_back(seed_vol_path);
+    const fs::path dir = seed_vol_path.parent_path();
+    if (!dir.empty() && fs::exists(dir)) {
+        for (const auto& ent : fs::directory_iterator(dir)) {
+            if (!ent.is_regular_file()) continue;
+            auto p = ent.path();
+            auto ext = p.extension().string();
+            for (auto& c : ext) c = std::tolower((unsigned char)c);
+            if (ext != ".vol") continue;
+            if (fs::equivalent(p, seed_vol_path)) continue;
+            vol_search.push_back(p);
+        }
+    }
+
+    std::vector<char> bmp_bytes;
+    std::string bmp_filename;
+    for (const auto& v : vol_search) {
+        if (read_named_file_from_vol(v, bmp_match_lower, ".bmp", bmp_bytes, bmp_filename)) {
+            std::printf("found PBMP %s in %s\n", bmp_filename.c_str(), v.string().c_str());
+            break;
+        }
+    }
+    if (bmp_bytes.empty()) {
+        std::fprintf(stderr, "no .bmp matching '%s' in any VOL beside %s\n",
+                     bmp_match_lower.c_str(), seed_vol_path.string().c_str());
+        return 2;
+    }
+
+    std::vector<char> ppl_bytes;
+    std::string ppl_filename;
+    for (const auto& v : vol_search) {
+        // Try .ppl first, then .ipl as a fallback.
+        if (read_named_file_from_vol(v, ppl_match_lower, ".ppl", ppl_bytes, ppl_filename)) {
+            std::printf("found PPL %s in %s\n", ppl_filename.c_str(), v.string().c_str());
+            break;
+        }
+        if (read_named_file_from_vol(v, ppl_match_lower, ".ipl", ppl_bytes, ppl_filename)) {
+            std::printf("found IPL %s in %s\n", ppl_filename.c_str(), v.string().c_str());
+            break;
+        }
+    }
+    if (ppl_bytes.empty()) {
+        std::fprintf(stderr, "no .ppl/.ipl matching '%s' in any VOL beside %s\n",
+                     ppl_match_lower.c_str(), seed_vol_path.string().c_str());
+        return 2;
+    }
+
+    PbmpImage img;
+    {
+        std::stringstream ss(std::string(bmp_bytes.begin(), bmp_bytes.end()));
+        img = load_pbmp(ss);
+    }
+    std::vector<Palette> palettes;
+    {
+        std::stringstream ss(std::string(ppl_bytes.begin(), ppl_bytes.end()));
+        palettes = load_ppl(ss);
+    }
+    auto pal_map = by_index(palettes);
+
+    std::printf("PBMP %s: %ux%u  bit_depth=%u  palette_index=%u\n",
+        bmp_filename.c_str(), img.width, img.height, img.bit_depth, img.palette_index);
+    std::printf("PPL  %s: %zu palettes (indices:",
+        ppl_filename.c_str(), palettes.size());
+    for (const auto& p : palettes) std::printf(" %u", p.index);
+    std::printf(")\n");
+
+    auto rgba = expand_to_rgba8(img, pal_map);
+
+    // First 16 RGBA bytes — required for spec acceptance verification.
+    std::printf("first 16 RGBA bytes:");
+    for (std::size_t i = 0; i < 16 && i < rgba.size(); ++i) {
+        std::printf(" %02X", rgba[i]);
+    }
+    std::printf("\n");
+
+    // Dump as binary PPM (P6, 8-bit RGB). PPM doesn't have an alpha channel,
+    // which is fine for v1 since we hardcoded alpha=255 anyway.
+    std::string ppm_path = bmp_filename;
+    {
+        auto dot = ppm_path.find_last_of('.');
+        if (dot != std::string::npos) ppm_path.erase(dot);
+        ppm_path += ".ppm";
+    }
+    std::ofstream out(ppm_path, std::ios::binary);
+    if (!out) {
+        std::fprintf(stderr, "cannot write %s\n", ppm_path.c_str());
+        return 3;
+    }
+    out << "P6\n" << img.width << " " << img.height << "\n255\n";
+    std::vector<std::uint8_t> rgb(img.width * img.height * 3);
+    for (std::size_t i = 0; i < (std::size_t)img.width * img.height; ++i) {
+        rgb[i * 3 + 0] = rgba[i * 4 + 0];
+        rgb[i * 3 + 1] = rgba[i * 4 + 1];
+        rgb[i * 3 + 2] = rgba[i * 4 + 2];
+    }
+    out.write(reinterpret_cast<const char*>(rgb.data()), rgb.size());
+    std::printf("wrote %s (%ux%u P6)\n", ppm_path.c_str(), img.width, img.height);
+    return 0;
+}
+
 // ---------------------- main ----------------------
 
 int main(int argc, char** argv)
@@ -779,9 +999,11 @@ int main(int argc, char** argv)
         std::fprintf(stderr,
             "usage: %s <path-to-vol> [dts-substring]\n"
             "       %s <path-to-vol> --dump-bmp <bmp-substring>\n"
+            "       %s <path-to-vol> --dump-rgba <bmp-substring> <ppl-substring>\n"
             "  e.g. %s tribes-game/base/Entities.vol chainturret\n"
-            "       %s tribes-game/base/Entities.vol --dump-bmp ammo\n",
-            argv[0], argv[0], argv[0], argv[0]);
+            "       %s tribes-game/base/Entities.vol --dump-bmp ammo\n"
+            "       %s tribes-game/base/Entities.vol --dump-rgba ammo Shell.ppl\n",
+            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
     fs::path vol_path = argv[1];
@@ -792,6 +1014,18 @@ int main(int argc, char** argv)
         std::string bmp_match = argv[3];
         for (auto& c : bmp_match) c = std::tolower((unsigned char)c);
         return dump_pbmp_from_vol(vol_path, bmp_match);
+    }
+
+    // Spec 04 smoke test: resolve PBMP through a PPL palette and dump RGBA as
+    // a PPM image (openable in Preview.app). The PPL is searched in every
+    // sibling VOL of argv[1] — Tribes ships PPLs in Shell.vol / <world>World.vol,
+    // not Entities.vol — so the seed VOL can be the same one used for meshes.
+    if (argc >= 5 && std::string(argv[2]) == "--dump-rgba") {
+        std::string bmp_match = argv[3];
+        std::string ppl_match = argv[4];
+        for (auto& c : bmp_match) c = std::tolower((unsigned char)c);
+        for (auto& c : ppl_match) c = std::tolower((unsigned char)c);
+        return dump_rgba_to_ppm(vol_path, bmp_match, ppl_match);
     }
 
     std::string dts_match = argc >= 3 ? argv[2] : "";
