@@ -1,6 +1,11 @@
 # Texturing Tribes 1 models — pipeline notes
 
-Notes from investigating what it would take to paint textures on the DTS models that `dts-viewer/` currently renders flat-shaded. Reflects state of the upstream Open Siege wiki and code as observed during this work; not a contribution recipe yet — the code change is still TODO.
+**Status: COMPLETE** — milestone shipped in spec 08 (`textures: render meshes
+with per-material textures`). `dts-viewer` now renders Tribes meshes with
+per-bucket palettized PBMP textures sampled from `Entities.vol`/`Shell.ppl`/
+`<world>.day.ppl`. Screenshots at `docs/done/01-textures/08-*.png`.
+
+Notes from investigating what it would take to paint textures on the DTS models that `dts-viewer/` currently renders flat-shaded. Reflects state of the upstream Open Siege wiki and code as observed during this work; the implementation that landed this milestone follows the pipeline below.
 
 ## TL;DR
 

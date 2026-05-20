@@ -422,6 +422,7 @@ struct MeshBucket
     std::vector<float> positions;   // 3 floats per vertex
     std::vector<float> normals;     // 3 floats per vertex, flat per face
     std::vector<float> uvs;         // 2 floats per vertex
+    std::vector<int>   vertex_node_index;  // spec 08: per-bucket skinning node index, one per vertex
     std::size_t triangle_count = 0;
     bool has_uvs = false;
     std::string object_name;        // first object that contributed to this bucket
@@ -565,6 +566,7 @@ struct buffering_renderer : sc::shape_renderer
                 b.normals.push_back(n.z);
                 b.uvs.push_back(tex[k].x);
                 b.uvs.push_back(tex[k].y);
+                b.vertex_node_index.push_back(current_node_index);
 
                 if (face_has_uvs) {
                     b.u_min = std::min(b.u_min, tex[k].x);
@@ -1528,8 +1530,8 @@ int main(int argc, char** argv)
                      bucket_to_texture.size(), geom.buckets.size());
     }
 
-    // ---- spec 06 CPU skinning prep -------------------------------------
-    // `geom.positions` was emitted by the renderer in WORLD bind-pose
+    // ---- spec 06/08 CPU skinning prep ----------------------------------
+    // `bucket.positions` was emitted by the renderer in WORLD bind-pose
     // (vertices already multiplied through the bind node_matrix — see
     //  dts_renderable_shape.cpp:394). For skinning we need each vertex in
     // its owning node's LOCAL space, so the per-frame world matrix can map
@@ -1545,44 +1547,119 @@ int main(int argc, char** argv)
     for (std::size_t i = 0; i < loaded.world_bind.size(); ++i) {
         inv_world_bind[i] = glm::inverse(loaded.world_bind[i]);
     }
-    std::vector<float> bind_local_positions(geom.positions.size(), 0.0f);
+
+    // Spec 08: per-bucket GL state. Each bucket gets its own VAO + 3 VBOs
+    // (positions stream, normals static, UVs static) + a precomputed bind-local
+    // positions buffer + a per-frame skinned destination buffer. Positions are
+    // STREAM_DRAW because we re-upload every frame; normals + UVs stay STATIC
+    // (animated normals are out of scope for this spec; lighting is locked to
+    // bind pose, which is visually acceptable for rigid 1-bone Tribes meshes).
+    struct BucketGL
     {
-        const std::size_t vcount = geom.positions.size() / 3;
+        GLuint vao = 0;
+        GLuint vbo_pos = 0;
+        GLuint vbo_nor = 0;
+        GLuint vbo_uv  = 0;
+        GLsizei vertex_count = 0;          // = bucket.positions.size() / 3
+        std::vector<float> bind_local_pos; // same size as bucket.positions
+        std::vector<float> skinned_pos;    // per-frame target buffer
+        const std::vector<int>* node_index = nullptr; // borrow from bucket
+        GLuint texture = 0;                // 0 = no texture, use flat shading
+        int    bucket_id = -1;             // for HUD / logging
+        std::string object_name;
+        int    material_index = -1;
+    };
+    std::vector<BucketGL> bucket_gl;
+    bucket_gl.reserve(geom.buckets.size());
+
+    for (auto& [bucket_idx, bucket] : geom.buckets) {
+        if (bucket.positions.empty()) continue;
+        BucketGL bg;
+        bg.bucket_id = bucket_idx;
+        bg.object_name = bucket.object_name;
+        bg.material_index = bucket.material_index;
+        bg.vertex_count = (GLsizei)(bucket.positions.size() / 3);
+        bg.node_index = &bucket.vertex_node_index;
+
+        // Precompute bind-local positions for this bucket.
+        bg.bind_local_pos.resize(bucket.positions.size());
+        const std::size_t vcount = bucket.positions.size() / 3;
         for (std::size_t v = 0; v < vcount; ++v) {
-            glm::vec4 p(geom.positions[v*3+0],
-                        geom.positions[v*3+1],
-                        geom.positions[v*3+2], 1.0f);
-            int ni = geom.vertex_node_index[v];
+            glm::vec4 p(bucket.positions[v*3+0],
+                        bucket.positions[v*3+1],
+                        bucket.positions[v*3+2], 1.0f);
+            int ni = (v < bucket.vertex_node_index.size())
+                ? bucket.vertex_node_index[v] : -1;
             if (ni >= 0 && ni < (int)inv_world_bind.size()) {
                 p = inv_world_bind[ni] * p;
             }
-            bind_local_positions[v*3+0] = p.x;
-            bind_local_positions[v*3+1] = p.y;
-            bind_local_positions[v*3+2] = p.z;
+            bg.bind_local_pos[v*3+0] = p.x;
+            bg.bind_local_pos[v*3+1] = p.y;
+            bg.bind_local_pos[v*3+2] = p.z;
         }
-    }
-    // Per-frame skinning destination buffer. Reused; only re-allocated if
-    // geometry size changes (it doesn't, post-load).
-    std::vector<float> skinned_positions(geom.positions.size(), 0.0f);
+        bg.skinned_pos.assign(bucket.positions.size(), 0.0f);
 
-    // VAO + VBO upload. Positions are STREAM_DRAW because we re-upload
-    // every frame; normals stay STATIC for now (lighting is locked to bind
-    // pose — visually acceptable for rigid 1-bone Tribes meshes, the body
-    // panels deform slightly but the silhouette motion is what's checked).
-    GLuint vao = 0, vbo_pos = 0, vbo_nor = 0;
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-    glGenBuffers(1, &vbo_pos);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
-    glBufferData(GL_ARRAY_BUFFER, geom.positions.size()*sizeof(float), geom.positions.data(), GL_STREAM_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-    glGenBuffers(1, &vbo_nor);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_nor);
-    glBufferData(GL_ARRAY_BUFFER, geom.normals.size()*sizeof(float), geom.normals.data(), GL_STATIC_DRAW);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-    glBindVertexArray(0);
+        // GL upload.
+        glGenVertexArrays(1, &bg.vao);
+        glBindVertexArray(bg.vao);
+
+        glGenBuffers(1, &bg.vbo_pos);
+        glBindBuffer(GL_ARRAY_BUFFER, bg.vbo_pos);
+        glBufferData(GL_ARRAY_BUFFER,
+                     bucket.positions.size() * sizeof(float),
+                     bucket.positions.data(), GL_STREAM_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+        glGenBuffers(1, &bg.vbo_nor);
+        glBindBuffer(GL_ARRAY_BUFFER, bg.vbo_nor);
+        glBufferData(GL_ARRAY_BUFFER,
+                     bucket.normals.size() * sizeof(float),
+                     bucket.normals.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+        glGenBuffers(1, &bg.vbo_uv);
+        glBindBuffer(GL_ARRAY_BUFFER, bg.vbo_uv);
+        // Even buckets without UVs get a buffer of zeros so location 2 is
+        // always valid — simpler than toggling enableVertexAttribArray
+        // per-bucket. (Fallback path zeroes u_has_texture so the UVs aren't
+        // sampled anyway.)
+        std::vector<float> uv_data = bucket.uvs;
+        if (uv_data.size() != bucket.positions.size() / 3 * 2) {
+            uv_data.assign(bucket.positions.size() / 3 * 2, 0.0f);
+        }
+        glBufferData(GL_ARRAY_BUFFER,
+                     uv_data.size() * sizeof(float),
+                     uv_data.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+        glBindVertexArray(0);
+
+        // Texture lookup. Missing texture -> 0 -> flat fallback.
+        auto it = bucket_to_texture.find(bucket_idx);
+        if (it != bucket_to_texture.end()) bg.texture = it->second;
+
+        bucket_gl.push_back(bg);
+    }
+    std::fprintf(stderr, "render: %zu draws/frame\n", bucket_gl.size());
+
+    // Log per-bucket material binding for handoff to DML spec 06 (renderer
+    // integration). One line per bucket: bucket id, object name, material
+    // slot, raw material filename, whether a texture is bound.
+    for (const auto& bg : bucket_gl) {
+        const char* matname = "<none>";
+        if (bg.material_index >= 0
+            && bg.material_index < (int)loaded.materials.size()) {
+            matname = loaded.materials[bg.material_index].filename.c_str();
+            if (*matname == '\0') matname = "<empty>";
+        }
+        std::fprintf(stderr,
+            "  draw[%d] obj='%s' mat[%d]='%s' tex=%s\n",
+            bg.bucket_id, bg.object_name.c_str(), bg.material_index,
+            matname, bg.texture ? "yes" : "no(flat)");
+    }
 
     GLuint prog = link_program(
         compile_shader(GL_VERTEX_SHADER,   VS_SRC),
@@ -1821,7 +1898,7 @@ int main(int argc, char** argv)
         glm::mat4 MVP = P * V;
         glm::mat3 N = glm::mat3(glm::transpose(glm::inverse(V)));
 
-        // ---- spec 06: CPU skinning ----
+        // ---- spec 06/08: CPU skinning + per-bucket draws ----
         // 1) evaluate per-node local transforms at current_time. If the
         //    sequence has no tracks / zero duration (e.g. the `root` no-op
         //    marker), evaluate() falls back to bind_local — t=0 reproduces
@@ -1829,11 +1906,11 @@ int main(int argc, char** argv)
         // 2) accumulate to world via the same parent-walk used at load.
         // 3) per-vertex bone matrix B[n] = world_anim[n] * inverse(world_bind[n]).
         //    We pre-baked the inverse and we *already* expressed each vertex
-        //    in node-local space (bind_local_positions), so the skin step is
+        //    in node-local space (bind_local_pos), so the skin step is
         //    just `world_anim[n] * bind_local_vertex` — saving the multiply
-        //    by inverse(world_bind) per frame. Equivalent to:
-        //      skinned = (world_anim * inverse(world_bind)) * bind_world_vertex
-        // 4) re-upload the position VBO via glBufferData (GL_STREAM_DRAW).
+        //    by inverse(world_bind) per frame.
+        // 4) re-upload each bucket's position VBO via glBufferData.
+        std::vector<glm::mat4> world_anim_global;
         {
             const Sequence* sq = (current_sequence >= 0
                 && current_sequence < (int)loaded.sequences.size())
@@ -1846,44 +1923,55 @@ int main(int argc, char** argv)
                 for (std::size_t i = 0; i < loaded.nodes.size(); ++i)
                     local_anim[i] = loaded.nodes[i].bind_local;
             }
-            auto world_anim = compute_world_from_locals(loaded.nodes, local_anim);
-
-            const std::size_t vcount = bind_local_positions.size() / 3;
-            for (std::size_t v = 0; v < vcount; ++v) {
-                int ni = geom.vertex_node_index[v];
-                glm::vec4 lp(bind_local_positions[v*3+0],
-                             bind_local_positions[v*3+1],
-                             bind_local_positions[v*3+2], 1.0f);
-                glm::vec4 wp;
-                if (ni >= 0 && ni < (int)world_anim.size()) {
-                    wp = world_anim[ni] * lp;
-                } else {
-                    // unattached vertex — its bind_local_positions entry is
-                    // already in world space (identity in/out at load), so
-                    // pass through.
-                    wp = lp;
-                }
-                skinned_positions[v*3+0] = wp.x;
-                skinned_positions[v*3+1] = wp.y;
-                skinned_positions[v*3+2] = wp.z;
-            }
-            glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
-            glBufferData(GL_ARRAY_BUFFER,
-                         skinned_positions.size() * sizeof(float),
-                         skinned_positions.data(), GL_STREAM_DRAW);
+            world_anim_global = compute_world_from_locals(loaded.nodes, local_anim);
         }
 
         glUseProgram(prog);
         glUniformMatrix4fv(u_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
         glUniformMatrix3fv(u_normal_mat, 1, GL_FALSE, glm::value_ptr(N));
-        // Spec 07: shader supports texture sampling, but the render loop still
-        // uses the monolithic single-VBO draw without UVs bound. Spec 08 will
-        // wire per-bucket UV VBOs + bucket_to_texture lookup; for now force
-        // the Lambert-only fallback so existing flat-shaded output is unchanged.
-        if (u_tex0 >= 0)        glUniform1i(u_tex0, 0);
-        if (u_has_texture >= 0) glUniform1i(u_has_texture, 0);
-        glBindVertexArray(vao);
-        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(geom.positions.size() / 3));
+        // Texture unit 0 is the sampler the fragment shader reads from; bind
+        // every per-bucket texture to GL_TEXTURE0.
+        if (u_tex0 >= 0) glUniform1i(u_tex0, 0);
+        glActiveTexture(GL_TEXTURE0);
+
+        for (auto& bg : bucket_gl) {
+            // Skin this bucket into bg.skinned_pos.
+            const auto& nidx = *bg.node_index;
+            const std::size_t vcount = bg.bind_local_pos.size() / 3;
+            for (std::size_t v = 0; v < vcount; ++v) {
+                int ni = (v < nidx.size()) ? nidx[v] : -1;
+                glm::vec4 lp(bg.bind_local_pos[v*3+0],
+                             bg.bind_local_pos[v*3+1],
+                             bg.bind_local_pos[v*3+2], 1.0f);
+                glm::vec4 wp;
+                if (ni >= 0 && ni < (int)world_anim_global.size()) {
+                    wp = world_anim_global[ni] * lp;
+                } else {
+                    wp = lp;
+                }
+                bg.skinned_pos[v*3+0] = wp.x;
+                bg.skinned_pos[v*3+1] = wp.y;
+                bg.skinned_pos[v*3+2] = wp.z;
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, bg.vbo_pos);
+            glBufferData(GL_ARRAY_BUFFER,
+                         bg.skinned_pos.size() * sizeof(float),
+                         bg.skinned_pos.data(), GL_STREAM_DRAW);
+
+            // Per-bucket texture bind + flag.
+            if (bg.texture != 0) {
+                glBindTexture(GL_TEXTURE_2D, bg.texture);
+                if (u_has_texture >= 0) glUniform1i(u_has_texture, 1);
+            } else {
+                glBindTexture(GL_TEXTURE_2D, 0);
+                if (u_has_texture >= 0) glUniform1i(u_has_texture, 0);
+            }
+
+            glBindVertexArray(bg.vao);
+            glDrawArrays(GL_TRIANGLES, 0, bg.vertex_count);
+        }
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
 
         if (show_bones && bone_vertex_count > 0) {
             // Disable depth test so the skeleton is visible through the mesh.
