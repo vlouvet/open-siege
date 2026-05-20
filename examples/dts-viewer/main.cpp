@@ -18,15 +18,114 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include "resources/darkstar_volume.hpp"
 #include "content/renderable_shape.hpp"
 #include "content/dts/renderable_shape_factory.hpp"
+#include "content/dts/darkstar.hpp"
+#include "content/dts/darkstar_structures.hpp"
 
 namespace fs = std::filesystem;
 namespace dv = studio::resources::vol::darkstar;
 namespace sr = studio::resources;
 namespace sc = studio::content;
+namespace dts = studio::content::dts::darkstar;
+
+// ---------------------- DTS node hierarchy (bind pose) ----------------------
+//
+// Spec 02-node-hierarchy: capture the static skeleton from the raw shape_variant.
+// The shape_renderer visitor callbacks only carry node *names*, not matrices, so
+// we must call `dts::read_shape()` directly and walk `nodes` + `transforms`.
+
+struct Node
+{
+    std::string name;
+    int         parent_index;   // -1 for root
+    glm::mat4   bind_local;     // local-to-parent at bind pose
+};
+
+// Convert a raw DTS transform (v2/v3/v5/v6/v7/v8) into a local glm::mat4 using
+// the same recipe `dts_renderable_shape.cpp:328` uses:
+//   T * transpose(toMat4(quat(w,x,y,z))) * S
+// v2/v3/v5/v6 use quaternion4f + scale; v7 uses quaternion4s + scale;
+// v8 uses quaternion4s and lacks a scale field (treat as (1,1,1)).
+static glm::mat4 make_local_mat(const sc::quaternion4f& rot,
+                                const sc::vector3f& trans,
+                                const glm::vec3& scale)
+{
+    glm::mat4 T = glm::translate(glm::mat4(1.0f), glm::vec3(trans.x, trans.y, trans.z));
+    glm::mat4 R = glm::transpose(glm::toMat4(glm::quat(rot.w, rot.x, rot.y, rot.z)));
+    glm::mat4 S = glm::scale(glm::mat4(1.0f), scale);
+    return T * R * S;
+}
+
+static glm::mat4 transform_to_local_mat(const dts::shape::v2::transform& t)
+{
+    return make_local_mat(sc::to_float(t.rotation), t.translation,
+                          glm::vec3(t.scale.x, t.scale.y, t.scale.z));
+}
+static glm::mat4 transform_to_local_mat(const dts::shape::v7::transform& t)
+{
+    return make_local_mat(sc::to_float(t.rotation), t.translation,
+                          glm::vec3(t.scale.x, t.scale.y, t.scale.z));
+}
+static glm::mat4 transform_to_local_mat(const dts::shape::v8::transform& t)
+{
+    return make_local_mat(sc::to_float(t.rotation), t.translation,
+                          glm::vec3(1.0f, 1.0f, 1.0f));
+}
+
+static std::vector<Node> build_nodes(const dts::shape_variant& raw_shape)
+{
+    return std::visit([](const auto& s) {
+        std::vector<Node> out;
+        out.reserve(s.nodes.size());
+        for (const auto& n : s.nodes) {
+            Node out_node;
+            out_node.name = std::string(s.names[n.name_index].data(),
+                strnlen(s.names[n.name_index].data(), s.names[n.name_index].size()));
+            out_node.parent_index = static_cast<int>(n.parent_node_index);
+            const auto tx_idx = static_cast<std::size_t>(n.default_transform_index);
+            if (tx_idx < s.transforms.size()) {
+                out_node.bind_local = transform_to_local_mat(s.transforms[tx_idx]);
+            } else {
+                out_node.bind_local = glm::mat4(1.0f);
+            }
+            out.push_back(std::move(out_node));
+        }
+        return out;
+    }, raw_shape);
+}
+
+// Accumulate parent transforms to get world-space bind matrices, one per node.
+// Roots (parent_index == -1) use their local matrix directly.
+static std::vector<glm::mat4> compute_world_bind(const std::vector<Node>& nodes)
+{
+    std::vector<glm::mat4> world(nodes.size(), glm::mat4(1.0f));
+    // Nodes appear in declaration order in the DTS; parents typically precede
+    // children, but make no assumption — resolve iteratively up to N passes.
+    std::vector<bool> done(nodes.size(), false);
+    bool progress = true;
+    std::size_t passes = 0;
+    while (progress && passes++ <= nodes.size() + 1) {
+        progress = false;
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (done[i]) continue;
+            int p = nodes[i].parent_index;
+            if (p < 0) {
+                world[i] = nodes[i].bind_local;
+                done[i] = true;
+                progress = true;
+            } else if (p < (int)nodes.size() && done[p]) {
+                world[i] = world[p] * nodes[i].bind_local;
+                done[i] = true;
+                progress = true;
+            }
+        }
+    }
+    return world;
+}
 
 // ---------------------- per-material/object mesh bucket ----------------------
 
@@ -53,6 +152,7 @@ struct buffered_geometry
     // — replaced by per-bucket draws in a later spec).
     std::vector<float> positions;
     std::vector<float> normals;
+    std::vector<int>   vertex_node_index;  // one entry per emitted vertex (3 per tri)
     std::size_t triangle_count = 0;
 
     glm::vec3 bbox_min{ 1e30f}, bbox_max{-1e30f};
@@ -70,9 +170,27 @@ struct buffering_renderer : sc::shape_renderer
     int  next_bucket_id = 0;
     std::string current_object_name;
 
+    // For spec 02: track which node the current vertices belong to. The
+    // shape_renderer visitor only carries node *names*, so we map name -> index
+    // by consulting the Node vector built from the raw shape. Duplicate names
+    // in the DTS name pool are rare for Tribes meshes; if collisions appear we
+    // fall back to the first match.
+    const std::vector<Node>* nodes_ref = nullptr;
+    int current_node_index = -1;
+
     explicit buffering_renderer(buffered_geometry& g) : g(g) {}
 
-    void update_node(std::optional<std::string_view>, std::string_view) override {}
+    void update_node(std::optional<std::string_view>, std::string_view name) override {
+        current_node_index = -1;
+        if (nodes_ref) {
+            for (std::size_t i = 0; i < nodes_ref->size(); ++i) {
+                if ((*nodes_ref)[i].name == std::string(name)) {
+                    current_node_index = (int)i;
+                    break;
+                }
+            }
+        }
+    }
 
     void update_object(std::optional<std::string_view>, std::string_view object_name) override {
         // Each object becomes its own bucket (one mesh per object, typically one
@@ -137,6 +255,7 @@ struct buffering_renderer : sc::shape_renderer
                 g.normals.push_back(n.x);
                 g.normals.push_back(n.y);
                 g.normals.push_back(n.z);
+                g.vertex_node_index.push_back(current_node_index);
 
                 // per-bucket buffers
                 b.positions.push_back(verts[k].x);
@@ -193,12 +312,27 @@ static std::vector<char> read_dts_from_vol(const fs::path& vol_path, const std::
 
 struct loaded_shape
 {
-    buffered_geometry geom;
+    buffered_geometry         geom;
     std::vector<sc::material> materials;
+    std::vector<Node>         nodes;        // bind-pose hierarchy (spec 02)
+    std::vector<glm::mat4>    world_bind;   // accumulated world transforms
 };
 
 static loaded_shape build_geometry(const std::vector<char>& dts_bytes)
 {
+    // 1) Raw shape via read_shape() — this is where the bind pose lives.
+    //    The shape_renderer callbacks do NOT carry matrices, so we MUST
+    //    bypass `make_shape` for node-hierarchy data.
+    loaded_shape out;
+    {
+        std::string str(dts_bytes.begin(), dts_bytes.end());
+        std::stringstream ss(str);
+        auto raw = dts::read_shape(ss, std::nullopt);
+        out.nodes = build_nodes(raw);
+        out.world_bind = compute_world_bind(out.nodes);
+    }
+
+    // 2) The high-level renderable_shape, for geometry buffering (unchanged path).
     std::string str(dts_bytes.begin(), dts_bytes.end());
     std::stringstream ss(str);
     auto shape = sc::dts::make_shape(ss);
@@ -211,8 +345,8 @@ static loaded_shape build_geometry(const std::vector<char>& dts_bytes)
 
     auto sequences = shape->get_sequences(detail_indexes);
 
-    loaded_shape out;
     buffering_renderer r(out.geom);
+    r.nodes_ref = &out.nodes;
     shape->render_shape(r, detail_indexes, sequences);
     out.materials = shape->get_materials();
     return out;
@@ -277,6 +411,29 @@ void main() {
 }
 )";
 
+// ---------------------- bone overlay shader (spec 02) ----------------------
+
+static const char* BONE_VS_SRC = R"(
+#version 410 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec3 a_color;
+uniform mat4 u_mvp;
+out vec3 v_color;
+void main() {
+    v_color = a_color;
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+)";
+
+static const char* BONE_FS_SRC = R"(
+#version 410 core
+in  vec3 v_color;
+out vec4 frag;
+void main() {
+    frag = vec4(v_color, 1.0);
+}
+)";
+
 // ---------------------- main ----------------------
 
 int main(int argc, char** argv)
@@ -320,6 +477,28 @@ int main(int argc, char** argv)
     for (std::size_t i = 0; i < loaded.materials.size(); ++i) {
         std::fprintf(stderr, "  material[%zu]: %s\n",
             i, loaded.materials[i].filename.c_str());
+    }
+
+    // ---- spec 02 node hierarchy summary ----
+    {
+        const auto& nodes = loaded.nodes;
+        std::string dts_label = dts_match.empty() ? std::string("dts") : dts_match;
+        std::printf("%s: %zu nodes\n", dts_label.c_str(), nodes.size());
+        // Print every root node (parent_index == -1) — almost always exactly one.
+        int root_count = 0;
+        for (const auto& n : nodes) {
+            if (n.parent_index < 0) {
+                std::printf("  root: %s\n", n.name.c_str());
+                ++root_count;
+            }
+        }
+        if (root_count == 0) std::printf("  (no root found)\n");
+        // Also dump the hierarchy to stderr for debugging.
+        std::fprintf(stderr, "nodes (%zu):\n", nodes.size());
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            std::fprintf(stderr, "  [%zu] %s (parent=%d)\n",
+                i, nodes[i].name.c_str(), nodes[i].parent_index);
+        }
     }
 
     if (geom.triangle_count == 0) {
@@ -367,6 +546,70 @@ int main(int argc, char** argv)
     GLint u_mvp        = glGetUniformLocation(prog, "u_mvp");
     GLint u_normal_mat = glGetUniformLocation(prog, "u_normal_mat");
 
+    // ---- spec 02 bone overlay: one line per (parent->child) bone ----
+    // Build a packed [pos.xyz | color.rgb] buffer at load time, using the
+    // bind-pose world transforms. Each non-root node contributes one segment:
+    //   start = parent.world.translation
+    //   end   = node.world.translation
+    GLuint bone_vao = 0, bone_vbo = 0;
+    GLsizei bone_vertex_count = 0;
+    GLuint bone_prog = link_program(
+        compile_shader(GL_VERTEX_SHADER,   BONE_VS_SRC),
+        compile_shader(GL_FRAGMENT_SHADER, BONE_FS_SRC));
+    GLint u_bone_mvp = glGetUniformLocation(bone_prog, "u_mvp");
+    {
+        std::vector<float> bone_buf; // x,y,z, r,g,b per vertex
+        const auto& nodes = loaded.nodes;
+        const auto& world = loaded.world_bind;
+        auto color_for = [](int idx) {
+            // simple deterministic palette
+            float h = (idx * 0.6180339887f);
+            h = h - std::floor(h);
+            // HSV->RGB with s=1, v=1
+            float r=0, g=0, b=0;
+            float hh = h * 6.0f;
+            int i = (int)std::floor(hh);
+            float f = hh - i;
+            float q = 1.0f - f, t = f;
+            switch (i % 6) {
+                case 0: r=1; g=t; b=0; break;
+                case 1: r=q; g=1; b=0; break;
+                case 2: r=0; g=1; b=t; break;
+                case 3: r=0; g=q; b=1; break;
+                case 4: r=t; g=0; b=1; break;
+                case 5: r=1; g=0; b=q; break;
+            }
+            return glm::vec3(r, g, b);
+        };
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            int p = nodes[i].parent_index;
+            if (p < 0 || p >= (int)nodes.size()) continue;
+            glm::vec3 a = glm::vec3(world[p] * glm::vec4(0,0,0,1));
+            glm::vec3 b = glm::vec3(world[i] * glm::vec4(0,0,0,1));
+            glm::vec3 col = color_for((int)i);
+            bone_buf.insert(bone_buf.end(), { a.x, a.y, a.z, col.r, col.g, col.b,
+                                              b.x, b.y, b.z, col.r, col.g, col.b });
+        }
+        bone_vertex_count = (GLsizei)(bone_buf.size() / 6);
+
+        glGenVertexArrays(1, &bone_vao);
+        glBindVertexArray(bone_vao);
+        glGenBuffers(1, &bone_vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, bone_vbo);
+        glBufferData(GL_ARRAY_BUFFER, bone_buf.size() * sizeof(float),
+                     bone_buf.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              6 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+                              6 * sizeof(float), (void*)(3 * sizeof(float)));
+        glBindVertexArray(0);
+        std::printf("bone overlay: %d bones (toggle with B)\n",
+                    (int)(bone_vertex_count / 2));
+    }
+    bool show_bones = false;
+
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
     // Tribes models use left-handed coords; we don't cull faces to avoid winding surprises.
@@ -390,6 +633,10 @@ int main(int argc, char** argv)
                 case SDL_QUIT: running = false; break;
                 case SDL_KEYDOWN:
                     if (ev.key.keysym.sym == SDLK_ESCAPE || ev.key.keysym.sym == SDLK_q) running = false;
+                    if (ev.key.keysym.sym == SDLK_b) {
+                        show_bones = !show_bones;
+                        std::printf("bones: %s\n", show_bones ? "on" : "off");
+                    }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
                     if (ev.button.button == SDL_BUTTON_LEFT) { dragging = true; last_x = ev.button.x; last_y = ev.button.y; }
@@ -432,6 +679,17 @@ int main(int argc, char** argv)
         glUniformMatrix3fv(u_normal_mat, 1, GL_FALSE, glm::value_ptr(N));
         glBindVertexArray(vao);
         glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(geom.positions.size() / 3));
+
+        if (show_bones && bone_vertex_count > 0) {
+            // Disable depth test so the skeleton is visible through the mesh.
+            glDisable(GL_DEPTH_TEST);
+            glUseProgram(bone_prog);
+            glUniformMatrix4fv(u_bone_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
+            glBindVertexArray(bone_vao);
+            glLineWidth(2.0f);
+            glDrawArrays(GL_LINES, 0, bone_vertex_count);
+            glEnable(GL_DEPTH_TEST);
+        }
 
         SDL_GL_SwapWindow(win);
     }
