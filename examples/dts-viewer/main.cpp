@@ -730,11 +730,14 @@ static const char* VS_SRC = R"(
 #version 410 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
 uniform mat4 u_mvp;
 uniform mat3 u_normal_mat;
 out vec3 v_normal_ws;
+out vec2 v_uv;
 void main() {
     v_normal_ws = normalize(u_normal_mat * a_normal);
+    v_uv = a_uv;
     gl_Position = u_mvp * vec4(a_pos, 1.0);
 }
 )";
@@ -742,13 +745,21 @@ void main() {
 static const char* FS_SRC = R"(
 #version 410 core
 in vec3 v_normal_ws;
+in vec2 v_uv;
+uniform sampler2D u_tex0;
+uniform bool u_has_texture;
 out vec4 frag;
 void main() {
     vec3 L = normalize(vec3(0.4, 0.8, 0.6));
-    float d = max(dot(normalize(v_normal_ws), L), 0.0);
-    vec3 base = vec3(0.75, 0.78, 0.82);
-    vec3 col = base * (0.25 + 0.75 * d);
-    frag = vec4(col, 1.0);
+    float lambert = max(dot(normalize(v_normal_ws), L), 0.0);
+    if (u_has_texture) {
+        vec4 tex = texture(u_tex0, v_uv);
+        frag = vec4(tex.rgb * (0.35 + 0.65 * lambert), tex.a);
+    } else {
+        vec3 base = vec3(0.75, 0.78, 0.82);
+        vec3 col = base * (0.25 + 0.75 * lambert);
+        frag = vec4(col, 1.0);
+    }
 }
 )";
 
@@ -1576,8 +1587,10 @@ int main(int argc, char** argv)
     GLuint prog = link_program(
         compile_shader(GL_VERTEX_SHADER,   VS_SRC),
         compile_shader(GL_FRAGMENT_SHADER, FS_SRC));
-    GLint u_mvp        = glGetUniformLocation(prog, "u_mvp");
-    GLint u_normal_mat = glGetUniformLocation(prog, "u_normal_mat");
+    GLint u_mvp         = glGetUniformLocation(prog, "u_mvp");
+    GLint u_normal_mat  = glGetUniformLocation(prog, "u_normal_mat");
+    GLint u_tex0        = glGetUniformLocation(prog, "u_tex0");
+    GLint u_has_texture = glGetUniformLocation(prog, "u_has_texture");
 
     // ---- spec 02 bone overlay: one line per (parent->child) bone ----
     // Build a packed [pos.xyz | color.rgb] buffer at load time, using the
@@ -1863,6 +1876,12 @@ int main(int argc, char** argv)
         glUseProgram(prog);
         glUniformMatrix4fv(u_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
         glUniformMatrix3fv(u_normal_mat, 1, GL_FALSE, glm::value_ptr(N));
+        // Spec 07: shader supports texture sampling, but the render loop still
+        // uses the monolithic single-VBO draw without UVs bound. Spec 08 will
+        // wire per-bucket UV VBOs + bucket_to_texture lookup; for now force
+        // the Lambert-only fallback so existing flat-shaded output is unchanged.
+        if (u_tex0 >= 0)        glUniform1i(u_tex0, 0);
+        if (u_has_texture >= 0) glUniform1i(u_has_texture, 0);
         glBindVertexArray(vao);
         glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(geom.positions.size() / 3));
 
