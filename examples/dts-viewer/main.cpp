@@ -8,6 +8,8 @@
 #include <variant>
 #include <algorithm>
 #include <filesystem>
+#include <map>
+#include <limits>
 
 #include <SDL.h>
 #define GL_SILENCE_DEPRECATION
@@ -26,51 +28,135 @@ namespace dv = studio::resources::vol::darkstar;
 namespace sr = studio::resources;
 namespace sc = studio::content;
 
+// ---------------------- per-material/object mesh bucket ----------------------
+
+struct MeshBucket
+{
+    std::vector<float> positions;   // 3 floats per vertex
+    std::vector<float> normals;     // 3 floats per vertex, flat per face
+    std::vector<float> uvs;         // 2 floats per vertex
+    std::size_t triangle_count = 0;
+    bool has_uvs = false;
+    std::string object_name;        // first object that contributed to this bucket
+    // running uv range, only meaningful if has_uvs
+    float u_min = std::numeric_limits<float>::infinity();
+    float u_max = -std::numeric_limits<float>::infinity();
+    float v_min = std::numeric_limits<float>::infinity();
+    float v_max = -std::numeric_limits<float>::infinity();
+};
+
 // ---------------------- shape_renderer that buffers triangles ----------------------
 
 struct buffered_geometry
 {
-    std::vector<float> positions;   // 3 floats per vertex
-    std::vector<float> normals;     // 3 floats per vertex, flat per face
+    // legacy flat buffers (kept so the existing single-draw render path still works
+    // — replaced by per-bucket draws in a later spec).
+    std::vector<float> positions;
+    std::vector<float> normals;
     std::size_t triangle_count = 0;
 
     glm::vec3 bbox_min{ 1e30f}, bbox_max{-1e30f};
+
+    // per-material/object grouping
+    std::map<int, MeshBucket> buckets;
 };
 
 struct buffering_renderer : sc::shape_renderer
 {
     buffered_geometry& g;
-    std::vector<sc::vector3f> current_face;
+    std::vector<sc::vector3f>      current_positions;
+    std::vector<sc::texture_vertex> current_uvs;
+    int  current_bucket = -1;       // assigned when first object starts
+    int  next_bucket_id = 0;
+    std::string current_object_name;
 
     explicit buffering_renderer(buffered_geometry& g) : g(g) {}
 
     void update_node(std::optional<std::string_view>, std::string_view) override {}
-    void update_object(std::optional<std::string_view>, std::string_view) override {}
-    void new_face(std::size_t) override { current_face.clear(); }
+
+    void update_object(std::optional<std::string_view>, std::string_view object_name) override {
+        // Each object becomes its own bucket (one mesh per object, typically one
+        // material). The shape_renderer callback API doesn't expose face.material
+        // directly, so per-object is the finest granularity available here.
+        current_bucket = next_bucket_id++;
+        current_object_name.assign(object_name.data(), object_name.size());
+        auto& b = g.buckets[current_bucket];
+        if (b.object_name.empty()) b.object_name = current_object_name;
+    }
+
+    void new_face(std::size_t) override {
+        current_positions.clear();
+        current_uvs.clear();
+        if (current_bucket < 0) {
+            // some shapes never call update_object before the first face — give them
+            // a default bucket so geometry is not dropped.
+            current_bucket = next_bucket_id++;
+            auto& b = g.buckets[current_bucket];
+            if (b.object_name.empty()) b.object_name = "<no-object>";
+        }
+    }
+
     void emit_vertex(const sc::vector3f& v) override {
-        current_face.push_back(v);
+        current_positions.push_back(v);
         g.bbox_min = glm::min(g.bbox_min, glm::vec3(v.x, v.y, v.z));
         g.bbox_max = glm::max(g.bbox_max, glm::vec3(v.x, v.y, v.z));
     }
-    void emit_texture_vertex(const sc::texture_vertex&) override {}
+
+    void emit_texture_vertex(const sc::texture_vertex& tv) override {
+        current_uvs.push_back(tv);
+    }
+
     void end_face() override {
-        if (current_face.size() < 3) return;
+        if (current_positions.size() < 3) return;
+
+        const bool face_has_uvs = current_uvs.size() == current_positions.size();
+        MeshBucket& b = g.buckets[current_bucket];
+        if (face_has_uvs) b.has_uvs = true;
+
         // fan triangulate (v0,v1,v2), (v0,v2,v3), ...
-        glm::vec3 v0(current_face[0].x, current_face[0].y, current_face[0].z);
-        for (std::size_t i = 1; i + 1 < current_face.size(); ++i) {
-            glm::vec3 v1(current_face[i].x,   current_face[i].y,   current_face[i].z);
-            glm::vec3 v2(current_face[i+1].x, current_face[i+1].y, current_face[i+1].z);
+        glm::vec3 v0(current_positions[0].x, current_positions[0].y, current_positions[0].z);
+        sc::texture_vertex t0 = face_has_uvs ? current_uvs[0] : sc::texture_vertex{0.0f, 0.0f};
+
+        for (std::size_t i = 1; i + 1 < current_positions.size(); ++i) {
+            glm::vec3 v1(current_positions[i].x,   current_positions[i].y,   current_positions[i].z);
+            glm::vec3 v2(current_positions[i+1].x, current_positions[i+1].y, current_positions[i+1].z);
             glm::vec3 n = glm::normalize(glm::cross(v1 - v0, v2 - v0));
             if (!std::isfinite(n.x)) n = glm::vec3(0,0,1);
-            for (auto& v : {v0, v1, v2}) {
-                g.positions.push_back(v.x);
-                g.positions.push_back(v.y);
-                g.positions.push_back(v.z);
+
+            sc::texture_vertex t1 = face_has_uvs ? current_uvs[i]   : sc::texture_vertex{0.0f, 0.0f};
+            sc::texture_vertex t2 = face_has_uvs ? current_uvs[i+1] : sc::texture_vertex{0.0f, 0.0f};
+
+            const glm::vec3 verts[3] = { v0, v1, v2 };
+            const sc::texture_vertex tex[3] = { t0, t1, t2 };
+
+            for (int k = 0; k < 3; ++k) {
+                // legacy flat buffer
+                g.positions.push_back(verts[k].x);
+                g.positions.push_back(verts[k].y);
+                g.positions.push_back(verts[k].z);
                 g.normals.push_back(n.x);
                 g.normals.push_back(n.y);
                 g.normals.push_back(n.z);
+
+                // per-bucket buffers
+                b.positions.push_back(verts[k].x);
+                b.positions.push_back(verts[k].y);
+                b.positions.push_back(verts[k].z);
+                b.normals.push_back(n.x);
+                b.normals.push_back(n.y);
+                b.normals.push_back(n.z);
+                b.uvs.push_back(tex[k].x);
+                b.uvs.push_back(tex[k].y);
+
+                if (face_has_uvs) {
+                    b.u_min = std::min(b.u_min, tex[k].x);
+                    b.u_max = std::max(b.u_max, tex[k].x);
+                    b.v_min = std::min(b.v_min, tex[k].y);
+                    b.v_max = std::max(b.v_max, tex[k].y);
+                }
             }
             ++g.triangle_count;
+            ++b.triangle_count;
         }
     }
 };
@@ -105,7 +191,13 @@ static std::vector<char> read_dts_from_vol(const fs::path& vol_path, const std::
     throw std::runtime_error("no matching DTS found");
 }
 
-static buffered_geometry build_geometry(const std::vector<char>& dts_bytes)
+struct loaded_shape
+{
+    buffered_geometry geom;
+    std::vector<sc::material> materials;
+};
+
+static loaded_shape build_geometry(const std::vector<char>& dts_bytes)
 {
     std::string str(dts_bytes.begin(), dts_bytes.end());
     std::stringstream ss(str);
@@ -119,10 +211,11 @@ static buffered_geometry build_geometry(const std::vector<char>& dts_bytes)
 
     auto sequences = shape->get_sequences(detail_indexes);
 
-    buffered_geometry geom;
-    buffering_renderer r(geom);
+    loaded_shape out;
+    buffering_renderer r(out.geom);
     shape->render_shape(r, detail_indexes, sequences);
-    return geom;
+    out.materials = shape->get_materials();
+    return out;
 }
 
 // ---------------------- shader helpers ----------------------
@@ -200,12 +293,34 @@ int main(int argc, char** argv)
     for (auto& c : dts_match) c = std::tolower((unsigned char)c);
 
     auto dts_bytes = read_dts_from_vol(vol_path, dts_match);
-    auto geom = build_geometry(dts_bytes);
+    auto loaded = build_geometry(dts_bytes);
+    auto& geom = loaded.geom;
 
     std::printf("Geometry: %zu triangles, %zu vertices, bbox=[%.1f %.1f %.1f]..[%.1f %.1f %.1f]\n",
         geom.triangle_count, geom.positions.size()/3,
         geom.bbox_min.x, geom.bbox_min.y, geom.bbox_min.z,
         geom.bbox_max.x, geom.bbox_max.y, geom.bbox_max.z);
+
+    // ---- spec 01-uv-capture: summary + per-bucket UV ranges to stderr ----
+    std::fprintf(stderr, "materials: %zu, total tris: %zu\n",
+        loaded.materials.size(), geom.triangle_count);
+    std::fprintf(stderr, "buckets: %zu\n", geom.buckets.size());
+    for (const auto& [idx, b] : geom.buckets) {
+        if (b.has_uvs) {
+            std::fprintf(stderr,
+                "  bucket %d (%s): tris=%zu uvs=yes  u=[%.3f..%.3f] v=[%.3f..%.3f]\n",
+                idx, b.object_name.c_str(), b.triangle_count,
+                b.u_min, b.u_max, b.v_min, b.v_max);
+        } else {
+            std::fprintf(stderr,
+                "  bucket %d (%s): tris=%zu uvs=no\n",
+                idx, b.object_name.c_str(), b.triangle_count);
+        }
+    }
+    for (std::size_t i = 0; i < loaded.materials.size(); ++i) {
+        std::fprintf(stderr, "  material[%zu]: %s\n",
+            i, loaded.materials[i].filename.c_str());
+    }
 
     if (geom.triangle_count == 0) {
         std::fprintf(stderr, "no geometry to render\n");
