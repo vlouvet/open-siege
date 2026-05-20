@@ -27,6 +27,7 @@
 #include "content/dts/renderable_shape_factory.hpp"
 #include "content/dts/darkstar.hpp"
 #include "content/dts/darkstar_structures.hpp"
+#include "content/dml/dml.hpp"
 
 #include "pbmp.hpp"
 #include "ppl.hpp"
@@ -413,6 +414,103 @@ static std::vector<glm::mat4> compute_world_from_locals(
         }
     }
     return world;
+}
+
+// ---------------------- DML metadata view ------------------------------------
+//
+// DML track spec 06 (renderer integration). The Dynamix Material List metadata
+// is parsed by lib3space (studio::content::dts::darkstar::material_list) and
+// surfaced per-material via `renderable_shape::get_materials()[i].metadata` —
+// an opaque `unordered_map<string_view, variant>` keyed by
+// "flags", "alpha", "type", "friction", "elasticity", "useDefaultProperties".
+//
+// `DmlInfo` is the typed projection of that map for fields this viewer cares
+// about. Pulled out into a struct so a future renderer that *does* branch on
+// e.g. surface type or alpha mode has a single place to extend.
+//
+// What we found across the entire Tribes 1.41 corpus (docs/done/03-dml/
+// 00-value-semantics.md and the spec-07 wiki page):
+//
+//   - `flags == 0x00000103` for every valid material (n=4132). The two empty
+//     forms (`0x0000F000` and `0x00000000`) always coincide with `name[0] ==
+//     '\0'`, so the robust empty-slot test is the name check — already covered
+//     by the texture pipeline (spec 08): empty-name materials produce no
+//     texture binding and fall through to flat shading.
+//   - `type` is a 0-14 surface-category enum for *physics & sound* (footstep,
+//     impact spark, friction default). It is NOT a render-mode hint; no
+//     consumer in Open Siege selects shaders by type, and no public spec says
+//     to. Recorded here but does NOT drive the draw path.
+//   - `alpha` is `0.0f` in every shipping record. It is provably not the
+//     multiplicative transparency multiplier (that would render everything
+//     invisible). Treated as opaque metadata — transparency, if any, is keyed
+//     from the bitmap's own 0-magenta / 0-alpha index per PBMP handling.
+//   - `friction` is `1.0f` in every record (4229/4229); `elasticity` takes two
+//     values (`0.5` for terrain, `1.0` for rigid surfaces). These are physics
+//     defaults, not render state.
+//   - `use_default_properties` is `1` in every v4 record. The override path
+//     (==0) was never exercised in ship content.
+//
+// Net runtime impact on this viewer: zero visible behavior change. Spec 05
+// documented this explicitly. The work in spec 06 is *plumbing*: load the
+// metadata onto every BucketGL, log it once at startup, and document that the
+// render path is correct-by-construction (empty slots already skip texture
+// binding via the name check). A future spec that adds, e.g., footstep audio
+// or a per-`type` surface-decal system will consume `DmlInfo.type` here
+// without further parser work.
+struct DmlInfo
+{
+    std::uint32_t flags = 0;        // 0x103 valid, 0xF000 / 0 empty slot
+    std::int32_t  type  = -1;       // surface category, -1 = unknown / v2 record
+    float         alpha = 0.0f;
+    float         friction = 0.0f;
+    float         elasticity = 0.0f;
+    std::uint32_t use_default_properties = 0;
+    bool          present = false;  // false = bucket had no material slot at all
+    bool          empty_slot = false; // true iff filename was empty
+};
+
+// Extract DML fields from a single `sc::material` metadata map. Missing keys
+// (v2 records have no `type` / friction / elasticity) leave defaults in place.
+// Variant lookup is defensive: the parser is allowed to emit either signed or
+// unsigned int for `flags` depending on version, so we accept both.
+static DmlInfo extract_dml_info(const sc::material& mat)
+{
+    DmlInfo info;
+    info.present = true;
+    info.empty_slot = mat.filename.empty();
+
+    auto get_u32 = [&](const char* key, std::uint32_t& out) {
+        auto it = mat.metadata.find(key);
+        if (it == mat.metadata.end()) return;
+        std::visit([&](const auto& v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_integral_v<T>) out = static_cast<std::uint32_t>(v);
+        }, it->second);
+    };
+    auto get_i32 = [&](const char* key, std::int32_t& out) {
+        auto it = mat.metadata.find(key);
+        if (it == mat.metadata.end()) return;
+        std::visit([&](const auto& v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_integral_v<T>) out = static_cast<std::int32_t>(v);
+        }, it->second);
+    };
+    auto get_f32 = [&](const char* key, float& out) {
+        auto it = mat.metadata.find(key);
+        if (it == mat.metadata.end()) return;
+        std::visit([&](const auto& v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_arithmetic_v<T>) out = static_cast<float>(v);
+        }, it->second);
+    };
+
+    get_u32("flags", info.flags);
+    get_f32("alpha", info.alpha);
+    get_i32("type", info.type);
+    get_f32("friction", info.friction);
+    get_f32("elasticity", info.elasticity);
+    get_u32("useDefaultProperties", info.use_default_properties);
+    return info;
 }
 
 // ---------------------- per-material/object mesh bucket ----------------------
@@ -1173,6 +1271,57 @@ int main(int argc, char** argv)
             dts_label.c_str(), n_mat, n_resolved, n_missing);
     }
 
+    // ---- spec 06 (dml track) DML wrapper smoke test ----
+    //
+    // Tribes DTS files in the 1.41 corpus carry their material list as an
+    // inline PERS trailer parsed by lib3space, so the primary path for
+    // metadata is already exercised via `loaded.materials[i].metadata` above.
+    // This block additionally calls the standalone `dml::get_dml_data()`
+    // wrapper against the first sibling `.dml` (if any) found across the
+    // loaded VOLs, so the discoverability wrapper added in commit 0e4724f is
+    // exercised at least once per viewer launch. Pure validation; output is
+    // logged but does not affect rendering.
+    {
+        bool probed = false;
+        for (const auto& vp : sibling_vols) {
+            if (probed) break;
+            std::ifstream vin(vp, std::ios::binary);
+            if (!vin) continue;
+            dv::vol_file_archive plugin;
+            auto listing = plugin.get_content_listing(vin, { vp, vp });
+            for (const auto& entry : listing) {
+                if (probed) break;
+                auto* f = std::get_if<sr::file_info>(&entry);
+                if (!f) continue;
+                std::string name = f->filename.string();
+                std::string lower = name;
+                for (auto& c : lower) c = (char)std::tolower((unsigned char)c);
+                if (lower.size() < 4 || lower.substr(lower.size()-4) != ".dml") continue;
+
+                std::stringstream buf;
+                vin.clear(); vin.seekg(0);
+                plugin.extract_file_contents(vin, *f, buf);
+                auto data = buf.str();
+                std::stringstream ss(data);
+                if (!sc::dml::is_dml(ss)) continue;
+                auto opt = sc::dml::get_dml_data(ss);
+                if (!opt) continue;
+                std::size_t rec_count = std::visit([](const auto& ml) {
+                    return ml.materials.size();
+                }, *opt);
+                std::fprintf(stderr,
+                    "dml: probed %s/%s via dml::get_dml_data() -> %zu records\n",
+                    vp.filename().string().c_str(), name.c_str(), rec_count);
+                probed = true;
+            }
+        }
+        if (!probed) {
+            std::fprintf(stderr,
+                "dml: no standalone .dml found across %zu sibling VOLs (DTS-inline path covers metadata)\n",
+                sibling_vols.size());
+        }
+    }
+
     // ---- spec 02 node hierarchy summary ----
     {
         const auto& nodes = loaded.nodes;
@@ -1568,6 +1717,7 @@ int main(int argc, char** argv)
         int    bucket_id = -1;             // for HUD / logging
         std::string object_name;
         int    material_index = -1;
+        DmlInfo dml = {};                  // spec 06: DML metadata for this bucket's material
     };
     std::vector<BucketGL> bucket_gl;
     bucket_gl.reserve(geom.buckets.size());
@@ -1580,6 +1730,17 @@ int main(int argc, char** argv)
         bg.material_index = bucket.material_index;
         bg.vertex_count = (GLsizei)(bucket.positions.size() / 3);
         bg.node_index = &bucket.vertex_node_index;
+
+        // spec 06 (dml track): plumb the per-material DML metadata onto the
+        // bucket. Multiple buckets may share a single material_index (and via
+        // texture_cache the same GLuint), so the DmlInfo on different
+        // buckets may carry identical values — that's intentional, the
+        // bookkeeping is per-draw because future code may want to set GL
+        // state (blend / alpha-test) per draw, not per texture.
+        if (bg.material_index >= 0
+            && bg.material_index < (int)loaded.materials.size()) {
+            bg.dml = extract_dml_info(loaded.materials[bg.material_index]);
+        }
 
         // Precompute bind-local positions for this bucket.
         bg.bind_local_pos.resize(bucket.positions.size());
@@ -1645,9 +1806,12 @@ int main(int argc, char** argv)
     }
     std::fprintf(stderr, "render: %zu draws/frame\n", bucket_gl.size());
 
-    // Log per-bucket material binding for handoff to DML spec 06 (renderer
-    // integration). One line per bucket: bucket id, object name, material
-    // slot, raw material filename, whether a texture is bound.
+    // Log per-bucket material binding + DML metadata (spec 06, dml track).
+    // One line per bucket: bucket id, object name, material slot, raw
+    // filename, texture-bound flag, then DML fields (flags / type /
+    // elasticity / use_default_properties). Empty slots are flagged so it's
+    // obvious why they fall through to flat shading.
+    std::size_t dml_empty_slot_count = 0;
     for (const auto& bg : bucket_gl) {
         const char* matname = "<none>";
         if (bg.material_index >= 0
@@ -1655,11 +1819,28 @@ int main(int argc, char** argv)
             matname = loaded.materials[bg.material_index].filename.c_str();
             if (*matname == '\0') matname = "<empty>";
         }
-        std::fprintf(stderr,
-            "  draw[%d] obj='%s' mat[%d]='%s' tex=%s\n",
-            bg.bucket_id, bg.object_name.c_str(), bg.material_index,
-            matname, bg.texture ? "yes" : "no(flat)");
+        if (bg.dml.present && bg.dml.empty_slot) ++dml_empty_slot_count;
+        if (bg.dml.present) {
+            std::fprintf(stderr,
+                "  draw[%d] obj='%s' mat[%d]='%s' tex=%s "
+                "dml{flags=0x%04x type=%d elast=%.2f udp=%u%s}\n",
+                bg.bucket_id, bg.object_name.c_str(), bg.material_index,
+                matname, bg.texture ? "yes" : "no(flat)",
+                bg.dml.flags, bg.dml.type, bg.dml.elasticity,
+                bg.dml.use_default_properties,
+                bg.dml.empty_slot ? " EMPTY-SLOT" : "");
+        } else {
+            std::fprintf(stderr,
+                "  draw[%d] obj='%s' mat[%d]='%s' tex=%s dml{absent}\n",
+                bg.bucket_id, bg.object_name.c_str(), bg.material_index,
+                matname, bg.texture ? "yes" : "no(flat)");
+        }
     }
+    std::fprintf(stderr,
+        "dml: %zu / %zu buckets carry metadata, %zu empty-slot (skip-render via name check)\n",
+        std::count_if(bucket_gl.begin(), bucket_gl.end(),
+                      [](const BucketGL& b) { return b.dml.present; }),
+        bucket_gl.size(), dml_empty_slot_count);
 
     GLuint prog = link_program(
         compile_shader(GL_VERTEX_SHADER,   VS_SRC),
@@ -1935,6 +2116,28 @@ int main(int argc, char** argv)
         glActiveTexture(GL_TEXTURE0);
 
         for (auto& bg : bucket_gl) {
+            // spec 06 (dml track): DML-driven render state.
+            //
+            // Per the value-semantics survey in docs/done/03-dml/
+            // 00-value-semantics.md the shipping Tribes corpus exposes no
+            // field that can legitimately drive blending or alpha-cutout:
+            //   - `alpha` is 0.0f everywhere (cannot be a multiplier);
+            //   - `type` is a physics/sound surface category, not a
+            //     render-mode hint;
+            //   - `flags` distinguishes only "valid" (0x103) from
+            //     "empty slot" (0x0000 or 0xF000), with the latter always
+            //     coinciding with empty filename.
+            // So the only DML-driven decision here is the empty-slot skip,
+            // and even that is redundant because spec 08's texture pipeline
+            // already binds 0 (-> flat shading) when the filename is empty.
+            // We keep the check explicit so a future spec that *does* gain a
+            // DML-driven blend/discard path has the obvious hook.
+            if (bg.dml.present && bg.dml.empty_slot) {
+                // Treat as no-texture: nothing to bind, but we still draw
+                // the geometry in flat shading to preserve mesh silhouette.
+                // (No-op vs the current path; documented for clarity.)
+            }
+
             // Skin this bucket into bg.skinned_pos.
             const auto& nidx = *bg.node_index;
             const std::size_t vcount = bg.bind_local_pos.size() / 3;
