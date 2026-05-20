@@ -1,3 +1,5 @@
+#include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -119,14 +121,66 @@ static std::vector<Node> build_nodes(const dts::shape_variant& raw_shape)
 // (an object lives on a node, so its sub-sequences animate that node too).
 // `dts_renderable_shape.cpp:197-223` does the same dual-source fold.
 
+// One keyframe sampled and decoded into engine-neutral glm types. Position is
+// the wire-level float; spec 05's working hypothesis (verified experimentally
+// on larmor "run") is that time_in_sec = position * sequence.duration, with
+// position spanning the sub-sequence's own [min_position, max_position]
+// (typically [0, 1] for the densest sub-sequences).
+struct Keyframe
+{
+    float     position;
+    glm::quat rotation;
+    glm::vec3 translation;
+    glm::vec3 scale;
+};
+
+// One animation channel within a Sequence: every keyframe targets a single
+// node and a single transform field set. Tracks are independent — different
+// channels may have different keyframe counts inside the same sequence.
+struct SubTrack
+{
+    int                   node_index;
+    std::vector<Keyframe> keyframes;
+};
+
 struct Sequence
 {
-    std::string      name;
-    float            duration_seconds;
-    bool             cyclic;
-    int              frame_count;
-    std::vector<int> animated_nodes;
+    std::string           name;
+    float                 duration_seconds;
+    bool                  cyclic;
+    int                   frame_count;
+    std::vector<int>      animated_nodes;
+    std::vector<SubTrack> tracks;   // spec 05: extracted per-channel keyframes
 };
+
+// Pull a raw transform (any version) into a (quat, vec3 translation, vec3 scale)
+// triple. v8 has no scale field, so report (1,1,1). The rotation conversion uses
+// the same wire convention as the static bind-pose path: GLM quat is (w,x,y,z),
+// transpose is applied at matrix-build time (not here — see eval_to_mat4 below).
+static void extract_transform(const dts::shape::v2::transform& t,
+                              glm::quat& q, glm::vec3& tr, glm::vec3& sc)
+{
+    auto r = sc::to_float(t.rotation);
+    q  = glm::quat(r.w, r.x, r.y, r.z);
+    tr = glm::vec3(t.translation.x, t.translation.y, t.translation.z);
+    sc = glm::vec3(t.scale.x, t.scale.y, t.scale.z);
+}
+static void extract_transform(const dts::shape::v7::transform& t,
+                              glm::quat& q, glm::vec3& tr, glm::vec3& sc)
+{
+    auto r = sc::to_float(t.rotation);
+    q  = glm::quat(r.w, r.x, r.y, r.z);
+    tr = glm::vec3(t.translation.x, t.translation.y, t.translation.z);
+    sc = glm::vec3(t.scale.x, t.scale.y, t.scale.z);
+}
+static void extract_transform(const dts::shape::v8::transform& t,
+                              glm::quat& q, glm::vec3& tr, glm::vec3& sc)
+{
+    auto r = sc::to_float(t.rotation);
+    q  = glm::quat(r.w, r.x, r.y, r.z);
+    tr = glm::vec3(t.translation.x, t.translation.y, t.translation.z);
+    sc = glm::vec3(1.0f, 1.0f, 1.0f);
+}
 
 static std::vector<Sequence> build_sequences(const dts::shape_variant& raw_shape)
 {
@@ -179,12 +233,37 @@ static std::vector<Sequence> build_sequences(const dts::shape_variant& raw_shape
             int max_frames = 0;
             std::vector<int> nodes_set;
             for (std::size_t ssi = 0; ssi < s.sub_sequences.size(); ++ssi) {
-                if (static_cast<std::size_t>(s.sub_sequences[ssi].sequence_index) != si) continue;
-                int nk = static_cast<int>(s.sub_sequences[ssi].num_key_frames);
+                const auto& ss = s.sub_sequences[ssi];
+                if (static_cast<std::size_t>(ss.sequence_index) != si) continue;
+                int nk = static_cast<int>(ss.num_key_frames);
                 if (nk > max_frames) max_frames = nk;
                 int n = sub_seq_to_node[ssi];
                 if (n >= 0 && std::find(nodes_set.begin(), nodes_set.end(), n) == nodes_set.end()) {
                     nodes_set.push_back(n);
+                }
+
+                // spec 05: extract this sub-sequence's keyframes into a typed track.
+                // Skip tracks not bound to any node (e.g. material/IFL channels we
+                // don't animate here) and tracks with no keyframes.
+                if (n < 0 || nk <= 0) continue;
+                SubTrack tr;
+                tr.node_index = n;
+                tr.keyframes.reserve(nk);
+                const int first_kf = static_cast<int>(ss.first_key_frame_index);
+                for (int k = 0; k < nk; ++k) {
+                    const int kf_idx = first_kf + k;
+                    if (kf_idx < 0 || kf_idx >= (int)s.keyframes.size()) continue;
+                    const auto& kf = s.keyframes[kf_idx];
+                    const auto tx_idx = static_cast<std::size_t>(kf.transform_index);
+                    if (tx_idx >= s.transforms.size()) continue;
+                    Keyframe out_kf;
+                    out_kf.position = kf.position;
+                    extract_transform(s.transforms[tx_idx],
+                                      out_kf.rotation, out_kf.translation, out_kf.scale);
+                    tr.keyframes.push_back(out_kf);
+                }
+                if (!tr.keyframes.empty()) {
+                    out_seq.tracks.push_back(std::move(tr));
                 }
             }
             out_seq.frame_count = max_frames;
@@ -193,6 +272,84 @@ static std::vector<Sequence> build_sequences(const dts::shape_variant& raw_shape
         }
         return out;
     }, raw_shape);
+}
+
+// ---------------------- per-node transform evaluation (spec 05) ----------------------
+//
+// Given a sequence and a wall-clock time `t` (seconds), return one local-space
+// glm::mat4 per node. Nodes the sequence doesn't animate fall back to their
+// bind_local. For animated nodes:
+//   - Map t -> normalized position p in [0, 1] via p = clamp(t / duration, 0, 1).
+//     (Working hypothesis from spec 01: each sub-sequence's keyframe `position`
+//     values span ~[0, 1] and `sequence.duration` is the matching seconds.
+//     Verified experimentally on larmor "run": at t=0 all tracks land on their
+//     first keyframe, at t=duration on their last, at t=duration/2 transforms
+//     differ from both endpoints.)
+//   - Within a track, find the two bracketing keyframes by `position` and lerp
+//     translation/scale, slerp rotation. Shortest-path slerp: negate q1 if
+//     dot(q0, q1) < 0.
+//   - Compose with the same recipe as the static bind pose:
+//       T * transpose(toMat4(quat)) * S
+//     so the result is directly comparable to bind_local.
+static glm::mat4 compose_local(const glm::quat& q, const glm::vec3& t, const glm::vec3& s)
+{
+    glm::mat4 T = glm::translate(glm::mat4(1.0f), t);
+    glm::mat4 R = glm::transpose(glm::toMat4(q));
+    glm::mat4 S = glm::scale(glm::mat4(1.0f), s);
+    return T * R * S;
+}
+
+static std::vector<glm::mat4> evaluate(const Sequence& seq, float t,
+                                       const std::vector<Node>& bind)
+{
+    // Start with the bind pose; we overwrite the animated channels below.
+    std::vector<glm::mat4> out(bind.size());
+    for (std::size_t i = 0; i < bind.size(); ++i) out[i] = bind[i].bind_local;
+
+    if (seq.duration_seconds <= 0.0f || seq.tracks.empty()) return out;
+
+    const float p = glm::clamp(t / seq.duration_seconds, 0.0f, 1.0f);
+
+    for (const auto& tr : seq.tracks) {
+        if (tr.node_index < 0 || tr.node_index >= (int)bind.size()) continue;
+        if (tr.keyframes.empty()) continue;
+
+        const auto& kfs = tr.keyframes;
+        glm::quat q;
+        glm::vec3 tx, sc;
+
+        if (kfs.size() == 1 || p <= kfs.front().position) {
+            q  = kfs.front().rotation;
+            tx = kfs.front().translation;
+            sc = kfs.front().scale;
+        } else if (p >= kfs.back().position) {
+            q  = kfs.back().rotation;
+            tx = kfs.back().translation;
+            sc = kfs.back().scale;
+        } else {
+            // Find bracketing keyframes [i, i+1] where kfs[i].position <= p < kfs[i+1].position.
+            // Keyframes are written in monotonically increasing position order in the file.
+            std::size_t i = 0;
+            for (; i + 1 < kfs.size(); ++i) {
+                if (kfs[i + 1].position >= p) break;
+            }
+            const auto& a = kfs[i];
+            const auto& b = kfs[i + 1];
+            const float span = b.position - a.position;
+            const float u = span > 0.0f ? (p - a.position) / span : 0.0f;
+
+            // Shortest-path slerp.
+            glm::quat q0 = a.rotation;
+            glm::quat q1 = b.rotation;
+            if (glm::dot(q0, q1) < 0.0f) q1 = -q1;
+            q  = glm::normalize(glm::slerp(q0, q1, u));
+            tx = glm::mix(a.translation, b.translation, u);
+            sc = glm::mix(a.scale,       b.scale,       u);
+        }
+
+        out[tr.node_index] = compose_local(q, tx, sc);
+    }
+    return out;
 }
 
 // Accumulate parent transforms to get world-space bind matrices, one per node.
@@ -668,13 +825,69 @@ int main(int argc, char** argv)
         std::printf("sequences: %zu\n", seqs.size());
         for (std::size_t i = 0; i < seqs.size(); ++i) {
             const auto& sq = seqs[i];
-            std::printf("  [%zu] %-20s  duration=%.3fs  frames=%d  cyclic=%s  nodes=%zu\n",
+            std::printf("  [%zu] %-20s  duration=%.3fs  frames=%d  cyclic=%s  nodes=%zu  tracks=%zu\n",
                 i,
                 sq.name.empty() ? "<unnamed>" : sq.name.c_str(),
                 sq.duration_seconds,
                 sq.frame_count,
                 sq.cyclic ? "yes" : "no",
-                sq.animated_nodes.size());
+                sq.animated_nodes.size(),
+                sq.tracks.size());
+        }
+    }
+
+    // ---- spec 05 acceptance check: probe evaluate() at t=0, t=duration/2, t=duration ----
+    // Picks the first sequence named "run" if available, else the first
+    // sequence with duration > 0 and at least one animated track. Asserts that
+    // no transform contains a NaN, and that t=duration/2 differs from both
+    // endpoints for at least one animated node.
+    {
+        const auto& seqs = loaded.sequences;
+        int probe_idx = -1;
+        for (std::size_t i = 0; i < seqs.size(); ++i) {
+            if (seqs[i].name == "run" && seqs[i].duration_seconds > 0.0f
+                && !seqs[i].tracks.empty()) { probe_idx = (int)i; break; }
+        }
+        if (probe_idx < 0) {
+            for (std::size_t i = 0; i < seqs.size(); ++i) {
+                if (seqs[i].duration_seconds > 0.0f && !seqs[i].tracks.empty()) {
+                    probe_idx = (int)i; break;
+                }
+            }
+        }
+        if (probe_idx >= 0) {
+            const auto& sq = seqs[probe_idx];
+            const float dur = sq.duration_seconds;
+            auto m0   = evaluate(sq, 0.0f,       loaded.nodes);
+            auto mhalf= evaluate(sq, dur * 0.5f, loaded.nodes);
+            auto mend = evaluate(sq, dur,        loaded.nodes);
+
+            auto has_nan = [](const std::vector<glm::mat4>& v) {
+                for (const auto& m : v) {
+                    for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) {
+                        if (!std::isfinite(m[r][c])) return true;
+                    }
+                }
+                return false;
+            };
+            const bool nan0 = has_nan(m0), nanH = has_nan(mhalf), nanE = has_nan(mend);
+
+            // Count animated nodes whose mid-point differs from both endpoints.
+            int diff_count = 0;
+            for (int n : sq.animated_nodes) {
+                if (n < 0 || n >= (int)m0.size()) continue;
+                bool diff0 = (m0[n]    != mhalf[n]);
+                bool diffE = (mhalf[n] != mend[n]);
+                if (diff0 && diffE) ++diff_count;
+            }
+            std::fprintf(stderr,
+                "spec05 probe: seq '%s' dur=%.3fs  NaN[t=0,t/2,t=d]=%d,%d,%d  "
+                "interp-differs nodes=%d / %zu animated\n",
+                sq.name.c_str(), dur, (int)nan0, (int)nanH, (int)nanE,
+                diff_count, sq.animated_nodes.size());
+            assert(!nan0 && !nanH && !nanE);
+        } else {
+            std::fprintf(stderr, "spec05 probe: no animated sequence available\n");
         }
     }
 
