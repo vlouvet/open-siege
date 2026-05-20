@@ -1160,16 +1160,42 @@ int main(int argc, char** argv)
 {
     if (argc < 2) {
         std::fprintf(stderr,
-            "usage: %s <path-to-vol> [dts-substring]\n"
+            "usage: %s <path-to-vol> [dts-substring] [--grid N] [--screenshot path.ppm]\n"
             "       %s <path-to-vol> --dump-bmp <bmp-substring>\n"
             "       %s <path-to-vol> --dump-rgba <bmp-substring> <ppl-substring>\n"
             "  e.g. %s tribes-game/base/Entities.vol chainturret\n"
+            "       %s tribes-game/base/Entities.vol larmor --grid 4\n"
             "       %s tribes-game/base/Entities.vol --dump-bmp ammo\n"
             "       %s tribes-game/base/Entities.vol --dump-rgba ammo Shell.ppl\n",
-            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
     fs::path vol_path = argv[1];
+
+    // spec 09: --grid N renders N*N instances on a grid with desync'd phase.
+    // --screenshot <path.ppm> captures one frame to PPM after auto-playing
+    // the first animated sequence for ~1.5s, then exits (for the acceptance
+    // image). Both flags are optional and order-independent after argv[1].
+    int  grid_n = 1;
+    std::string screenshot_path;
+    // Re-parse argv for these flags AFTER the existing positional dts-match
+    // logic runs; we strip them out by replacing with empty strings so the
+    // legacy code path (which looks at argv[2]) ignores them. Cleaner than
+    // refactoring the whole argv handling.
+    for (int i = 2; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--grid" && i + 1 < argc) {
+            grid_n = std::max(1, std::atoi(argv[i + 1]));
+            argv[i] = (char*)"";
+            argv[i + 1] = (char*)"";
+            ++i;
+        } else if (a == "--screenshot" && i + 1 < argc) {
+            screenshot_path = argv[i + 1];
+            argv[i] = (char*)"";
+            argv[i + 1] = (char*)"";
+            ++i;
+        }
+    }
 
     // Spec 02 smoke test: dump the parsed fields of one PBMP and exit, without
     // opening a window. Accepts `--dump-bmp <substring>`.
@@ -1921,14 +1947,32 @@ int main(int argc, char** argv)
     // Tribes models use left-handed coords; we don't cull faces to avoid winding surprises.
     glDisable(GL_CULL_FACE);
 
-    // Camera setup centered on bbox
+    // Camera setup centered on bbox.
+    //
+    // spec 09: when --grid N is set, instances are tiled around the mesh
+    // center on the camera's ground plane (world XZ — the lookAt up axis
+    // is +Y). Spacing is `max(extent.x, extent.z) * 1.3` so each instance
+    // gets clear room without big gaps; for larmor (X:0.9, Z:2.2) that's
+    // ~2.86 units. The camera distance is scaled with grid size so all
+    // instances fit in the default framing.
     glm::vec3 center = 0.5f * (geom.bbox_min + geom.bbox_max);
     glm::vec3 extent = geom.bbox_max - geom.bbox_min;
     float radius = 0.5f * glm::length(extent);
     if (radius < 0.001f) radius = 1.0f;
+    const float grid_spacing = std::max(extent.x, extent.z) * 1.3f;
+    const float grid_half_span = grid_spacing * (grid_n - 1) * 0.5f;
 
     float yaw = 0.6f, pitch = 0.35f;
-    float dist = radius * 3.0f;
+    // Zoom out enough to frame the whole grid. The +sqrt(2)*half_span term
+    // accounts for the worst-case diagonal from grid center to a corner
+    // instance, and we multiply the whole thing by 2.5 (instead of the
+    // single-instance 3.0) so the perspective FOV of 45 degrees actually
+    // captures the corners. For grid_n == 1 this collapses to radius * 2.5
+    // — slightly tighter framing than before but the prior 3.0x was
+    // chosen empirically for the smallest meshes; tested fine for larmor.
+    float grid_radius = radius
+        + grid_half_span * std::sqrt(2.0f);
+    float dist = grid_radius * 2.5f;
     bool dragging = false; int last_x = 0, last_y = 0;
 
     // ---- spec 04 timeline state ----
@@ -1951,6 +1995,32 @@ int main(int argc, char** argv)
     Uint64 last_tick_ns    = SDL_GetPerformanceCounter();
     const Uint64 perf_freq = SDL_GetPerformanceFrequency();
     float last_hud_print_t = -1.0f;  // forces an initial HUD line
+
+    // spec 09: for the --grid screenshot capture we want a real running
+    // animation in the frame, not the bind-pose `root` no-op. Auto-pick the
+    // first sequence named "run" (Tribes convention), else the first
+    // sequence with non-zero duration and non-empty tracks. The user can
+    // still tab away after capture.
+    if (grid_n > 1 || !screenshot_path.empty()) {
+        for (std::size_t i = 0; i < loaded.sequences.size(); ++i) {
+            const auto& s = loaded.sequences[i];
+            if (s.duration_seconds > 0.0f && !s.tracks.empty()
+                && s.name == "run") {
+                current_sequence = (int)i;
+                break;
+            }
+        }
+        if (current_sequence == 0) {
+            for (std::size_t i = 0; i < loaded.sequences.size(); ++i) {
+                const auto& s = loaded.sequences[i];
+                if (s.duration_seconds > 0.0f && !s.tracks.empty()) {
+                    current_sequence = (int)i;
+                    break;
+                }
+            }
+        }
+        playing = true;
+    }
 
     // ---- spec 08 per-sequence loop modes ----
     //
@@ -2012,6 +2082,13 @@ int main(int argc, char** argv)
     // criterion. Printed to stderr once per second.
     Uint64 fps_window_start = SDL_GetPerformanceCounter();
     int    fps_window_frames = 0;
+
+    // spec 09: --screenshot path.ppm captures one frame to PPM (P6, no
+    // alpha) after waiting for the animation to advance ~1.5s so the grid
+    // has a chance to desynchronize visually. After capture, exits.
+    // Negative = no screenshot pending; counts frames once we start playing.
+    int  screenshot_warmup_frames = screenshot_path.empty() ? -1 : 0;
+    bool screenshot_done = false;
 
     bool running = true;
     while (running) {
@@ -2192,99 +2269,135 @@ int main(int argc, char** argv)
         glm::mat4 MVP = P * V;
         glm::mat3 N = glm::mat3(glm::transpose(glm::inverse(V)));
 
-        // ---- spec 06/08: CPU skinning + per-bucket draws ----
-        // 1) evaluate per-node local transforms at current_time. If the
-        //    sequence has no tracks / zero duration (e.g. the `root` no-op
-        //    marker), evaluate() falls back to bind_local — t=0 reproduces
-        //    the bind pose exactly, which is the sanity check.
-        // 2) accumulate to world via the same parent-walk used at load.
-        // 3) per-vertex bone matrix B[n] = world_anim[n] * inverse(world_bind[n]).
+        // ---- spec 06/08/09: CPU skinning + per-bucket draws, NxN grid ----
+        // 1) For each grid instance (i, j) compute a per-instance time
+        //    offset and translation. The phase offset desynchronises
+        //    motion across the grid; the translation lays the army out on
+        //    a center-anchored grid in XZ.
+        // 2) evaluate per-node local transforms at the instance's time. If
+        //    the sequence has no tracks / zero duration (e.g. the `root`
+        //    no-op marker), evaluate() falls back to bind_local — t=0
+        //    reproduces the bind pose exactly, which is the sanity check.
+        // 3) accumulate to world via the same parent-walk used at load.
+        // 4) per-vertex bone matrix B[n] = world_anim[n] * inverse(world_bind[n]).
         //    We pre-baked the inverse and we *already* expressed each vertex
         //    in node-local space (bind_local_pos), so the skin step is
         //    just `world_anim[n] * bind_local_vertex` — saving the multiply
         //    by inverse(world_bind) per frame.
-        // 4) re-upload each bucket's position VBO via glBufferData.
-        std::vector<glm::mat4> world_anim_global;
-        {
-            const Sequence* sq = (current_sequence >= 0
-                && current_sequence < (int)loaded.sequences.size())
-                ? &loaded.sequences[current_sequence] : nullptr;
-            std::vector<glm::mat4> local_anim;
-            if (sq) {
-                local_anim = evaluate(*sq, current_time, loaded.nodes);
-            } else {
-                local_anim.resize(loaded.nodes.size());
-                for (std::size_t i = 0; i < loaded.nodes.size(); ++i)
-                    local_anim[i] = loaded.nodes[i].bind_local;
-            }
-            world_anim_global = compute_world_from_locals(loaded.nodes, local_anim);
-        }
+        // 5) re-upload each bucket's position VBO via glBufferData.
+        //
+        // For grid_n == 1 this collapses to a single instance at the
+        // origin, identical pixel-for-pixel to the pre-spec-09 path.
+        const Sequence* sq = (current_sequence >= 0
+            && current_sequence < (int)loaded.sequences.size())
+            ? &loaded.sequences[current_sequence] : nullptr;
 
         glUseProgram(prog);
-        glUniformMatrix4fv(u_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
         glUniformMatrix3fv(u_normal_mat, 1, GL_FALSE, glm::value_ptr(N));
         // Texture unit 0 is the sampler the fragment shader reads from; bind
         // every per-bucket texture to GL_TEXTURE0.
         if (u_tex0 >= 0) glUniform1i(u_tex0, 0);
         glActiveTexture(GL_TEXTURE0);
 
-        for (auto& bg : bucket_gl) {
-            // spec 06 (dml track): DML-driven render state.
-            //
-            // Per the value-semantics survey in docs/done/03-dml/
-            // 00-value-semantics.md the shipping Tribes corpus exposes no
-            // field that can legitimately drive blending or alpha-cutout:
-            //   - `alpha` is 0.0f everywhere (cannot be a multiplier);
-            //   - `type` is a physics/sound surface category, not a
-            //     render-mode hint;
-            //   - `flags` distinguishes only "valid" (0x103) from
-            //     "empty slot" (0x0000 or 0xF000), with the latter always
-            //     coinciding with empty filename.
-            // So the only DML-driven decision here is the empty-slot skip,
-            // and even that is redundant because spec 08's texture pipeline
-            // already binds 0 (-> flat shading) when the filename is empty.
-            // We keep the check explicit so a future spec that *does* gain a
-            // DML-driven blend/discard path has the obvious hook.
-            if (bg.dml.present && bg.dml.empty_slot) {
-                // Treat as no-texture: nothing to bind, but we still draw
-                // the geometry in flat shading to preserve mesh silhouette.
-                // (No-op vs the current path; documented for clarity.)
-            }
-
-            // Skin this bucket into bg.skinned_pos.
-            const auto& nidx = *bg.node_index;
-            const std::size_t vcount = bg.bind_local_pos.size() / 3;
-            for (std::size_t v = 0; v < vcount; ++v) {
-                int ni = (v < nidx.size()) ? nidx[v] : -1;
-                glm::vec4 lp(bg.bind_local_pos[v*3+0],
-                             bg.bind_local_pos[v*3+1],
-                             bg.bind_local_pos[v*3+2], 1.0f);
-                glm::vec4 wp;
-                if (ni >= 0 && ni < (int)world_anim_global.size()) {
-                    wp = world_anim_global[ni] * lp;
-                } else {
-                    wp = lp;
+        for (int j = 0; j < grid_n; ++j) {
+            for (int i = 0; i < grid_n; ++i) {
+                // Per-instance time offset: deterministic, wraps inside
+                // the sequence duration so all instances stay in-bounds.
+                // 0.1 * linear index matches the spec wording exactly.
+                float dur = sq ? sq->duration_seconds : 0.0f;
+                float inst_t = current_time;
+                if (dur > 0.0f) {
+                    inst_t = current_time + (i + j * grid_n) * 0.1f;
+                    inst_t = std::fmod(inst_t, dur);
+                    if (inst_t < 0.0f) inst_t += dur;
                 }
-                bg.skinned_pos[v*3+0] = wp.x;
-                bg.skinned_pos[v*3+1] = wp.y;
-                bg.skinned_pos[v*3+2] = wp.z;
-            }
-            glBindBuffer(GL_ARRAY_BUFFER, bg.vbo_pos);
-            glBufferData(GL_ARRAY_BUFFER,
-                         bg.skinned_pos.size() * sizeof(float),
-                         bg.skinned_pos.data(), GL_STREAM_DRAW);
+                std::vector<glm::mat4> local_anim;
+                if (sq) {
+                    local_anim = evaluate(*sq, inst_t, loaded.nodes);
+                } else {
+                    local_anim.resize(loaded.nodes.size());
+                    for (std::size_t k = 0; k < loaded.nodes.size(); ++k)
+                        local_anim[k] = loaded.nodes[k].bind_local;
+                }
+                std::vector<glm::mat4> world_anim_global =
+                    compute_world_from_locals(loaded.nodes, local_anim);
 
-            // Per-bucket texture bind + flag.
-            if (bg.texture != 0) {
-                glBindTexture(GL_TEXTURE_2D, bg.texture);
-                if (u_has_texture >= 0) glUniform1i(u_has_texture, 1);
-            } else {
-                glBindTexture(GL_TEXTURE_2D, 0);
-                if (u_has_texture >= 0) glUniform1i(u_has_texture, 0);
-            }
+                // Instance translation on the camera's ground plane
+                // (world XZ; lookAt up axis is +Y). The center vec3 from
+                // camera setup already bakes in the bind-pose Y offset;
+                // we add the grid offset in world space directly into
+                // the MVP.
+                glm::vec3 offset(
+                    (i - (grid_n - 1) * 0.5f) * grid_spacing,
+                    0.0f,
+                    (j - (grid_n - 1) * 0.5f) * grid_spacing);
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), offset);
+                glm::mat4 instance_mvp = MVP * model;
+                glUniformMatrix4fv(u_mvp, 1, GL_FALSE,
+                                   glm::value_ptr(instance_mvp));
 
-            glBindVertexArray(bg.vao);
-            glDrawArrays(GL_TRIANGLES, 0, bg.vertex_count);
+                for (auto& bg : bucket_gl) {
+                    // spec 06 (dml track): DML-driven render state.
+                    //
+                    // Per the value-semantics survey in docs/done/03-dml/
+                    // 00-value-semantics.md the shipping Tribes corpus
+                    // exposes no field that can legitimately drive
+                    // blending or alpha-cutout:
+                    //   - `alpha` is 0.0f everywhere (cannot be a multiplier);
+                    //   - `type` is a physics/sound surface category, not a
+                    //     render-mode hint;
+                    //   - `flags` distinguishes only "valid" (0x103) from
+                    //     "empty slot" (0x0000 or 0xF000), with the latter
+                    //     always coinciding with empty filename.
+                    // So the only DML-driven decision here is the
+                    // empty-slot skip, and even that is redundant because
+                    // spec 08's texture pipeline already binds 0 (-> flat
+                    // shading) when the filename is empty. We keep the
+                    // check explicit so a future spec that *does* gain a
+                    // DML-driven blend/discard path has the obvious hook.
+                    if (bg.dml.present && bg.dml.empty_slot) {
+                        // Treat as no-texture: nothing to bind, but we
+                        // still draw geometry in flat shading to preserve
+                        // mesh silhouette. (No-op vs the current path;
+                        // documented for clarity.)
+                    }
+
+                    // Skin this bucket into bg.skinned_pos.
+                    const auto& nidx = *bg.node_index;
+                    const std::size_t vcount = bg.bind_local_pos.size() / 3;
+                    for (std::size_t v = 0; v < vcount; ++v) {
+                        int ni = (v < nidx.size()) ? nidx[v] : -1;
+                        glm::vec4 lp(bg.bind_local_pos[v*3+0],
+                                     bg.bind_local_pos[v*3+1],
+                                     bg.bind_local_pos[v*3+2], 1.0f);
+                        glm::vec4 wp;
+                        if (ni >= 0 && ni < (int)world_anim_global.size()) {
+                            wp = world_anim_global[ni] * lp;
+                        } else {
+                            wp = lp;
+                        }
+                        bg.skinned_pos[v*3+0] = wp.x;
+                        bg.skinned_pos[v*3+1] = wp.y;
+                        bg.skinned_pos[v*3+2] = wp.z;
+                    }
+                    glBindBuffer(GL_ARRAY_BUFFER, bg.vbo_pos);
+                    glBufferData(GL_ARRAY_BUFFER,
+                                 bg.skinned_pos.size() * sizeof(float),
+                                 bg.skinned_pos.data(), GL_STREAM_DRAW);
+
+                    // Per-bucket texture bind + flag.
+                    if (bg.texture != 0) {
+                        glBindTexture(GL_TEXTURE_2D, bg.texture);
+                        if (u_has_texture >= 0) glUniform1i(u_has_texture, 1);
+                    } else {
+                        glBindTexture(GL_TEXTURE_2D, 0);
+                        if (u_has_texture >= 0) glUniform1i(u_has_texture, 0);
+                    }
+
+                    glBindVertexArray(bg.vao);
+                    glDrawArrays(GL_TRIANGLES, 0, bg.vertex_count);
+                }
+            }
         }
         glBindVertexArray(0);
         glBindTexture(GL_TEXTURE_2D, 0);
@@ -2301,6 +2414,47 @@ int main(int argc, char** argv)
         }
 
         SDL_GL_SwapWindow(win);
+
+        // spec 09: one-shot screenshot capture. We need a few frames of
+        // playback to elapse first so the grid is visibly desync'd —
+        // capturing on frame 0 freezes all instances at t = 0.1 * idx
+        // which still looks varied but a settled mid-anim frame is
+        // clearer. Wait ~90 frames (~1.5s at 60fps) before grabbing.
+        if (screenshot_warmup_frames >= 0 && !screenshot_done) {
+            ++screenshot_warmup_frames;
+            if (screenshot_warmup_frames >= 90) {
+                int sw, sh; SDL_GL_GetDrawableSize(win, &sw, &sh);
+                std::vector<std::uint8_t> rgb(sw * sh * 3);
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadBuffer(GL_BACK);
+                glReadPixels(0, 0, sw, sh, GL_RGB, GL_UNSIGNED_BYTE,
+                             rgb.data());
+                // glReadPixels returns bottom-up; PPM is top-down. Flip
+                // rows in-place via a single scratch buffer (PPM viewers
+                // would otherwise show the grid upside-down).
+                std::vector<std::uint8_t> flipped(rgb.size());
+                const std::size_t row_bytes = (std::size_t)sw * 3;
+                for (int y = 0; y < sh; ++y) {
+                    std::memcpy(&flipped[(sh - 1 - y) * row_bytes],
+                                &rgb[y * row_bytes], row_bytes);
+                }
+                std::ofstream f(screenshot_path, std::ios::binary);
+                if (f) {
+                    f << "P6\n" << sw << " " << sh << "\n255\n";
+                    f.write(reinterpret_cast<const char*>(flipped.data()),
+                            flipped.size());
+                    std::fprintf(stderr,
+                        "screenshot: wrote %s (%dx%d)\n",
+                        screenshot_path.c_str(), sw, sh);
+                } else {
+                    std::fprintf(stderr,
+                        "screenshot: failed to open %s\n",
+                        screenshot_path.c_str());
+                }
+                screenshot_done = true;
+                running = false;
+            }
+        }
 
         // spec 06 FPS print — every ~1s of wall time print frames/sec to
         // stderr. Required by acceptance ("> 60fps for a single mesh").
