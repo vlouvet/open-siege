@@ -125,20 +125,56 @@ static void cmd_dts(const fs::path& vol_path)
     std::cout << "\n--- DTS: " << ok << "/" << total_dts << " parsed cleanly, " << fail << " failed ---\n";
 }
 
+static void cmd_extract(const fs::path& vol_path, const std::string& name_substr, const fs::path& out_dir)
+{
+    std::ifstream in(vol_path, std::ios::binary);
+    dv::vol_file_archive plugin;
+    if (!plugin.stream_is_supported(in)) {
+        std::fprintf(stderr, "not a darkstar VOL: %s\n", vol_path.c_str());
+        std::exit(3);
+    }
+    fs::create_directories(out_dir);
+    in.clear(); in.seekg(0);
+    auto all = sr::get_all_content(vol_path, in, plugin);
+    std::size_t count = 0;
+    for (auto& entry : all) {
+        auto* f = std::get_if<sr::file_info>(&entry);
+        if (!f) continue;
+        auto name = f->filename.string();
+        auto lower = name;
+        for (auto& c : lower) c = std::tolower((unsigned char)c);
+        if (!name_substr.empty() && lower.find(name_substr) == std::string::npos) continue;
+
+        fs::path dst = out_dir / f->filename.filename();
+        std::ofstream o(dst, std::ios::binary);
+        in.clear(); in.seekg(0);
+        plugin.extract_file_contents(in, *f, o);
+        ++count;
+        std::printf("  %s -> %s (%zu bytes)\n", name.c_str(), dst.c_str(), f->size);
+    }
+    std::printf("--- extracted %zu files ---\n", count);
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2) {
         std::fprintf(stderr,
             "usage:\n"
-            "  %s <vol>          # list files\n"
-            "  %s --dts <vol>    # parse every .dts inside, report geometry\n",
-            argv[0], argv[0]);
+            "  %s <vol>                                  # list files\n"
+            "  %s --dts <vol>                            # parse every .dts inside\n"
+            "  %s --extract <vol> <substr> <out-dir>     # extract files whose name contains substr\n",
+            argv[0], argv[0], argv[0]);
         return 1;
     }
 
     if (std::string(argv[1]) == "--dts") {
         if (argc < 3) { std::fprintf(stderr, "missing vol path\n"); return 1; }
         cmd_dts(argv[2]);
+    } else if (std::string(argv[1]) == "--extract") {
+        if (argc < 5) { std::fprintf(stderr, "usage: --extract <vol> <substr> <out-dir>\n"); return 1; }
+        std::string s = argv[3];
+        for (auto& c : s) c = std::tolower((unsigned char)c);
+        cmd_extract(argv[2], s, argv[4]);
     } else {
         cmd_list(argv[1]);
     }
