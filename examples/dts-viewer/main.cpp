@@ -1913,7 +1913,7 @@ int main(int argc, char** argv)
                     (int)(bone_vertex_count / 2));
     }
 
-    std::printf("keys: Space=play/pause  Left/Right=scrub +/-0.05s  R=reset  Tab=next seq (Shift+Tab=prev)  1-9=pick seq by index  B=bones  Q/Esc=quit\n");
+    std::printf("keys: Space=play/pause  Left/Right=scrub +/-0.05s  R=reset  Tab=next seq (Shift+Tab=prev)  1-9=pick seq by index  L=cycle loop mode  B=bones  Q/Esc=quit\n");
     bool show_bones = false;
 
     glEnable(GL_DEPTH_TEST);
@@ -1952,6 +1952,43 @@ int main(int argc, char** argv)
     const Uint64 perf_freq = SDL_GetPerformanceFrequency();
     float last_hud_print_t = -1.0f;  // forces an initial HUD line
 
+    // ---- spec 08 per-sequence loop modes ----
+    //
+    // Three behaviours when the play head reaches `duration`:
+    //   Loop     — wrap to 0 (current behaviour; right for run/walk/idle)
+    //   Hold     — clamp at duration, pause implicitly (right for death/jet)
+    //   PingPong — reverse direction at endpoints
+    //
+    // The DTS file encodes `cyclic` per raw sequence (spec 03 / spec 01
+    // findings), surfaced on our `Sequence` struct. Treat `cyclic == true`
+    // as the Loop default and `cyclic == false` as Hold; the user can
+    // override either with `L` to cycle Loop -> Hold -> PingPong -> Loop.
+    // Mode state is stored per-sequence so toggling on one doesn't reset
+    // another; size matches loaded.sequences.size().
+    //
+    // PingPong needs a per-sequence direction sign (+1 forward, -1 back),
+    // independent of `playing`. Reset to +1 whenever the sequence changes
+    // or `R` is pressed so the next playback starts moving forward.
+    enum class LoopMode : int { Loop = 0, Hold = 1, PingPong = 2 };
+    std::vector<LoopMode> seq_mode(loaded.sequences.size(), LoopMode::Hold);
+    for (std::size_t i = 0; i < loaded.sequences.size(); ++i) {
+        seq_mode[i] = loaded.sequences[i].cyclic ? LoopMode::Loop : LoopMode::Hold;
+    }
+    int playback_dir = 1; // for PingPong; +1 forward, -1 reverse
+    auto mode_name = [](LoopMode m) {
+        switch (m) {
+            case LoopMode::Loop:     return "loop";
+            case LoopMode::Hold:     return "hold";
+            case LoopMode::PingPong: return "pingpong";
+        }
+        return "?";
+    };
+    auto current_mode = [&]() -> LoopMode {
+        if (current_sequence < 0
+            || current_sequence >= (int)seq_mode.size()) return LoopMode::Loop;
+        return seq_mode[current_sequence];
+    };
+
     auto seq_duration = [&](int idx) -> float {
         if (idx < 0 || idx >= (int)loaded.sequences.size()) return 0.0f;
         return loaded.sequences[idx].duration_seconds;
@@ -1962,9 +1999,10 @@ int main(int argc, char** argv)
         return s.name.empty() ? "<unnamed>" : s.name.c_str();
     };
     auto print_hud = [&]() {
-        std::fprintf(stderr, "seq[%d]: %s  t: %.3fs / %.3fs  %s\n",
+        std::fprintf(stderr, "seq[%d]: %s  t: %.3fs / %.3fs  mode=%s  %s\n",
             current_sequence, seq_name(current_sequence),
             current_time, seq_duration(current_sequence),
+            mode_name(current_mode()),
             playing ? "[play]" : "[pause]");
     };
     print_hud();
@@ -2011,6 +2049,7 @@ int main(int argc, char** argv)
                     }
                     if (ev.key.keysym.sym == SDLK_r) {
                         current_time = 0.0f;
+                        playback_dir = 1;
                         print_hud();
                     }
                     if (ev.key.keysym.sym == SDLK_TAB) {
@@ -2019,6 +2058,28 @@ int main(int argc, char** argv)
                             int n = (int)loaded.sequences.size();
                             current_sequence = (current_sequence + step + n) % n;
                             current_time = 0.0f;
+                            playback_dir = 1;
+                            print_hud();
+                        }
+                    }
+                    // spec 08: `L` cycles the current sequence's loop mode
+                    // (Loop -> Hold -> PingPong -> Loop). State is per
+                    // sequence so toggling on one sequence doesn't reset
+                    // others. Doesn't reset time/dir — switching mode
+                    // mid-playback should let the user see the effect
+                    // immediately (e.g. a paused-at-end Hold animation
+                    // resumes forward when switched to Loop).
+                    if (ev.key.keysym.sym == SDLK_l) {
+                        if (current_sequence >= 0
+                            && current_sequence < (int)seq_mode.size()) {
+                            LoopMode& m = seq_mode[current_sequence];
+                            m = static_cast<LoopMode>(
+                                (static_cast<int>(m) + 1) % 3);
+                            // After a mode change, a backward PingPong
+                            // direction makes no sense if the user just
+                            // entered PingPong mode; reset to forward so
+                            // the bounce starts from wherever t currently is.
+                            playback_dir = 1;
                             print_hud();
                         }
                     }
@@ -2036,6 +2097,7 @@ int main(int argc, char** argv)
                         if (idx < (int)loaded.sequences.size()) {
                             current_sequence = idx;
                             current_time = 0.0f;
+                            playback_dir = 1;
                             print_hud();
                         }
                     }
@@ -2069,8 +2131,42 @@ int main(int argc, char** argv)
         if (playing) {
             float dur = seq_duration(current_sequence);
             if (dur > 0.0f) {
-                current_time += dt;
-                while (current_time >= dur) current_time -= dur;
+                // spec 08: per-mode endpoint behaviour. PingPong needs a
+                // signed dt; Loop/Hold always advance forward.
+                LoopMode m = current_mode();
+                if (m == LoopMode::PingPong) {
+                    current_time += dt * (float)playback_dir;
+                    // Bounce — if we'd cross either endpoint this frame,
+                    // reflect the overshoot. Loop here so a very large dt
+                    // bouncing multiple times still settles in-range
+                    // (paranoid edge case but cheap).
+                    int guard = 0;
+                    while (guard++ < 8
+                           && (current_time > dur || current_time < 0.0f)) {
+                        if (current_time > dur) {
+                            current_time = dur - (current_time - dur);
+                            playback_dir = -1;
+                        } else if (current_time < 0.0f) {
+                            current_time = -current_time;
+                            playback_dir = +1;
+                        }
+                    }
+                    if (current_time < 0.0f) current_time = 0.0f;
+                    if (current_time > dur) current_time = dur;
+                } else {
+                    current_time += dt;
+                    if (m == LoopMode::Loop) {
+                        // wrap; fmod-equivalent loop handles long-pause
+                        // catchups without leaving a residual offset.
+                        while (current_time >= dur) current_time -= dur;
+                    } else { // Hold
+                        // Clamp at the end; freeze on the last frame. We
+                        // intentionally do NOT clear `playing`, so toggling
+                        // mode back to Loop / PingPong resumes immediately
+                        // without requiring Space.
+                        if (current_time > dur) current_time = dur;
+                    }
+                }
             }
             // Once per second of playback, drop a HUD line so the user can
             // sanity-check elapsed time without scrubbing.
