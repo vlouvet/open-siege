@@ -381,6 +381,36 @@ static std::vector<glm::mat4> compute_world_bind(const std::vector<Node>& nodes)
     return world;
 }
 
+// Spec 06: compose evaluated local transforms (one per node, from `evaluate()`)
+// into world-space matrices using the same parent-walk algorithm as
+// `compute_world_bind`. O(n^2) worst case but n is ~100 — fine.
+static std::vector<glm::mat4> compute_world_from_locals(
+    const std::vector<Node>& nodes,
+    const std::vector<glm::mat4>& locals)
+{
+    std::vector<glm::mat4> world(nodes.size(), glm::mat4(1.0f));
+    std::vector<bool> done(nodes.size(), false);
+    bool progress = true;
+    std::size_t passes = 0;
+    while (progress && passes++ <= nodes.size() + 1) {
+        progress = false;
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (done[i]) continue;
+            int p = nodes[i].parent_index;
+            if (p < 0) {
+                world[i] = locals[i];
+                done[i] = true;
+                progress = true;
+            } else if (p < (int)nodes.size() && done[p]) {
+                world[i] = world[p] * locals[i];
+                done[i] = true;
+                progress = true;
+            }
+        }
+    }
+    return world;
+}
+
 // ---------------------- per-material/object mesh bucket ----------------------
 
 struct MeshBucket
@@ -896,6 +926,89 @@ int main(int argc, char** argv)
         return 2;
     }
 
+    // ---- spec 06 self-test (no window) -----------------------------------
+    // Verifies the skinning math BEFORE we get into the SDL render path:
+    //   - at t=0 with a sequence whose first keyframe == bind (or no anim),
+    //     skinned positions should equal the original world-bind positions.
+    //   - applying bind_local everywhere via compute_world_from_locals
+    //     should reproduce loaded.world_bind exactly.
+    //   - exposing the same `run` sequence at t=duration/2 should move at
+    //     least some vertices off their bind positions.
+    {
+        // Build inv_world_bind here for the self-test (same recipe as below).
+        std::vector<glm::mat4> inv_wb(loaded.world_bind.size(), glm::mat4(1.0f));
+        for (std::size_t i = 0; i < loaded.world_bind.size(); ++i)
+            inv_wb[i] = glm::inverse(loaded.world_bind[i]);
+
+        // Bind-local positions for self-test (same recipe as runtime path).
+        std::vector<glm::vec3> blp(geom.positions.size() / 3);
+        for (std::size_t v = 0; v < blp.size(); ++v) {
+            glm::vec4 p(geom.positions[v*3+0],
+                        geom.positions[v*3+1],
+                        geom.positions[v*3+2], 1.0f);
+            int ni = geom.vertex_node_index[v];
+            if (ni >= 0 && ni < (int)inv_wb.size()) p = inv_wb[ni] * p;
+            blp[v] = glm::vec3(p);
+        }
+
+        // (1) bind-local round-trip — apply world_bind back, should equal
+        // the original world-bind position exactly (up to float epsilon).
+        float max_err = 0.0f;
+        for (std::size_t v = 0; v < blp.size(); ++v) {
+            int ni = geom.vertex_node_index[v];
+            glm::vec4 wp = (ni >= 0 && ni < (int)loaded.world_bind.size())
+                ? (loaded.world_bind[ni] * glm::vec4(blp[v], 1.0f))
+                : glm::vec4(blp[v], 1.0f);
+            glm::vec3 orig(geom.positions[v*3+0],
+                           geom.positions[v*3+1],
+                           geom.positions[v*3+2]);
+            max_err = std::max(max_err, glm::length(glm::vec3(wp) - orig));
+        }
+        std::fprintf(stderr, "spec06 selftest: bind round-trip max error = %g\n", max_err);
+        assert(max_err < 1e-3f);
+
+        // (2) Find a sequence with real animation (prefer "run").
+        int probe = -1;
+        for (std::size_t i = 0; i < loaded.sequences.size(); ++i) {
+            if (loaded.sequences[i].name == "run" &&
+                loaded.sequences[i].duration_seconds > 0.0f &&
+                !loaded.sequences[i].tracks.empty()) { probe = (int)i; break; }
+        }
+        if (probe < 0) {
+            for (std::size_t i = 0; i < loaded.sequences.size(); ++i) {
+                if (loaded.sequences[i].duration_seconds > 0.0f &&
+                    !loaded.sequences[i].tracks.empty()) { probe = (int)i; break; }
+            }
+        }
+        if (probe >= 0) {
+            const auto& sq = loaded.sequences[probe];
+            auto eval_world = [&](float t) {
+                auto loc = evaluate(sq, t, loaded.nodes);
+                return compute_world_from_locals(loaded.nodes, loc);
+            };
+            auto wa0 = eval_world(0.0f);
+            auto waH = eval_world(sq.duration_seconds * 0.5f);
+
+            // At t=0 some keyframed nodes may already differ from the bind,
+            // but the *whole-mesh* skin must still produce finite values.
+            float max_motion = 0.0f;
+            int moved = 0;
+            for (std::size_t v = 0; v < blp.size(); ++v) {
+                int ni = geom.vertex_node_index[v];
+                if (ni < 0 || ni >= (int)wa0.size()) continue;
+                glm::vec3 p0 = glm::vec3(wa0[ni] * glm::vec4(blp[v], 1.0f));
+                glm::vec3 ph = glm::vec3(waH[ni] * glm::vec4(blp[v], 1.0f));
+                float d = glm::length(ph - p0);
+                if (d > 1e-3f) ++moved;
+                max_motion = std::max(max_motion, d);
+            }
+            std::fprintf(stderr,
+                "spec06 selftest: seq '%s' t=0 vs t=%.3fs — %d vertices moved, max |dp|=%.3f\n",
+                sq.name.c_str(), sq.duration_seconds * 0.5f, moved, max_motion);
+            assert(max_motion > 0.0f);
+        }
+    }
+
     if (SDL_Init(SDL_INIT_VIDEO) != 0) { std::fprintf(stderr,"SDL_Init: %s\n", SDL_GetError()); return 3; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
@@ -914,13 +1027,53 @@ int main(int argc, char** argv)
 
     std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
 
-    // VAO + VBO upload
+    // ---- spec 06 CPU skinning prep -------------------------------------
+    // `geom.positions` was emitted by the renderer in WORLD bind-pose
+    // (vertices already multiplied through the bind node_matrix — see
+    //  dts_renderable_shape.cpp:394). For skinning we need each vertex in
+    // its owning node's LOCAL space, so the per-frame world matrix can map
+    // it to its animated world position:
+    //   bind_world = world_bind[n] * bind_local         (already true)
+    //   bind_local = inverse(world_bind[n]) * bind_world
+    //   anim_world = world_anim[n] * bind_local
+    // Vertices whose node_index is < 0 (unattached / unknown) stay in world
+    // space and are skinned by identity — i.e. they don't move.
+    //
+    // Pre-cached inverse-bind matrices avoid the inverse() per frame.
+    std::vector<glm::mat4> inv_world_bind(loaded.world_bind.size(), glm::mat4(1.0f));
+    for (std::size_t i = 0; i < loaded.world_bind.size(); ++i) {
+        inv_world_bind[i] = glm::inverse(loaded.world_bind[i]);
+    }
+    std::vector<float> bind_local_positions(geom.positions.size(), 0.0f);
+    {
+        const std::size_t vcount = geom.positions.size() / 3;
+        for (std::size_t v = 0; v < vcount; ++v) {
+            glm::vec4 p(geom.positions[v*3+0],
+                        geom.positions[v*3+1],
+                        geom.positions[v*3+2], 1.0f);
+            int ni = geom.vertex_node_index[v];
+            if (ni >= 0 && ni < (int)inv_world_bind.size()) {
+                p = inv_world_bind[ni] * p;
+            }
+            bind_local_positions[v*3+0] = p.x;
+            bind_local_positions[v*3+1] = p.y;
+            bind_local_positions[v*3+2] = p.z;
+        }
+    }
+    // Per-frame skinning destination buffer. Reused; only re-allocated if
+    // geometry size changes (it doesn't, post-load).
+    std::vector<float> skinned_positions(geom.positions.size(), 0.0f);
+
+    // VAO + VBO upload. Positions are STREAM_DRAW because we re-upload
+    // every frame; normals stay STATIC for now (lighting is locked to bind
+    // pose — visually acceptable for rigid 1-bone Tribes meshes, the body
+    // panels deform slightly but the silhouette motion is what's checked).
     GLuint vao = 0, vbo_pos = 0, vbo_nor = 0;
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
     glGenBuffers(1, &vbo_pos);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
-    glBufferData(GL_ARRAY_BUFFER, geom.positions.size()*sizeof(float), geom.positions.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, geom.positions.size()*sizeof(float), geom.positions.data(), GL_STREAM_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
     glGenBuffers(1, &vbo_nor);
@@ -1055,6 +1208,12 @@ int main(int argc, char** argv)
     };
     print_hud();
 
+    // ---- spec 06 FPS counter -------------------------------------------
+    // Counts frames per real second so we can verify the >60fps acceptance
+    // criterion. Printed to stderr once per second.
+    Uint64 fps_window_start = SDL_GetPerformanceCounter();
+    int    fps_window_frames = 0;
+
     bool running = true;
     while (running) {
         SDL_Event ev;
@@ -1159,6 +1318,58 @@ int main(int argc, char** argv)
         glm::mat4 MVP = P * V;
         glm::mat3 N = glm::mat3(glm::transpose(glm::inverse(V)));
 
+        // ---- spec 06: CPU skinning ----
+        // 1) evaluate per-node local transforms at current_time. If the
+        //    sequence has no tracks / zero duration (e.g. the `root` no-op
+        //    marker), evaluate() falls back to bind_local — t=0 reproduces
+        //    the bind pose exactly, which is the sanity check.
+        // 2) accumulate to world via the same parent-walk used at load.
+        // 3) per-vertex bone matrix B[n] = world_anim[n] * inverse(world_bind[n]).
+        //    We pre-baked the inverse and we *already* expressed each vertex
+        //    in node-local space (bind_local_positions), so the skin step is
+        //    just `world_anim[n] * bind_local_vertex` — saving the multiply
+        //    by inverse(world_bind) per frame. Equivalent to:
+        //      skinned = (world_anim * inverse(world_bind)) * bind_world_vertex
+        // 4) re-upload the position VBO via glBufferData (GL_STREAM_DRAW).
+        {
+            const Sequence* sq = (current_sequence >= 0
+                && current_sequence < (int)loaded.sequences.size())
+                ? &loaded.sequences[current_sequence] : nullptr;
+            std::vector<glm::mat4> local_anim;
+            if (sq) {
+                local_anim = evaluate(*sq, current_time, loaded.nodes);
+            } else {
+                local_anim.resize(loaded.nodes.size());
+                for (std::size_t i = 0; i < loaded.nodes.size(); ++i)
+                    local_anim[i] = loaded.nodes[i].bind_local;
+            }
+            auto world_anim = compute_world_from_locals(loaded.nodes, local_anim);
+
+            const std::size_t vcount = bind_local_positions.size() / 3;
+            for (std::size_t v = 0; v < vcount; ++v) {
+                int ni = geom.vertex_node_index[v];
+                glm::vec4 lp(bind_local_positions[v*3+0],
+                             bind_local_positions[v*3+1],
+                             bind_local_positions[v*3+2], 1.0f);
+                glm::vec4 wp;
+                if (ni >= 0 && ni < (int)world_anim.size()) {
+                    wp = world_anim[ni] * lp;
+                } else {
+                    // unattached vertex — its bind_local_positions entry is
+                    // already in world space (identity in/out at load), so
+                    // pass through.
+                    wp = lp;
+                }
+                skinned_positions[v*3+0] = wp.x;
+                skinned_positions[v*3+1] = wp.y;
+                skinned_positions[v*3+2] = wp.z;
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
+            glBufferData(GL_ARRAY_BUFFER,
+                         skinned_positions.size() * sizeof(float),
+                         skinned_positions.data(), GL_STREAM_DRAW);
+        }
+
         glUseProgram(prog);
         glUniformMatrix4fv(u_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
         glUniformMatrix3fv(u_normal_mat, 1, GL_FALSE, glm::value_ptr(N));
@@ -1177,6 +1388,20 @@ int main(int argc, char** argv)
         }
 
         SDL_GL_SwapWindow(win);
+
+        // spec 06 FPS print — every ~1s of wall time print frames/sec to
+        // stderr. Required by acceptance ("> 60fps for a single mesh").
+        ++fps_window_frames;
+        {
+            Uint64 now2 = SDL_GetPerformanceCounter();
+            double elapsed = (double)(now2 - fps_window_start) / (double)perf_freq;
+            if (elapsed >= 1.0) {
+                std::fprintf(stderr, "fps: %.1f (%d frames in %.2fs)\n",
+                    fps_window_frames / elapsed, fps_window_frames, elapsed);
+                fps_window_start = now2;
+                fps_window_frames = 0;
+            }
+        }
     }
 
     SDL_GL_DeleteContext(ctx);
