@@ -785,6 +785,8 @@ int main(int argc, char** argv)
         std::printf("bone overlay: %d bones (toggle with B)\n",
                     (int)(bone_vertex_count / 2));
     }
+
+    std::printf("keys: Space=play/pause  Left/Right=scrub +/-0.05s  R=reset  Tab=next seq (Shift+Tab=prev)  B=bones  Q/Esc=quit\n");
     bool show_bones = false;
 
     glEnable(GL_DEPTH_TEST);
@@ -802,6 +804,44 @@ int main(int argc, char** argv)
     float dist = radius * 3.0f;
     bool dragging = false; int last_x = 0, last_y = 0;
 
+    // ---- spec 04 timeline state ----
+    //
+    // Holds the play head over the currently-selected sequence. No skinning
+    // happens yet; this spec just wires up the input loop so later specs (05
+    // keyframe interp, 06 CPU skinning) can read `current_time` against
+    // `loaded.sequences[current_sequence]`.
+    //
+    // Notes:
+    //   - Tab cycles by INDEX, not name — duplicate sequence names exist
+    //     (e.g. `wave` at 39 and 42 from LOD fan-out) and indexing keeps all
+    //     45 reachable.
+    //   - The `root` sequence has duration 0 (no-op marker). Playback at
+    //     duration <= 0 is a no-op; we still let Space / Tab work so it
+    //     doesn't trap the user.
+    int   current_sequence = 0;
+    float current_time     = 0.0f;
+    bool  playing          = false;
+    Uint64 last_tick_ns    = SDL_GetPerformanceCounter();
+    const Uint64 perf_freq = SDL_GetPerformanceFrequency();
+    float last_hud_print_t = -1.0f;  // forces an initial HUD line
+
+    auto seq_duration = [&](int idx) -> float {
+        if (idx < 0 || idx >= (int)loaded.sequences.size()) return 0.0f;
+        return loaded.sequences[idx].duration_seconds;
+    };
+    auto seq_name = [&](int idx) -> const char* {
+        if (idx < 0 || idx >= (int)loaded.sequences.size()) return "<none>";
+        const auto& s = loaded.sequences[idx];
+        return s.name.empty() ? "<unnamed>" : s.name.c_str();
+    };
+    auto print_hud = [&]() {
+        std::fprintf(stderr, "seq[%d]: %s  t: %.3fs / %.3fs  %s\n",
+            current_sequence, seq_name(current_sequence),
+            current_time, seq_duration(current_sequence),
+            playing ? "[play]" : "[pause]");
+    };
+    print_hud();
+
     bool running = true;
     while (running) {
         SDL_Event ev;
@@ -813,6 +853,41 @@ int main(int argc, char** argv)
                     if (ev.key.keysym.sym == SDLK_b) {
                         show_bones = !show_bones;
                         std::printf("bones: %s\n", show_bones ? "on" : "off");
+                    }
+                    if (ev.key.keysym.sym == SDLK_SPACE) {
+                        playing = !playing;
+                        print_hud();
+                    }
+                    if (ev.key.keysym.sym == SDLK_LEFT) {
+                        // Scrub backward; clamp at 0 (no negative time).
+                        current_time -= 0.05f;
+                        if (current_time < 0.0f) current_time = 0.0f;
+                        print_hud();
+                    }
+                    if (ev.key.keysym.sym == SDLK_RIGHT) {
+                        // Scrub forward; wrap past duration. (Loop refinement
+                        // — non-cyclic clamp vs cyclic wrap — lands in spec 08.)
+                        current_time += 0.05f;
+                        float dur = seq_duration(current_sequence);
+                        if (dur > 0.0f) {
+                            while (current_time >= dur) current_time -= dur;
+                        } else {
+                            current_time = 0.0f;
+                        }
+                        print_hud();
+                    }
+                    if (ev.key.keysym.sym == SDLK_r) {
+                        current_time = 0.0f;
+                        print_hud();
+                    }
+                    if (ev.key.keysym.sym == SDLK_TAB) {
+                        if (!loaded.sequences.empty()) {
+                            int step = (ev.key.keysym.mod & KMOD_SHIFT) ? -1 : 1;
+                            int n = (int)loaded.sequences.size();
+                            current_sequence = (current_sequence + step + n) % n;
+                            current_time = 0.0f;
+                            print_hud();
+                        }
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
@@ -834,6 +909,26 @@ int main(int argc, char** argv)
                     dist = glm::clamp(dist, radius * 0.2f, radius * 50.0f);
                     break;
             }
+        }
+
+        // Advance the play head. dt is wall time since the previous frame; the
+        // perf-counter is monotonic so this stays accurate across long pauses.
+        Uint64 now_ns = SDL_GetPerformanceCounter();
+        float dt = (float)((double)(now_ns - last_tick_ns) / (double)perf_freq);
+        last_tick_ns = now_ns;
+        if (playing) {
+            float dur = seq_duration(current_sequence);
+            if (dur > 0.0f) {
+                current_time += dt;
+                while (current_time >= dur) current_time -= dur;
+            }
+            // Once per second of playback, drop a HUD line so the user can
+            // sanity-check elapsed time without scrubbing.
+            if (last_hud_print_t < 0.0f
+                || std::floor(current_time) != std::floor(last_hud_print_t)) {
+                print_hud();
+            }
+            last_hud_print_t = current_time;
         }
 
         int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
