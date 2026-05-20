@@ -26,6 +26,8 @@
 #include "content/dts/darkstar.hpp"
 #include "content/dts/darkstar_structures.hpp"
 
+#include "pbmp.hpp"
+
 namespace fs = std::filesystem;
 namespace dv = studio::resources::vol::darkstar;
 namespace sr = studio::resources;
@@ -434,6 +436,57 @@ void main() {
 }
 )";
 
+// ---------------------- PBMP smoke test (spec 02) ----------------------
+//
+// Pull a single .bmp out of a VOL by filename substring, run it through
+// load_pbmp(), and print the head/PiDX/DETL fields. Used by the
+// `--dump-bmp <name>` CLI flag.
+
+static int dump_pbmp_from_vol(const fs::path& vol_path, const std::string& bmp_match_lower)
+{
+    std::ifstream in(vol_path, std::ios::binary);
+    if (!in) {
+        std::fprintf(stderr, "cannot open vol: %s\n", vol_path.string().c_str());
+        return 1;
+    }
+    dv::vol_file_archive plugin;
+    if (!plugin.stream_is_supported(in)) {
+        std::fprintf(stderr, "not a darkstar vol: %s\n", vol_path.string().c_str());
+        return 1;
+    }
+    in.clear(); in.seekg(0);
+
+    auto all = sr::get_all_content(vol_path, in, plugin);
+    for (auto& entry : all) {
+        auto* f = std::get_if<sr::file_info>(&entry);
+        if (!f) continue;
+        auto name = f->filename.string();
+        auto lower = name;
+        for (auto& c : lower) c = std::tolower((unsigned char)c);
+        if (lower.size() < 4 || lower.substr(lower.size()-4) != ".bmp") continue;
+        if (!bmp_match_lower.empty() && lower.find(bmp_match_lower) == std::string::npos) continue;
+
+        std::stringstream buf;
+        in.clear(); in.seekg(0);
+        plugin.extract_file_contents(in, *f, buf);
+        buf.seekg(0);
+        PbmpImage img = load_pbmp(buf);
+        std::printf("PBMP %s:\n", name.c_str());
+        std::printf("  width         = %u\n", img.width);
+        std::printf("  height        = %u\n", img.height);
+        std::printf("  bit_depth     = %u\n", img.bit_depth);
+        std::printf("  palette_index = %u\n", img.palette_index);
+        std::printf("  mip_count     = %u\n", img.mip_count);
+        std::printf("  pixels        = %zu bytes (expected %u for 8bpp primary level)\n",
+            img.indexed_pixels.size(),
+            img.width * img.height);
+        return 0;
+    }
+    std::fprintf(stderr, "no .bmp matching '%s' in %s\n",
+        bmp_match_lower.c_str(), vol_path.string().c_str());
+    return 2;
+}
+
 // ---------------------- main ----------------------
 
 int main(int argc, char** argv)
@@ -441,11 +494,22 @@ int main(int argc, char** argv)
     if (argc < 2) {
         std::fprintf(stderr,
             "usage: %s <path-to-vol> [dts-substring]\n"
-            "  e.g. %s tribes-game/base/Entities.vol chainturret\n",
-            argv[0], argv[0]);
+            "       %s <path-to-vol> --dump-bmp <bmp-substring>\n"
+            "  e.g. %s tribes-game/base/Entities.vol chainturret\n"
+            "       %s tribes-game/base/Entities.vol --dump-bmp ammo\n",
+            argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
     fs::path vol_path = argv[1];
+
+    // Spec 02 smoke test: dump the parsed fields of one PBMP and exit, without
+    // opening a window. Accepts `--dump-bmp <substring>`.
+    if (argc >= 4 && std::string(argv[2]) == "--dump-bmp") {
+        std::string bmp_match = argv[3];
+        for (auto& c : bmp_match) c = std::tolower((unsigned char)c);
+        return dump_pbmp_from_vol(vol_path, bmp_match);
+    }
+
     std::string dts_match = argc >= 3 ? argv[2] : "";
     for (auto& c : dts_match) c = std::tolower((unsigned char)c);
 
