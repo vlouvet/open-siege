@@ -100,6 +100,101 @@ static std::vector<Node> build_nodes(const dts::shape_variant& raw_shape)
     }, raw_shape);
 }
 
+// ---------------------- DTS animation sequences (spec 03) ----------------------
+//
+// `sequence_info` (the public type returned by renderable_shape::get_sequences)
+// exposes only name + indices. The two fields the player needs — `duration`
+// (float, seconds) and `cyclic` (bool) — live on the RAW `sequence` struct in
+// `darkstar_structures.hpp:360` (v2/v3) and `:550` (v5/6/7/8) and are not
+// surfaced through any accessor. We therefore read them straight off the
+// `shape_variant` from `dts::read_shape()` (see findings doc 00-api-findings).
+//
+// `frame_count` is not stored in the file; we report the max `num_key_frames`
+// across all sub-sequences belonging to a sequence (different sub-sequences
+// within one sequence may have different keyframe counts; the densest is the
+// nominal sample rate of the timeline).
+//
+// `animated_nodes` is the set of node indices touched by the sequence —
+// derived from BOTH node-attached and object-attached sub-sequence ranges
+// (an object lives on a node, so its sub-sequences animate that node too).
+// `dts_renderable_shape.cpp:197-223` does the same dual-source fold.
+
+struct Sequence
+{
+    std::string      name;
+    float            duration_seconds;
+    bool             cyclic;
+    int              frame_count;
+    std::vector<int> animated_nodes;
+};
+
+static std::vector<Sequence> build_sequences(const dts::shape_variant& raw_shape)
+{
+    return std::visit([](const auto& s) {
+        std::vector<Sequence> out;
+        out.reserve(s.sequences.size());
+
+        // For each sub-sequence, figure out which node it animates. A
+        // sub-sequence is referenced from a node directly (node.first_sub_sequence_index)
+        // or via an object attached to a node (object.first_sub_sequence_index,
+        // and the object lives on object.node_index). Build an index:
+        //   sub_seq_index -> node_index
+        // Default to -1 (unattached / unknown).
+        std::vector<int> sub_seq_to_node(s.sub_sequences.size(), -1);
+        for (std::size_t ni = 0; ni < s.nodes.size(); ++ni) {
+            const auto first = static_cast<int>(s.nodes[ni].first_sub_sequence_index);
+            const auto count = static_cast<int>(s.nodes[ni].num_sub_sequences);
+            for (int k = 0; k < count; ++k) {
+                int idx = first + k;
+                if (idx >= 0 && idx < (int)sub_seq_to_node.size()) {
+                    sub_seq_to_node[idx] = (int)ni;
+                }
+            }
+        }
+        for (const auto& obj : s.objects) {
+            const auto first = static_cast<int>(obj.first_sub_sequence_index);
+            const auto count = static_cast<int>(obj.num_sub_sequences);
+            const auto node_idx = static_cast<int>(obj.node_index);
+            for (int k = 0; k < count; ++k) {
+                int idx = first + k;
+                if (idx >= 0 && idx < (int)sub_seq_to_node.size()
+                    && sub_seq_to_node[idx] == -1) {
+                    sub_seq_to_node[idx] = node_idx;
+                }
+            }
+        }
+
+        for (std::size_t si = 0; si < s.sequences.size(); ++si) {
+            const auto& seq = s.sequences[si];
+            Sequence out_seq;
+            const auto name_idx = static_cast<std::size_t>(seq.name_index);
+            if (name_idx < s.names.size()) {
+                out_seq.name.assign(
+                    s.names[name_idx].data(),
+                    strnlen(s.names[name_idx].data(), s.names[name_idx].size()));
+            }
+            out_seq.duration_seconds = seq.duration;
+            out_seq.cyclic = (static_cast<std::int32_t>(seq.cyclic) != 0);
+
+            int max_frames = 0;
+            std::vector<int> nodes_set;
+            for (std::size_t ssi = 0; ssi < s.sub_sequences.size(); ++ssi) {
+                if (static_cast<std::size_t>(s.sub_sequences[ssi].sequence_index) != si) continue;
+                int nk = static_cast<int>(s.sub_sequences[ssi].num_key_frames);
+                if (nk > max_frames) max_frames = nk;
+                int n = sub_seq_to_node[ssi];
+                if (n >= 0 && std::find(nodes_set.begin(), nodes_set.end(), n) == nodes_set.end()) {
+                    nodes_set.push_back(n);
+                }
+            }
+            out_seq.frame_count = max_frames;
+            out_seq.animated_nodes = std::move(nodes_set);
+            out.push_back(std::move(out_seq));
+        }
+        return out;
+    }, raw_shape);
+}
+
 // Accumulate parent transforms to get world-space bind matrices, one per node.
 // Roots (parent_index == -1) use their local matrix directly.
 static std::vector<glm::mat4> compute_world_bind(const std::vector<Node>& nodes)
@@ -318,6 +413,7 @@ struct loaded_shape
     std::vector<sc::material> materials;
     std::vector<Node>         nodes;        // bind-pose hierarchy (spec 02)
     std::vector<glm::mat4>    world_bind;   // accumulated world transforms
+    std::vector<Sequence>     sequences;    // named animations (spec 03)
 };
 
 static loaded_shape build_geometry(const std::vector<char>& dts_bytes)
@@ -332,6 +428,7 @@ static loaded_shape build_geometry(const std::vector<char>& dts_bytes)
         auto raw = dts::read_shape(ss, std::nullopt);
         out.nodes = build_nodes(raw);
         out.world_bind = compute_world_bind(out.nodes);
+        out.sequences = build_sequences(raw);
     }
 
     // 2) The high-level renderable_shape, for geometry buffering (unchanged path).
@@ -562,6 +659,22 @@ int main(int argc, char** argv)
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             std::fprintf(stderr, "  [%zu] %s (parent=%d)\n",
                 i, nodes[i].name.c_str(), nodes[i].parent_index);
+        }
+    }
+
+    // ---- spec 03 sequence enumeration ----
+    {
+        const auto& seqs = loaded.sequences;
+        std::printf("sequences: %zu\n", seqs.size());
+        for (std::size_t i = 0; i < seqs.size(); ++i) {
+            const auto& sq = seqs[i];
+            std::printf("  [%zu] %-20s  duration=%.3fs  frames=%d  cyclic=%s  nodes=%zu\n",
+                i,
+                sq.name.empty() ? "<unnamed>" : sq.name.c_str(),
+                sq.duration_seconds,
+                sq.frame_count,
+                sq.cyclic ? "yes" : "no",
+                sq.animated_nodes.size());
         }
     }
 
