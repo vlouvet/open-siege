@@ -1,0 +1,26 @@
+project(vol-list)
+cmake_minimum_required(VERSION 3.17)
+
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/../../3space/build/cmake)
+
+find_package(nlohmann_json REQUIRED)
+find_package(Boost REQUIRED)
+find_package(glm REQUIRED)
+find_package(span-lite REQUIRED)
+find_package(pegtl REQUIRED)
+find_package(libzip REQUIRED)
+
+add_executable(vol-list main.cpp)
+set_property(TARGET vol-list PROPERTY CXX_STANDARD 17)
+
+target_include_directories(vol-list PRIVATE
+    ${CMAKE_SOURCE_DIR}/../../3space/include)
+
+target_link_libraries(vol-list PRIVATE
+    ${CMAKE_SOURCE_DIR}/../../3space/build/lib3space.a
+    nlohmann_json::nlohmann_json
+    Boost::Boost
+    glm::glm
+    nonstd::span-lite
+    taocpp::pegtl
+    libzip::zip)
