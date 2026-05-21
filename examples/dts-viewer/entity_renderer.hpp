@@ -75,12 +75,14 @@ std::vector<TurretState> collect_turrets(
 // the attacker relative to the player's facing — feeds the HUD
 // damage reticle (Track 13 spec 05).
 using DamageBearingCallback = void(*)(float bearing_from_player_yaw);
+struct HeightSampler;
 void tick_turrets(std::vector<TurretState>& turrets,
                   PlayerState& player,
                   std::deque<std::string>& feed,
                   bool team_has_power,
                   float dt,
-                  DamageBearingCallback on_damage = nullptr);
+                  DamageBearingCallback on_damage = nullptr,
+                  const HeightSampler* terrain = nullptr);
 
 // ---- Moveables (spec 14/04) -----------------------------------------------
 

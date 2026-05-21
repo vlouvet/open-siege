@@ -1,5 +1,7 @@
 #include "entity_renderer.hpp"
 
+#include "height_sampler.hpp"
+
 #include <algorithm>
 #include <cstdio>
 #include <set>
@@ -283,7 +285,8 @@ void tick_turrets(std::vector<TurretState>& turrets,
                   std::deque<std::string>& feed,
                   bool team_has_power_flag,
                   float dt,
-                  DamageBearingCallback on_damage)
+                  DamageBearingCallback on_damage,
+                  const HeightSampler* terrain)
 {
     for (auto& t : turrets) {
         if (t.destroyed) continue;
@@ -296,6 +299,18 @@ void tick_turrets(std::vector<TurretState>& turrets,
         float dist = glm::length(d);
         t.fire_cooldown = std::max(0.0f, t.fire_cooldown - dt);
         if (dist > t.scan_range) continue;
+        // 14/10 — line-of-sight raycast from turret muzzle (~3m above
+        // deck) to player torso (~1m above feet). If terrain blocks
+        // the segment, the turret may scan but does not fire.
+        if (terrain && terrain->valid()) {
+            const float mx = pos.x;
+            const float my = pos.y + 3.0f;
+            const float mz = pos.z;
+            const float px = player.pos.x;
+            const float py = player.pos.y + 1.0f;
+            const float pz = player.pos.z;
+            if (!terrain->has_terrain_los(mx, my, mz, px, py, pz)) continue;
+        }
         if (t.fire_cooldown <= 0.0f) {
             player.health = std::max(0.0f, player.health - 15.0f);
             t.fire_cooldown = 2.5f;

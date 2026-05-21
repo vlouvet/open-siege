@@ -79,6 +79,34 @@ struct HeightSampler
         out[1] = ny / len;
         out[2] = nz / len;
     }
+
+    // Segment-vs-terrain occlusion test (14/10). Walks from `from` to
+    // `to` in `step`-metre increments and returns false (line blocked)
+    // if the terrain height at any sample exceeds the segment Y at that
+    // x,z. Returns true (clear) when the entire segment stays above
+    // terrain. Distances shorter than `near_skip` short-circuit to true
+    // since the asker is essentially on top of the target.
+    bool has_terrain_los(float fx, float fy, float fz,
+                         float tx, float ty, float tz,
+                         float step = 2.0f,
+                         float near_skip = 5.0f) const
+    {
+        if (!valid()) return true;
+        const float dx = tx - fx;
+        const float dy = ty - fy;
+        const float dz = tz - fz;
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist <= near_skip) return true;
+        const int steps = static_cast<int>(dist / std::max(0.1f, step));
+        for (int i = 1; i < steps; ++i) {
+            const float u = static_cast<float>(i) / static_cast<float>(steps);
+            const float sx = fx + dx * u;
+            const float sy = fy + dy * u;
+            const float sz = fz + dz * u;
+            if (sample(sx, sz) > sy) return false;
+        }
+        return true;
+    }
 };
 
 } // namespace dts_viewer
