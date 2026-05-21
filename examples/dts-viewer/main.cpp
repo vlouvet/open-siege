@@ -1665,6 +1665,41 @@ int main(int argc, char** argv)
             inv_sys = dts_viewer::inv_stations_load(ter_mission->scene);
         }
 
+        // Shared message feed (specs 13/04 + 14/06).
+        std::deque<std::string> message_feed;
+        bool show_command_map = false;
+
+        // Pre-collect entity positions for compass/sensor/map (specs
+        // 13/02, 13/03, 13/06).  For v1 we just enumerate the scene's
+        // generators + inventory stations as static blips.
+        std::vector<dts_viewer::MapIcon> map_icons;
+        std::vector<dts_viewer::SensorBlip> sensor_blips;
+        std::vector<dts_viewer::CompassTick> compass_team_ticks;
+        if (ter_mission) {
+            auto walk_icons = [&](auto& self,
+                const studio::content::mission::scene_node& n) -> void
+            {
+                std::visit([&](const auto& p) {
+                    using T = std::decay_t<decltype(p)>;
+                    if constexpr (std::is_same_v<T,
+                        studio::content::mission::node_static_shape>)
+                    {
+                        glm::vec3 wp{ p.xf.position[0], p.xf.position[1], p.xf.position[2] };
+                        std::array<float,3> col{ 0.4f, 0.7f, 0.4f };
+                        if (p.data_block.name == "Generator" ||
+                            p.data_block.name == "PortGenerator")
+                                col = { 0.9f, 0.2f, 0.2f };
+                        else if (p.data_block.name == "InventoryStation")
+                                col = { 0.2f, 0.6f, 0.95f };
+                        map_icons.push_back({ wp, col });
+                        sensor_blips.push_back({ wp, col });
+                    }
+                }, n.payload);
+                for (auto& c : n.children) self(self, c);
+            };
+            walk_icons(walk_icons, ter_mission->scene.root);
+        }
+
         // Mission ambient sounds (spec 11/05).
         dts_viewer::MissionSoundsState mission_audio;
         if (ter_mission) {
@@ -1721,6 +1756,13 @@ int main(int argc, char** argv)
                         if (ev.key.keysym.sym == SDLK_5) {
                             dts_viewer::select_weapon(pstate.inventory, 4);
                             std::fprintf(stderr, "weapon: slot 5\n");
+                        }
+                        if (ev.key.keysym.sym == SDLK_m) {
+                            // M previously printed mission list; with the
+                            // command map (13/06) also bound to M, toggle
+                            // the map and also dump the mission list to
+                            // stderr for parity with the prior behaviour.
+                            show_command_map = !show_command_map;
                         }
                         if (ev.key.keysym.sym == SDLK_q) {
                             dts_viewer::cycle_weapon(pstate.inventory);
@@ -2050,7 +2092,21 @@ int main(int argc, char** argv)
 
             if (hud.visible) {
                 dts_viewer::hud2d_render(pstate, ptune, w, h);
+                dts_viewer::hud2d_render_compass(
+                    pstate.yaw, compass_team_ticks, pstate.pos, w, h);
+                dts_viewer::hud2d_render_sensor(
+                    pstate.yaw, pstate.pos, sensor_blips, 200.0f, w, h);
+                dts_viewer::hud2d_render_message_feed(message_feed, w, h);
+                dts_viewer::hud2d_render_damage_reticle(w, h);
+                if (show_command_map) {
+                    dts_viewer::hud2d_render_command_map(
+                        block.heights.data(),
+                        static_cast<int>(block.size[0]) + 1,
+                        metres_per_quad,
+                        map_icons, pstate.pos, pstate.yaw, w, h);
+                }
             }
+            dts_viewer::hud2d_tick(dt_ter);
 
             // Update window-title HUD once a second.
             {

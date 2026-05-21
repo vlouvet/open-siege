@@ -334,4 +334,304 @@ void hud2d_render(const PlayerState& ps,
     if (depth) glEnable(GL_DEPTH_TEST);
 }
 
+// ---- Compass (spec 13/02) ----
+void hud2d_render_compass(float yaw,
+                          const std::vector<CompassTick>& teammates,
+                          const glm::vec3& player_pos,
+                          int viewport_w,
+                          int viewport_h)
+{
+    if (viewport_w <= 0 || viewport_h <= 0) return;
+    ensure_init();
+    if (!g_hud2d_prog) return;
+    glUseProgram(g_hud2d_prog);
+    glDisable(GL_DEPTH_TEST);
+
+    auto pxX = [&](float x){ return (x / viewport_w) * 2.0f - 1.0f; };
+    auto pxY = [&](float y){ return 1.0f - (y / viewport_h) * 2.0f; };
+
+    const float band_w = 480.0f;
+    const float band_h = 18.0f;
+    const float band_x = (viewport_w - band_w) * 0.5f;
+    const float band_y = 12.0f;
+    const float band_fov = 3.14159265f;   // ±90°
+
+    // Background
+    draw_quad_ndc(pxX(band_x),         pxY(band_y),
+                  pxX(band_x + band_w), pxY(band_y + band_h),
+                  0.05f, 0.05f, 0.08f);
+
+    // Cardinal ticks: N at yaw=0 (+Z), E at yaw=π/2 (+X), S at yaw=π (-Z),
+    // W at yaw=-π/2 (-X).  Plus four intercardinals.
+    struct Card { float angle; float r, g, b; float size; };
+    const Card cardinals[] = {
+        { 0.0f,            1.0f, 0.85f, 0.20f, 1.0f },  // N (gold)
+        { 1.5707963f,      1.0f, 1.0f,  1.0f,  0.8f },  // E
+        { 3.14159265f,     1.0f, 1.0f,  1.0f,  0.8f },  // S
+        { -1.5707963f,     1.0f, 1.0f,  1.0f,  0.8f },  // W
+        { 0.7853982f,      0.7f, 0.7f,  0.7f,  0.5f },
+        { 2.3561945f,      0.7f, 0.7f,  0.7f,  0.5f },
+        { -0.7853982f,     0.7f, 0.7f,  0.7f,  0.5f },
+        { -2.3561945f,     0.7f, 0.7f,  0.7f,  0.5f },
+    };
+    auto draw_tick = [&](float rel_bearing, float size,
+                         float r, float g, float b) {
+        while (rel_bearing >  3.14159265f) rel_bearing -= 6.2831853f;
+        while (rel_bearing < -3.14159265f) rel_bearing += 6.2831853f;
+        if (std::abs(rel_bearing) > band_fov) return;
+        float x = band_x + band_w * 0.5f + (rel_bearing / band_fov) * (band_w * 0.5f);
+        float w = 3.0f * size;
+        draw_quad_ndc(pxX(x - w * 0.5f), pxY(band_y),
+                      pxX(x + w * 0.5f), pxY(band_y + band_h * size),
+                      r, g, b);
+    };
+    for (auto& c : cardinals) {
+        draw_tick(c.angle - yaw, c.size, c.r, c.g, c.b);
+    }
+    // Teammate ticks
+    for (auto& tm : teammates) {
+        glm::vec3 d = tm.world_pos - player_pos;
+        float bearing = std::atan2(d.x, d.z);
+        draw_tick(bearing - yaw, 0.6f, tm.color[0], tm.color[1], tm.color[2]);
+    }
+
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+// ---- Sensor radar (spec 13/03) ----
+void hud2d_render_sensor(float yaw,
+                         const glm::vec3& player_pos,
+                         const std::vector<SensorBlip>& blips,
+                         float range,
+                         int viewport_w,
+                         int viewport_h)
+{
+    if (viewport_w <= 0 || viewport_h <= 0 || range <= 0.0f) return;
+    ensure_init();
+    if (!g_hud2d_prog) return;
+    glUseProgram(g_hud2d_prog);
+    glDisable(GL_DEPTH_TEST);
+
+    auto pxX = [&](float x){ return (x / viewport_w) * 2.0f - 1.0f; };
+    auto pxY = [&](float y){ return 1.0f - (y / viewport_h) * 2.0f; };
+
+    const float radius = 80.0f;
+    const float cx = viewport_w - radius - 16.0f;
+    const float cy = radius + 16.0f;
+
+    // Background disc (square approximation)
+    draw_quad_ndc(pxX(cx - radius), pxY(cy - radius),
+                  pxX(cx + radius), pxY(cy + radius),
+                  0.05f, 0.10f, 0.05f);
+
+    // Center marker (player)
+    draw_quad_ndc(pxX(cx - 2.0f), pxY(cy - 2.0f),
+                  pxX(cx + 2.0f), pxY(cy + 2.0f),
+                  1.0f, 1.0f, 1.0f);
+
+    // Blips
+    const float cos_y = std::cos(-yaw);
+    const float sin_y = std::sin(-yaw);
+    for (auto& b : blips) {
+        glm::vec3 d = b.world_pos - player_pos;
+        float dist = std::sqrt(d.x * d.x + d.z * d.z);
+        if (dist > range) continue;
+        // Rotate by -yaw so the radar's "up" is player-forward.
+        float rx =  d.x * cos_y + d.z * sin_y;
+        float rz = -d.x * sin_y + d.z * cos_y;
+        float px = cx + (rx / range) * radius;
+        float py = cy - (rz / range) * radius;   // up on screen
+        draw_quad_ndc(pxX(px - 2.0f), pxY(py - 2.0f),
+                      pxX(px + 2.0f), pxY(py + 2.0f),
+                      b.color[0], b.color[1], b.color[2]);
+    }
+
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+// ---- Message feed (spec 13/04) — coloured bars, no font ----
+void hud2d_render_message_feed(const std::deque<std::string>& msgs,
+                               int viewport_w,
+                               int viewport_h)
+{
+    if (msgs.empty()) return;
+    ensure_init();
+    if (!g_hud2d_prog) return;
+    glUseProgram(g_hud2d_prog);
+    glDisable(GL_DEPTH_TEST);
+
+    auto pxX = [&](float x){ return (x / viewport_w) * 2.0f - 1.0f; };
+    auto pxY = [&](float y){ return 1.0f - (y / viewport_h) * 2.0f; };
+
+    const float x  = 16.0f;
+    const float w  = 360.0f;
+    const float h  = 8.0f;
+    const float gap = 4.0f;
+    const std::size_t n = std::min<std::size_t>(msgs.size(), 6);
+    for (std::size_t i = 0; i < n; ++i) {
+        // Newer messages first; fade older ones.
+        float age_frac = static_cast<float>(i) / static_cast<float>(n);
+        float alpha = 1.0f - age_frac * 0.7f;
+        const float y = 60.0f + i * (h + gap);
+        const std::string& m = msgs[msgs.size() - 1 - i];
+        const float bar_w = std::min(w, static_cast<float>(m.size()) * 4.0f);
+        draw_quad_ndc(pxX(x),         pxY(y),
+                      pxX(x + bar_w), pxY(y + h),
+                      0.3f * alpha, 0.5f * alpha, 0.9f * alpha);
+    }
+
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+// ---- Damage reticle (spec 13/05) ----
+namespace {
+struct DamagePing { float yaw_to_attacker; float age; };
+std::vector<DamagePing> g_damage_pings;
+const float kDamageFadeSeconds = 2.0f;
+}
+
+void hud2d_report_damage(float yaw_to_attacker)
+{
+    g_damage_pings.push_back({ yaw_to_attacker, 0.0f });
+}
+
+void hud2d_tick(float dt)
+{
+    for (auto& p : g_damage_pings) p.age += dt;
+    g_damage_pings.erase(
+        std::remove_if(g_damage_pings.begin(), g_damage_pings.end(),
+            [](const DamagePing& p) { return p.age >= kDamageFadeSeconds; }),
+        g_damage_pings.end());
+}
+
+void hud2d_render_damage_reticle(int viewport_w, int viewport_h)
+{
+    if (g_damage_pings.empty()) return;
+    ensure_init();
+    if (!g_hud2d_prog) return;
+    glUseProgram(g_hud2d_prog);
+    glDisable(GL_DEPTH_TEST);
+
+    auto pxX = [&](float x){ return (x / viewport_w) * 2.0f - 1.0f; };
+    auto pxY = [&](float y){ return 1.0f - (y / viewport_h) * 2.0f; };
+
+    const float cx = viewport_w * 0.5f;
+    const float cy = viewport_h * 0.5f;
+    const float reticle_r = 60.0f;
+    for (auto& p : g_damage_pings) {
+        float a = 1.0f - (p.age / kDamageFadeSeconds);
+        float dx = std::sin(p.yaw_to_attacker) * reticle_r;
+        float dz = std::cos(p.yaw_to_attacker) * reticle_r;
+        float x = cx + dx;
+        float y = cy - dz;
+        draw_quad_ndc(pxX(x - 5.0f), pxY(y - 5.0f),
+                      pxX(x + 5.0f), pxY(y + 5.0f),
+                      0.95f * a, 0.15f, 0.15f);
+    }
+
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+// ---- Command map (spec 13/06) ----
+namespace {
+GLuint g_map_tex = 0;
+int    g_map_size = 0;
+}
+
+void hud2d_render_command_map(const float* heightmap,
+                              int size_plus_one,
+                              float metres_per_quad,
+                              const std::vector<MapIcon>& icons,
+                              const glm::vec3& player_pos,
+                              float player_yaw,
+                              int viewport_w,
+                              int viewport_h)
+{
+    if (viewport_w <= 0 || viewport_h <= 0 || !heightmap || size_plus_one <= 1)
+        return;
+    ensure_init();
+    if (!g_hud2d_prog) return;
+
+    // Lazily bake a grayscale aerial texture once per heightmap.
+    if (g_map_tex == 0 || g_map_size != size_plus_one) {
+        if (g_map_tex) glDeleteTextures(1, &g_map_tex);
+        std::vector<std::uint8_t> rgba(
+            static_cast<std::size_t>(size_plus_one) * size_plus_one * 4);
+        float hmin = heightmap[0], hmax = heightmap[0];
+        for (int i = 0; i < size_plus_one * size_plus_one; ++i) {
+            hmin = std::min(hmin, heightmap[i]);
+            hmax = std::max(hmax, heightmap[i]);
+        }
+        const float rng = std::max(1.0f, hmax - hmin);
+        for (int i = 0; i < size_plus_one * size_plus_one; ++i) {
+            float t = (heightmap[i] - hmin) / rng;
+            std::uint8_t v = static_cast<std::uint8_t>(t * 255.0f);
+            rgba[i * 4 + 0] = v;
+            rgba[i * 4 + 1] = v;
+            rgba[i * 4 + 2] = v;
+            rgba[i * 4 + 3] = 220;
+        }
+        glGenTextures(1, &g_map_tex);
+        glBindTexture(GL_TEXTURE_2D, g_map_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size_plus_one, size_plus_one,
+            0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        g_map_size = size_plus_one;
+    }
+    // The flat shader doesn't sample textures.  v1: render an outline +
+    // icon dots only (no aerial baked-image until a textured shader
+    // joins the family).  Heightmap baking above is kept for the
+    // followup polish spec.
+    (void)g_map_tex;
+
+    glUseProgram(g_hud2d_prog);
+    glDisable(GL_DEPTH_TEST);
+
+    auto pxX = [&](float x){ return (x / viewport_w) * 2.0f - 1.0f; };
+    auto pxY = [&](float y){ return 1.0f - (y / viewport_h) * 2.0f; };
+
+    const float side = std::min<float>(viewport_w, viewport_h) * 0.7f;
+    const float x = (viewport_w - side) * 0.5f;
+    const float y = (viewport_h - side) * 0.5f;
+    const float world_side = size_plus_one * metres_per_quad;
+
+    // Background
+    draw_quad_ndc(pxX(x),        pxY(y),
+                  pxX(x + side), pxY(y + side),
+                  0.05f, 0.08f, 0.05f);
+
+    auto world_to_map = [&](float wx, float wz, float& mx, float& my) {
+        mx = x + (wx / world_side) * side;
+        my = y + (wz / world_side) * side;
+    };
+
+    // Icons
+    for (auto& ic : icons) {
+        float mx, my; world_to_map(ic.world_pos.x, ic.world_pos.z, mx, my);
+        draw_quad_ndc(pxX(mx - 3.0f), pxY(my - 3.0f),
+                      pxX(mx + 3.0f), pxY(my + 3.0f),
+                      ic.color[0], ic.color[1], ic.color[2]);
+    }
+
+    // Player marker (arrow approximation — small green square + tick in
+    // facing direction)
+    float pmx, pmy; world_to_map(player_pos.x, player_pos.z, pmx, pmy);
+    draw_quad_ndc(pxX(pmx - 4.0f), pxY(pmy - 4.0f),
+                  pxX(pmx + 4.0f), pxY(pmy + 4.0f),
+                  0.2f, 1.0f, 0.2f);
+    float tx = pmx + std::sin(player_yaw) * 8.0f;
+    float ty = pmy + std::cos(player_yaw) * 8.0f;
+    draw_quad_ndc(pxX(tx - 2.0f), pxY(ty - 2.0f),
+                  pxX(tx + 2.0f), pxY(ty + 2.0f),
+                  1.0f, 1.0f, 0.2f);
+
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+}
+
 } // namespace dts_viewer

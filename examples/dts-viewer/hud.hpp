@@ -14,7 +14,10 @@
 #include <OpenGL/gl3.h>
 #include <glm/glm.hpp>
 
+#include <array>
+#include <deque>
 #include <string>
+#include <vector>
 
 #include "camera.hpp"
 #include "walk_camera.hpp"
@@ -79,6 +82,55 @@ void hud2d_render(const PlayerState& ps,
                   int viewport_w,
                   int viewport_h);
 void hud2d_shutdown();
+
+// Track 13 spec 02 — compass band at the top of the screen.  Cardinal
+// ticks scroll as yaw rotates; small ticks mark teammate bearings.
+struct CompassTick { glm::vec3 world_pos; std::array<float, 3> color; };
+void hud2d_render_compass(float yaw,
+                          const std::vector<CompassTick>& teammates,
+                          const glm::vec3& player_pos,
+                          int viewport_w,
+                          int viewport_h);
+
+// Track 13 spec 03 — sensor radar (top-right circle).  Renders the
+// player's local field as concentric range rings + tick blips for
+// each entity within `range`.
+struct SensorBlip { glm::vec3 world_pos; std::array<float, 3> color; };
+void hud2d_render_sensor(float yaw,
+                         const glm::vec3& player_pos,
+                         const std::vector<SensorBlip>& blips,
+                         float range,
+                         int viewport_w,
+                         int viewport_h);
+
+// Track 13 spec 04 — objective/message text feed.  No text renderer in
+// v1, so each message is shown as a coloured horizontal bar; older
+// messages fade.  The shared `std::deque<std::string>` from Track 14
+// spec 06 (trigger feed) is the input.
+void hud2d_render_message_feed(const std::deque<std::string>& msgs,
+                               int viewport_w,
+                               int viewport_h);
+
+// Track 13 spec 05 — damage-direction reticle.  Caller registers each
+// incoming damage with `hud2d_report_damage(direction_from_attacker)`;
+// the chevron fades over `damage_fade_seconds`.
+void hud2d_report_damage(float yaw_to_attacker);
+void hud2d_tick(float dt);    // ages reticle chevrons
+void hud2d_render_damage_reticle(int viewport_w, int viewport_h);
+
+// Track 13 spec 06 — command-map overlay.  Toggle with M.  Renders a
+// top-down view: heightmap as grayscale aerial (cached after first
+// build) + icons for each tracked entity.  The icon list mirrors the
+// CompassTick / SensorBlip shapes so callers can reuse data.
+struct MapIcon { glm::vec3 world_pos; std::array<float, 3> color; };
+void hud2d_render_command_map(const float* heightmap,    // row-major (size+1)^2
+                              int size_plus_one,
+                              float metres_per_quad,
+                              const std::vector<MapIcon>& icons,
+                              const glm::vec3& player_pos,
+                              float player_yaw,
+                              int viewport_w,
+                              int viewport_h);
 
 } // namespace dts_viewer
 
