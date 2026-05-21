@@ -255,6 +255,7 @@ HEXDIGIT [a-fA-F0-9]
 "continue"  { CMDlval.i = MakeToken<int>(rwCONTINUE,         yylineno); return rwCONTINUE;         }
 "function"  { CMDlval.i = MakeToken<int>(rwDEFINE,           yylineno); return rwDEFINE;           }
 "new"       { CMDlval.i = MakeToken<int>(rwDECLARE,          yylineno); return rwDECLARE;          }
+"instant"   { CMDlval.i = MakeToken<int>(rwDECLARE,          yylineno); return rwDECLARE;          }
 "singleton" { CMDlval.i = MakeToken<int>(rwDECLARESINGLETON, yylineno); return rwDECLARESINGLETON; }
 "datablock" { CMDlval.i = MakeToken<int>(rwDATABLOCK,        yylineno); return rwDATABLOCK;        }
 "case"      { CMDlval.i = MakeToken<int>(rwCASE,             yylineno); return rwCASE;             }
