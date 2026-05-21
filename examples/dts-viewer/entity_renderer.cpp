@@ -141,26 +141,80 @@ std::vector<TurretState> collect_turrets(
 std::vector<MoveableState> collect_moveables(
     const studio::content::mission::scene_graph& scene)
 {
+    using namespace studio::content::mission;
     std::vector<MoveableState> out;
-    walk(scene.root, [&](const auto& n) {
-        std::visit([&](const auto& p) {
-            using T = std::decay_t<decltype(p)>;
-            if constexpr (std::is_same_v<T,
-                studio::content::mission::node_moveable>) {
-                MoveableState s;
-                s.xf = p.xf;
-                s.data_block_name = p.data_block.name;
-                s.endpoint_a = glm::vec3{ p.xf.position[0],
-                                          p.xf.position[2],
-                                          p.xf.position[1] };
-                s.endpoint_b = s.endpoint_a + glm::vec3{ 0.0f, 10.0f, 0.0f };
-                s.close_time = p.close_time > 0.1f ? p.close_time : 4.0f;
-                s.dwell_time = p.delay_time > 0.0f ? p.delay_time : 2.0f;
-                if (p.status == "up") { s.phase = MoveableState::Phase::AtB; s.t = 1.0f; }
-                out.push_back(s);
+
+    // 14/11 — moveables and their SimPath siblings live under the same
+    // parent SimGroup. Walk groups, then for each group gather any path
+    // (with its marker-child waypoints) so we can attach it to sibling
+    // moveables in the same group.
+    auto gather_waypoints = [](const scene_node& path_node)
+        -> std::pair<std::vector<glm::vec3>, bool>
+    {
+        std::vector<glm::vec3> wps;
+        bool loop = false;
+        if (const auto* p = std::get_if<node_path>(&path_node.payload)) {
+            loop = p->is_looping;
+        }
+        for (const auto& child : path_node.children) {
+            if (const auto* m = std::get_if<node_marker>(&child.payload)) {
+                wps.emplace_back(m->xf.position[0],
+                                 m->xf.position[2],
+                                 m->xf.position[1]);
             }
-        }, n.payload);
-    });
+        }
+        return { std::move(wps), loop };
+    };
+
+    auto visit_group = [&](const scene_node& parent, auto& self) -> void {
+        // First pass: pick the first SimPath sibling (Tribes elevators
+        // typically have at most one path per group).
+        std::vector<glm::vec3> wps;
+        bool loop = false;
+        for (const auto& child : parent.children) {
+            if (std::holds_alternative<node_path>(child.payload)) {
+                auto [w, l] = gather_waypoints(child);
+                if (!w.empty()) { wps = std::move(w); loop = l; break; }
+            }
+        }
+        // Second pass: emit moveable states, attaching waypoints when found.
+        for (const auto& child : parent.children) {
+            if (const auto* p = std::get_if<node_moveable>(&child.payload)) {
+                MoveableState s;
+                s.xf = p->xf;
+                s.data_block_name = p->data_block.name;
+                s.endpoint_a = glm::vec3{ p->xf.position[0],
+                                          p->xf.position[2],
+                                          p->xf.position[1] };
+                s.endpoint_b = s.endpoint_a + glm::vec3{ 0.0f, 10.0f, 0.0f };
+                s.close_time = p->close_time > 0.1f ? p->close_time : 4.0f;
+                s.dwell_time = p->delay_time > 0.0f ? p->delay_time : 2.0f;
+                if (p->status == "up") {
+                    s.phase = MoveableState::Phase::AtB;
+                    s.t = 1.0f;
+                }
+                if (!wps.empty()) {
+                    s.waypoints = wps;
+                    s.loop_path = loop;
+                }
+                out.push_back(std::move(s));
+            }
+            // Recurse into sub-groups (SimGroups, TeamGroups, etc.) so we
+            // also find moveables nested deeper.
+            if (!child.children.empty()
+                && !std::holds_alternative<node_path>(child.payload)) {
+                self(child, self);
+            }
+        }
+    };
+    visit_group(scene.root, visit_group);
+    std::size_t with_path = 0;
+    for (const auto& mv : out) if (!mv.waypoints.empty()) ++with_path;
+    if (with_path > 0) {
+        std::fprintf(stderr,
+            "moveables: %zu total, %zu linked to SimPath waypoints\n",
+            out.size(), with_path);
+    }
     return out;
 }
 
@@ -330,7 +384,48 @@ void tick_moveables(std::vector<MoveableState>& m,
                     const PlayerState& player,
                     float dt)
 {
+    (void)player;
     for (auto& mv : m) {
+        // 14/11 — when a SimPath was attached, play through its
+        // waypoints continuously (no player gating; matches Tribes'
+        // elevators that ride on their own clock).
+        if (!mv.waypoints.empty()) {
+            const int n = static_cast<int>(mv.waypoints.size());
+            if (n == 1) {
+                mv.endpoint_a = mv.endpoint_b = mv.waypoints[0];
+                mv.t = 0.0f;
+                continue;
+            }
+            int next = mv.wp_index + 1;
+            if (next >= n) next = mv.loop_path ? 0 : n - 1;
+            // Dwell at each waypoint.
+            if (mv.dwell_remaining > 0.0f) {
+                mv.dwell_remaining -= dt;
+                mv.endpoint_a = mv.endpoint_b = mv.waypoints[mv.wp_index];
+                mv.t = 0.0f;
+                continue;
+            }
+            const float seg_time = std::max(0.5f, mv.close_time);
+            mv.wp_t += dt / seg_time;
+            if (mv.wp_t >= 1.0f) {
+                mv.wp_t = 0.0f;
+                mv.wp_index = next;
+                mv.dwell_remaining = mv.dwell_time;
+                // If we hit the terminal waypoint of a non-looping path,
+                // stay there (dwell forever; effectively parked).
+                if (!mv.loop_path && mv.wp_index >= n - 1) {
+                    mv.dwell_remaining = 1e9f;
+                }
+                next = mv.wp_index + 1;
+                if (next >= n) next = mv.loop_path ? 0 : n - 1;
+            }
+            mv.endpoint_a = mv.waypoints[mv.wp_index];
+            mv.endpoint_b = mv.waypoints[next];
+            mv.t = mv.wp_t;
+            continue;
+        }
+
+        // Fallback: original endpoint_a -> endpoint_b player-triggered ride.
         glm::vec3 a = mv.endpoint_a;
         glm::vec3 b = mv.endpoint_b;
         glm::vec3 cur = glm::mix(a, b, mv.t);

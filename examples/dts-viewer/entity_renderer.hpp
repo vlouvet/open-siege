@@ -97,6 +97,15 @@ struct MoveableState
     float close_time = 4.0f;
     float dwell_remaining = 0.0f;
     float dwell_time = 2.0f;
+
+    // 14/11 — when the moveable is linked to a SimPath in the scene,
+    // these hold the parsed waypoint list (world-space) and looping
+    // flag. Empty waypoints falls back to the endpoint_a -> endpoint_b
+    // playback path above.
+    std::vector<glm::vec3> waypoints;
+    bool   loop_path = false;
+    int    wp_index  = 0;     // current segment start
+    float  wp_t      = 0.0f;  // 0..1 along (wp_index -> wp_index+1)
 };
 
 std::vector<MoveableState> collect_moveables(
