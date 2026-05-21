@@ -57,6 +57,7 @@
 #include "projectile.hpp"
 #include "inv_station.hpp"
 #include "entity_renderer.hpp"
+#include "cscript_host.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1418,13 +1419,26 @@ int main(int argc, char** argv)
             "       %s <path-to-vol> --dump-bmp <bmp-substring>\n"
             "       %s <path-to-vol> --dump-rgba <bmp-substring> <ppl-substring>\n"
             "       %s --mission <path-to-.ted> [--screenshot path.ppm]\n"
+            "       %s --run-script <path-to-.cs>\n"
             "  e.g. %s tribes-game/base/Entities.vol chainturret\n"
             "       %s tribes-game/base/Entities.vol larmor --grid 4\n"
             "       %s tribes-game/base/Entities.vol --dump-bmp ammo\n"
             "       %s tribes-game/base/Entities.vol --dump-rgba ammo Shell.ppl\n"
-            "       %s --mission tribes-game/base/missions/1_Welcome.ted\n",
-            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+            "       %s --mission tribes-game/base/missions/1_Welcome.ted\n"
+            "       %s --run-script scripts/hello.cs\n",
+            argv[0], argv[0], argv[0], argv[0], argv[0],
+            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 1;
+    }
+
+    // ---- --run-script <path> mode: bring up cscript VM, eval file, exit
+    if (argc >= 3 && std::string(argv[1]) == "--run-script") {
+        dts_viewer::cscript::init();
+        if (!dts_viewer::cscript::runFile(argv[2])) {
+            std::fprintf(stderr, "could not open script: %s\n", argv[2]);
+            return 2;
+        }
+        return 0;
     }
 
     // ---- --mission <path> mode: terrain heightmap renderer ----

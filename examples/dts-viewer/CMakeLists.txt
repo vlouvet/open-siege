@@ -38,16 +38,29 @@ add_executable(dts-viewer
     projectile.cpp
     weapons.cpp
     inv_station.cpp
-    entity_renderer.cpp)
+    entity_renderer.cpp
+    cscript_host.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include
+    ${THREESPACE_DIR}/cscript
+    ${THREESPACE_DIR}/cscript/console
+    ${THREESPACE_DIR}/cscript/console/torquescript
+    ${THREESPACE_DIR}/cscript/math/public
+    ${THREESPACE_DIR}/cscript/math/impl
+    ${THREESPACE_DIR}/cscript/lib
+    ${THREESPACE_DIR}/cscript/lib/tinyxml2
     ${SDL2_INCLUDE_DIRS})
 
 target_link_libraries(dts-viewer PRIVATE
     ${THREESPACE_DIR}/build/lib3space.a
+    ${THREESPACE_DIR}/build/cscript/libcscript_core.a
     ${SDL2_LIBRARIES}
     OpenGL::GL
+    "-framework Cocoa"
+    "-framework Foundation"
+    "-framework CoreFoundation"
+    "-framework IOKit"
     nlohmann_json::nlohmann_json
     Boost::Boost
     glm::glm
