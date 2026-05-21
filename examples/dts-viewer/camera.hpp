@@ -64,7 +64,8 @@ inline glm::mat4 camera_projection(const Camera& c, float aspect)
 // Call from the SDL_MOUSEMOTION event branch when mouse_captured is true.
 inline void handle_mouse_motion(Camera& c, int dx, int dy)
 {
-    c.yaw   += static_cast<float>(dx) * c.mouse_sens;
+    // yaw decreases on dx>0 because camera_forward uses sin(yaw) for +X.
+    c.yaw   -= static_cast<float>(dx) * c.mouse_sens;
     c.pitch -= static_cast<float>(dy) * c.mouse_sens;
     c.pitch  = glm::clamp(c.pitch, -1.55f, 1.55f);
 }
