@@ -2,6 +2,7 @@
 
 #include "cscript_host.hpp"
 #include "player_simobject.hpp"
+#include "entity_bindings.hpp"
 
 #include "console/console.h"
 #include "console/script.h"
@@ -41,6 +42,10 @@ namespace {
     // Spec 16/05 — Player SimObject class. Lives in dts_viewer:: so the
     // anchor function is in the same TU as IMPLEMENT_CONOBJECT(Player).
     dts_viewer::anchorPlayerClass();
+    // Spec 16/06 — Item / Turret / StaticShape / Moveable / Generator /
+    // Trigger / VehiclePlaceholder / Door / MissionMarker / SimLight /
+    // Sky / Planet / Sensor — 13 entity SimObject subclasses.
+    dts_viewer::anchorEntityClasses();
 }
 
 } // namespace

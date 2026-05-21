@@ -215,3 +215,12 @@ add_executable(cscript_player_binding_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/player_binding.test.cpp)
 set_property(TARGET cscript_player_binding_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_player_binding_test PRIVATE cscript_core)
+
+# Spec 16/06 entity bindings — 13 SimObject subclasses covering the
+# Track 14 entity types. Test re-defines each as `*Ent` to validate the
+# binding contract without dts-viewer link wiring; dts-viewer's actual
+# classes smoke-tested via --run-script.
+add_executable(cscript_entity_bindings_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/entity_bindings.test.cpp)
+set_property(TARGET cscript_entity_bindings_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_entity_bindings_test PRIVATE cscript_core)
