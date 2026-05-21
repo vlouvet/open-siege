@@ -1465,6 +1465,18 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // Spec 17/06 — global `--verbose-cscript` flag bypasses the
+    // benign-warning filter in the cscript console sink. Strip it from
+    // argv before mode dispatch so it works in any mode.
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--verbose-cscript") {
+            dts_viewer::cscript::set_verbose(true);
+            // Shift remaining argv left to remove the flag.
+            for (int j = i; j < argc - 1; ++j) argv[j] = argv[j + 1];
+            --argc; --i;
+        }
+    }
+
     // ---- --run-script <path> mode: bring up cscript VM, eval file, exit
     if (argc >= 3 && std::string(argv[1]) == "--run-script") {
         dts_viewer::cscript::init();
@@ -1841,6 +1853,13 @@ int main(int argc, char** argv)
             const fs::path base_dir     = missions_dir.parent_path();
             dts_viewer::mission_load(
                 mctx, missions_dir, base_dir, ted_path.stem().string());
+        }
+        // Spec 17/06 — print one-line summary of how many benign Tribes
+        // warnings were suppressed during script load.
+        if (int n = dts_viewer::cscript::flush_suppression_count(); n > 0) {
+            std::printf(
+                "[cscript] suppressed %d benign Tribes-idiom warnings "
+                "(use --verbose-cscript to show)\n", n);
         }
 
         // ---- Interior meshes (Track 14 follow-up: render placed bases) ----

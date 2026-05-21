@@ -29,6 +29,17 @@ namespace dts_viewer::cscript
 
     // Evaluate an inline source string.
     void eval(const std::string& src);
+
+    // Spec 17/06 — toggle the Tribes-corpus warning filter. When
+    // verbose=true the consoleSink forwards every line; when false
+    // (default), `Variable %X referenced before used` and `string
+    // always evaluates to 0` messages are swallowed and counted.
+    void set_verbose(bool verbose);
+
+    // How many lines have been suppressed since the last call to
+    // flush_suppression_count. Used by main.cpp to print a single
+    // summary at the end of mission load.
+    int flush_suppression_count();
 }
 
 #endif // DTS_VIEWER_CSCRIPT_HOST_HPP

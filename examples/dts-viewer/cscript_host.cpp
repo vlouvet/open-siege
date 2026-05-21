@@ -59,9 +59,28 @@ namespace {
 namespace {
 
 bool g_initialised = false;
+bool g_verbose     = false;
+int  g_suppressed  = 0;
+
+// Spec 17/06 — Tribes corpus regularly trips two modern-Torque
+// compile warnings on legitimate idioms. Filter them at the consumer
+// so the user-facing log is readable. `--verbose-cscript` bypasses.
+bool is_benign_tribes_warning(const char* line)
+{
+    if (!line) return false;
+    // Compile-warning prefix is "Script Warning: Variable %X referenced
+    // before used" — match the substring after the level prefix.
+    if (std::strstr(line, "referenced before used") != nullptr) return true;
+    if (std::strstr(line, "string always evaluates to 0") != nullptr) return true;
+    return false;
+}
 
 void consoleSink(unsigned int /*level*/, const char* line)
 {
+    if (!g_verbose && is_benign_tribes_warning(line)) {
+        ++g_suppressed;
+        return;
+    }
     std::printf("[cscript] %s\n", line);
 }
 
@@ -103,6 +122,15 @@ void eval(const std::string& src)
 {
     init();
     Con::evaluate(src.c_str(), false, "inline");
+}
+
+void set_verbose(bool verbose) { g_verbose = verbose; }
+
+int flush_suppression_count()
+{
+    const int n = g_suppressed;
+    g_suppressed = 0;
+    return n;
 }
 
 } // namespace dts_viewer::cscript
