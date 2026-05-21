@@ -193,21 +193,21 @@ namespace studio::content::terrain
       if (!read_u32(src, v)) return fail();
     }
 
-    // Remaining bytes form the pick list: pairs of (texture, flags).
+    // Remaining bytes form the pick list: each byte is a texture index.
+    // pick_offs values are byte offsets into this array, so the trailing
+    // sentinel equals the byte count (i.e. pick_list.size()).
     auto remaining = bytes_remaining(src);
     if (remaining < 0) return fail();
-    if (remaining % 2 != 0) return fail();
-    const std::uint64_t pair_count = static_cast<std::uint64_t>(remaining) / 2ull;
-    out.pick_list.resize(static_cast<std::size_t>(pair_count));
-    for (auto& p : out.pick_list)
+    const std::uint64_t entry_count = static_cast<std::uint64_t>(remaining);
+    out.pick_list.resize(static_cast<std::size_t>(entry_count));
+    if (entry_count > 0)
     {
-      if (!read_u8(src, p.texture_index)) return fail();
-      if (!read_u8(src, p.flags)) return fail();
+      if (!read_bytes(src, out.pick_list.data(), entry_count)) return fail();
     }
 
-    // Trailing sentinel must match pickList length in pairs.
+    // Trailing sentinel must match pickList byte length.
     if (!out.pick_offs.empty()
-        && out.pick_offs.back() != static_cast<std::uint32_t>(pair_count))
+        && out.pick_offs.back() != static_cast<std::uint32_t>(entry_count))
     {
       return fail();
     }

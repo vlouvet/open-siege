@@ -93,17 +93,6 @@ namespace studio::content::terrain
   // <world>.Grid.dat
   // ---------------------------------------------------------------
 
-  // One (texture-index, orientation-flags) pair in the pick list.
-  struct grid_pick
-  {
-    // Index into the parent world's Terrain.dat / DML texture array.
-    std::uint8_t texture_index = 0;
-
-    // Low 3 bits use the same plain/rotate/flipX/flipY encoding as
-    // the `materialmap.flags` field documented in the DTB spec.
-    std::uint8_t flags = 0;
-  };
-
   struct grid_dat
   {
     // On-disk grid layout version; 3 is the only value observed in
@@ -143,9 +132,11 @@ namespace studio::content::terrain
     // `k`. The trailing sentinel equals `pick_list.size()`.
     std::vector<std::uint32_t> pick_offs;
 
-    // Variable-length tail; each entry is (texture_index, flags).
-    // Sized as `(file_size - fixed_prefix) / 2`.
-    std::vector<grid_pick> pick_list;
+    // Variable-length tail. Each byte is a texture index into the
+    // matching Terrain.dat / DML array. pick_offs[] values index
+    // into this array by byte position, so pick_list.size() ==
+    // pick_offs.back().
+    std::vector<std::uint8_t> pick_list;
   };
 
   // Parse a `<world>.Grid.dat`. Returns std::nullopt when:

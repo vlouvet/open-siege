@@ -12,6 +12,7 @@
 #include <catch2/catch.hpp>
 
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -183,11 +184,11 @@ TEST_CASE("parse_grid_dat reads a hand-crafted file", "[terrain][grid]")
     put_u32(buf, 4u);
   }
 
-  // pick_list: 4 pairs.
+  // pick_list: 4 single-byte texture indices. pick_offs values are byte
+  // offsets, so pick_offs.back() == 4 == pick_list.size().
   for (std::uint8_t i = 0; i < 4; ++i)
   {
-    put_u8(buf, i);   // texture_index
-    put_u8(buf, 0);   // flags
+    put_u8(buf, i);   // texture index (1 byte per entry)
   }
 
   auto ss = make_stream(buf);
@@ -200,8 +201,8 @@ TEST_CASE("parse_grid_dat reads a hand-crafted file", "[terrain][grid]")
   REQUIRE(gd->pick_offs.size() == 17);
   REQUIRE(gd->pick_list.size() == 4);
   REQUIRE(gd->pick_offs.back() == gd->pick_list.size());
-  REQUIRE(gd->pick_list[0].texture_index == 0);
-  REQUIRE(gd->pick_list[3].texture_index == 3);
+  REQUIRE(gd->pick_list[0] == 0);
+  REQUIRE(gd->pick_list[3] == 3);
 }
 
 TEST_CASE("parse_grid_dat rejects an unsupported version",
@@ -350,12 +351,14 @@ TEST_CASE("parse_terrain_dat sweeps all six shipping worlds",
     REQUIRE(td.has_value());
     REQUIRE(td->type_descriptions.size() == w.num_types);
     REQUIRE(td->records.size() == w.num_textures);
-    // Every BMP filename should be non-empty ASCII and end in .BMP
-    // (case-sensitive in the corpus).
+    // Every BMP filename should be non-empty and contain .BMP or .bmp
+    // (corpus uses mixed case — check case-insensitively).
     for (auto const& r : td->records)
     {
       REQUIRE_FALSE(r.bitmap_name.empty());
-      REQUIRE(r.bitmap_name.find(".BMP") != std::string::npos);
+      std::string upper = r.bitmap_name;
+      for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      REQUIRE(upper.find(".BMP") != std::string::npos);
     }
     // 128-byte reserved region is always all-zero in the corpus.
     for (auto const& r : td->records)
