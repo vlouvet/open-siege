@@ -44,6 +44,7 @@
 #include "height_sampler.hpp"
 #include "mission_bounds.hpp"
 #include "walk_camera.hpp"
+#include "skybox_renderer.hpp"
 #include <set>
 #include <cstdint>
 
@@ -1478,6 +1479,53 @@ int main(int argc, char** argv)
         // Stretch the camera's far plane to fit the playable area.
         ter_cam.far_plane = std::max(ter_cam.far_plane, bounds.recommended_far_plane);
 
+        // Build a MaterialResolver over all mounted world VOLs.
+        dts_viewer::MaterialResolver ter_resolver;
+        std::vector<Palette> ter_palettes;
+        std::optional<dts_viewer::SkyboxResources> sky_box;
+        if (ter_mission) {
+            for (const auto& v : ter_mission->mounted_vols) {
+                if (fs::exists(v)) ter_resolver.add_vol(v);
+            }
+            // Load the per-mission palette (e.g. lush.day.ppl) — needed by
+            // skybox + interior textures.  Scan mounted VOLs for the file.
+            if (ter_mission->scene.palette) {
+                const std::string& ppl_name = ter_mission->scene.palette->ppl_filename;
+                auto bytes = ter_resolver.resolve(ppl_name);
+                if (bytes && !bytes->empty()) {
+                    try {
+                        std::stringstream ss(std::string(bytes->begin(), bytes->end()));
+                        ter_palettes = load_ppl(ss);
+                        std::printf("terrain: loaded %zu palettes from %s\n",
+                            ter_palettes.size(), ppl_name.c_str());
+                    } catch (const std::exception& e) {
+                        std::fprintf(stderr, "terrain: PPL parse failed (%s): %s\n",
+                            ppl_name.c_str(), e.what());
+                    }
+                }
+            }
+            if (ter_mission->scene.sky) {
+                auto pal_map = by_index(ter_palettes);
+                const studio::content::mission::node_star_field* sf = nullptr;
+                // Star field is a sibling node — scan the scene root for it.
+                auto find_star = [&](auto& self,
+                    const studio::content::mission::scene_node& n) ->
+                    const studio::content::mission::node_star_field*
+                {
+                    if (auto* s = std::get_if<studio::content::mission::node_star_field>(&n.payload))
+                        return s;
+                    for (auto& c : n.children) {
+                        if (auto* r = self(self, c)) return r;
+                    }
+                    return nullptr;
+                };
+                sf = find_star(find_star, ter_mission->scene.root);
+                sky_box = dts_viewer::build_skybox(
+                    *ter_mission->scene.sky, sf, ter_resolver, pal_map);
+            }
+        }
+        bool show_sky = sky_box.has_value();
+
         dts_viewer::CameraMode cam_mode = dts_viewer::CameraMode::Free;
         bool show_bounds_debug = false;
         bool wireframe = false;
@@ -1584,6 +1632,10 @@ int main(int argc, char** argv)
             glm::mat4 V   = dts_viewer::camera_view(ter_cam);
             glm::mat4 P   = dts_viewer::camera_projection(ter_cam, (float)w / (float)h);
             glm::mat4 MVP = P * V;
+
+            if (sky_box && show_sky) {
+                dts_viewer::draw_skybox(*sky_box, V, P);
+            }
 
             glUseProgram(terrain_prog);
             glUniformMatrix4fv(u_ter_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
