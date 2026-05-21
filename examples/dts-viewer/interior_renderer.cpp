@@ -322,10 +322,39 @@ std::vector<UnpackedTile> unpack_dil_surfaces(
         if ((enc & 0x40000000u) != 0) {
             // Huffman-encoded: decode from byte offset.
             const std::size_t off = enc & 0x3FFFFFFFu;
+            if (const char* tr = std::getenv("DIL_TRACE_ALL"); tr && *tr == '1') {
+                std::fprintf(stderr,
+                    "    dil-all: surface %zu enc=0x%08x off=0x%zx wh=%dx%d\n",
+                    si, enc, off, w, h);
+            }
             auto pixels = decode_huffman_pixels(dil, off, pixel_count);
             if (pixels.size() != pixel_count) {
                 ++fail_count;
-                // Fall through: leave the tile zero-filled (will appear black).
+                if (const char* tr = std::getenv("DIL_TRACE_EOF"); tr && *tr == '1') {
+                    std::fprintf(stderr,
+                        "    dil-trace: surface %zu enc=0x%08x wh=%dx%d "
+                        "off=0x%zx avail=%zu wanted=%zu got=%zu "
+                        "nodes=%zu leaves=%zu\n",
+                        si, enc, w, h, off,
+                        dil.map_data.size() > off
+                            ? dil.map_data.size() - off : 0,
+                        pixel_count, pixels.size(),
+                        dil.huffman_nodes.size(),
+                        dil.huffman_leaves.size());
+                }
+                // Spec 06/08 — when a mission-DIL surface fails to
+                // decode it's almost certainly because the surface is
+                // supposed to be resolved against the STOCK DIL via
+                // the IndexEntry remap (see clean-room spec §7.3).
+                // We don't yet load the stock DIL; fall back to a
+                // neutral mid-grey so the surface is visible-but-flat
+                // rather than pitch-black until proper remap lands.
+                for (std::size_t p = 0; p < pixel_count; ++p) {
+                    t.rgba[p * 4 + 0] = 128;
+                    t.rgba[p * 4 + 1] = 128;
+                    t.rgba[p * 4 + 2] = 128;
+                    t.rgba[p * 4 + 3] = 255;
+                }
             } else {
                 for (std::size_t p = 0; p < pixel_count; ++p) {
                     irgb4444_to_rgba8(pixels[p], shift,
@@ -369,7 +398,7 @@ std::vector<UnpackedTile> unpack_dil_surfaces(
         "interior: lightmap unpacked — %zu surfaces, %zu pixels, "
         "mean luminance %.3f%s\n",
         tiles.size(), total_px, mean,
-        fail_count > 0 ? " (some surfaces fell back to black on Huffman EOF)" : "");
+        fail_count > 0 ? " (mid-grey fallback applied to surfaces needing stock-DIL remap)" : "");
 
     return tiles;
 }
