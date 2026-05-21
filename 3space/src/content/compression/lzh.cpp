@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <istream>
 #include <sstream>
 #include <stdexcept>
@@ -123,6 +124,24 @@ namespace studio::content::compression
         // Guaranteed by prior peek to have at least 8 buffered.
         buffered_ -= bit_count;
         buffer_ &= (1u << buffered_) - 1u;
+      }
+
+      // After decompression, seek the underlying stream back so that it is
+      // positioned immediately after the last LZH byte that was actually
+      // needed. The bit-reader may have pre-fetched up to 3 extra bytes
+      // that belong to the NEXT section of the containing chunk. Seeking
+      // back by floor(buffered_/8) bytes restores the correct position.
+      // Seek back any whole bytes the bit reader pre-fetched beyond what
+      // was actually needed. Only full bytes can be returned; fractional
+      // bits within the last consumed byte remain in the buffer.
+      void rewind_lookahead()
+      {
+        const std::streamoff extra =
+          static_cast<std::streamoff>(buffered_ / 8);
+        if (extra > 0)
+        {
+          in_.seekg(-extra, std::ios::cur);
+        }
       }
 
     private:
@@ -405,6 +424,9 @@ namespace studio::content::compression
           if (output.size() >= expected_output_size)
           {
             // Stop mid-back-reference; do not consume further input.
+            // Rewind any pre-fetched bytes so the stream sits exactly
+            // at the first byte of the next section.
+            br.rewind_lookahead();
             return output;
           }
           std::uint8_t b = window[(src + k) & (window_size - 1)];
@@ -415,6 +437,9 @@ namespace studio::content::compression
       }
     }
 
+    // Rewind any pre-fetched bytes so the stream is positioned at the
+    // first byte past the last consumed LZH byte (not one extra byte ahead).
+    br.rewind_lookahead();
     return output;
   }
 
