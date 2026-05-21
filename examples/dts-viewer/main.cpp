@@ -1495,6 +1495,7 @@ int main(int argc, char** argv)
         dts_viewer::load_config();
         dts_viewer::set_mission_catalogue(mission_reg.short_names);
 
+
         std::string screenshot_path_ter;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
@@ -1928,6 +1929,32 @@ int main(int argc, char** argv)
 
         std::printf("keys: F1=wireframe  Tab=walk/free  F=spawn  F3=bounds  "
                     "WASD=fly  mouse=look  Esc=release  Q=quit\n");
+
+        // Spec 25/04 — wire View menu toggles + quit to the local
+        // flags. Capture-by-reference so menu clicks mutate the same
+        // bools the keys do.
+        {
+            dts_viewer::MenuActions a;
+            a.quit            = [&]{ running = false; };
+            a.is_wireframe    = [&]{ return wireframe; };
+            a.toggle_wireframe= [&]{
+                wireframe = !wireframe;
+                std::printf("wireframe: %s\n", wireframe ? "on" : "off");
+            };
+            a.is_hud          = [&]{ return hud.visible; };
+            a.toggle_hud      = [&]{ hud.visible = !hud.visible; };
+            a.is_bbox         = [&]{ return show_bounds_debug; };
+            a.toggle_bbox     = [&]{
+                show_bounds_debug = !show_bounds_debug;
+                std::printf("mission-bounds: %s\n",
+                    show_bounds_debug ? "on" : "off");
+            };
+            a.is_free_camera  = [&]{ return cam_mode == dts_viewer::CameraMode::Free; };
+            a.is_walk_camera  = [&]{ return cam_mode == dts_viewer::CameraMode::Walk; };
+            a.set_free_camera = [&]{ cam_mode = dts_viewer::CameraMode::Free; };
+            a.set_walk_camera = [&]{ cam_mode = dts_viewer::CameraMode::Walk; };
+            dts_viewer::set_menu_actions(a);
+        }
 
         while (running) {
             // Spec 25/03 — drain the deferred-load queue. The picker
@@ -3877,6 +3904,16 @@ void main() {
 
     bool running = true;
     std::string self_arg0_shape = argv[0];
+
+    // Spec 25/04 — shape mode has no wireframe/HUD/bbox/cam toggles
+    // to wire (those are mission-mode concepts). Just bind Quit; the
+    // View menu items stay disabled since their callbacks are unset.
+    {
+        dts_viewer::MenuActions a;
+        a.quit = [&]{ running = false; };
+        dts_viewer::set_menu_actions(a);
+    }
+
     while (running) {
         // Spec 25/03 — drain deferred-load. For the shape viewer mode
         // we re-exec ourselves with `<vol> <shape>`.

@@ -166,19 +166,32 @@ void draw_menu_bar()
     }
 
     if (ImGui::BeginMenu("View")) {
-        if (ImGui::MenuItem("Wireframe", "W", query(g_actions.is_wireframe)))
+        const bool has_wf = (bool)g_actions.toggle_wireframe;
+        if (ImGui::MenuItem("Wireframe", "`", query(g_actions.is_wireframe),
+                            has_wf))
             call_or_log(g_actions.toggle_wireframe, "View > Wireframe");
-        if (ImGui::MenuItem("HUD", "H", query(g_actions.is_hud)))
+
+        const bool has_hud = (bool)g_actions.toggle_hud;
+        if (ImGui::MenuItem("HUD", "F1", query(g_actions.is_hud), has_hud))
             call_or_log(g_actions.toggle_hud, "View > HUD");
+
         ImGui::Separator();
-        if (ImGui::MenuItem("Free Camera", "F", query(g_actions.is_free_camera)))
+        const bool has_cam = (bool)g_actions.set_free_camera;
+        if (ImGui::MenuItem("Free Camera", "Tab",
+                            query(g_actions.is_free_camera), has_cam))
             call_or_log(g_actions.set_free_camera, "View > Free Camera");
-        if (ImGui::MenuItem("Walk Camera", "G", query(g_actions.is_walk_camera)))
+        if (ImGui::MenuItem("Walk Camera", "Tab",
+                            query(g_actions.is_walk_camera), has_cam))
             call_or_log(g_actions.set_walk_camera, "View > Walk Camera");
+
         ImGui::Separator();
-        if (ImGui::MenuItem("Bounding Boxes", "B", query(g_actions.is_bbox)))
+        const bool has_bbox = (bool)g_actions.toggle_bbox;
+        if (ImGui::MenuItem("Bounding Boxes", "F3",
+                            query(g_actions.is_bbox), has_bbox))
             call_or_log(g_actions.toggle_bbox, "View > Bounding Boxes");
-        if (ImGui::MenuItem("Show FPS", "Shift+F", query(g_actions.is_fps)))
+        const bool has_fps = (bool)g_actions.toggle_fps;
+        if (ImGui::MenuItem("Show FPS", nullptr, query(g_actions.is_fps),
+                            has_fps))
             call_or_log(g_actions.toggle_fps, "View > Show FPS");
         ImGui::EndMenu();
     }
