@@ -30,6 +30,7 @@
 #endif
 
 #include "script.h"
+#include "script_resolver.h"
 #include "core/strings/findMatch.h"
 #include "core/strings/stringUnit.h"
 #include "core/strings/unicode.h"
@@ -2348,21 +2349,19 @@ DefineEngineFunction( compile, bool, ( const char* fileName, bool overrideNoDSO 
 
 //-----------------------------------------------------------------------------
 
-DefineEngineFunction( exec, bool, ( const char* fileName, bool noCalls, bool journalScript ), ( false, false ),
+// Open Siege spec 17/01 — exec() routes through the open-siege resolver
+// (script_resolver.cpp) instead of Torque's heavy VFS+DSO path. The
+// upstream Con::executeFile relies on FS::GetFileNode + expandScriptFilename
+// + DSO caching, none of which are wired in our cut-down cscript_core
+// build. The simpler resolver — search-paths list + current-script-dir
+// stack for relative paths — fully covers the Tribes 1 exec idioms.
+DefineEngineFunction( exec, bool, ( const char* fileName, bool /*noCalls*/, bool /*journalScript*/ ), ( false, false ),
    "Execute the given script file.\n"
    "@param fileName Path to the file to execute\n"
-   "@param noCalls Deprecated\n"
-   "@param journalScript Deprecated\n"
    "@return True if the script was successfully executed, false if not.\n\n"
-   "@tsexample\n"
-      "// Execute the init." TORQUE_SCRIPT_EXTENSION " script file found in the same directory as the current script file.\n"
-      "exec( \"./init." TORQUE_SCRIPT_EXTENSION "\" );\n"
-   "@endtsexample\n\n"
-   "@see compile\n"
-   "@see eval\n"
    "@ingroup Scripting" )
 {
-   return Con::executeFile(fileName, noCalls, journalScript);
+   return studio::content::cscript::ScriptResolver::runScriptFile(fileName);
 }
 
 DefineEngineFunction( eval, const char*, ( const char* consoleString, bool echo ), (false), "eval(consoleString)")

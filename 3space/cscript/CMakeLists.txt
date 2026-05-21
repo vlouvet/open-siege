@@ -82,7 +82,11 @@ file(GLOB CSCRIPT_THREADPOOL_CPP CONFIGURE_DEPENDS
 set(CSCRIPT_CINTERFACE_CPP "")
 set(CSCRIPT_EXTRA_CPP
         ${CSCRIPT_ROOT}/util/messaging/message.cpp
-        ${CSCRIPT_ROOT}/stubs/engine_stubs.cpp)
+        ${CSCRIPT_ROOT}/stubs/engine_stubs.cpp
+        # Spec 17/01 — exec() path resolver. Lives at the cscript/
+        # top-level so it isn't bundled with the vendored upstream
+        # console/ or core/ directories.
+        ${CSCRIPT_ROOT}/script_resolver.cpp)
 
 list(REMOVE_ITEM CSCRIPT_CONSOLE_CPP ${CSCRIPT_CONSOLE_EXCLUDE})
 list(REMOVE_ITEM CSCRIPT_PLATFORM_CPP ${CSCRIPT_PLATFORM_EXCLUDE})
@@ -231,3 +235,11 @@ add_executable(cscript_script_callbacks_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/script_callbacks.test.cpp)
 set_property(TARGET cscript_script_callbacks_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_script_callbacks_test PRIVATE cscript_core)
+
+# Spec 17/01 exec() + script resolver — absolute paths, missing-file
+# warnings, recursive exec via ./, search-path resolution, auto .cs
+# extension, real T1 corpus load.
+add_executable(cscript_exec_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/exec.test.cpp)
+set_property(TARGET cscript_exec_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_exec_test PRIVATE cscript_core)
