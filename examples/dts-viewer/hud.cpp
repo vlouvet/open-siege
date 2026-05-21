@@ -150,6 +150,14 @@ GLuint g_hud2d_vao  = 0;
 GLuint g_hud2d_vbo  = 0;
 GLint  g_hud2d_u_color = -1;
 
+// Textured-quad program for the command-map aerial backdrop (13/08).
+GLuint g_hud2d_tex_prog = 0;
+GLuint g_hud2d_tex_vao  = 0;
+GLuint g_hud2d_tex_vbo  = 0;
+GLint  g_hud2d_tex_u_tint = -1;
+GLint  g_hud2d_tex_u_alpha = -1;
+GLint  g_hud2d_tex_u_sampler = -1;
+
 const char* HUD2D_VS = R"(
 #version 410 core
 layout(location = 0) in vec2 a_pos;   // NDC-space quad vertices
@@ -161,6 +169,27 @@ const char* HUD2D_FS = R"(
 uniform vec3 u_color;
 out vec4 frag;
 void main() { frag = vec4(u_color, 1.0); }
+)";
+
+const char* HUD2D_TEX_VS = R"(
+#version 410 core
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec2 a_uv;
+out vec2 v_uv;
+void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }
+)";
+
+const char* HUD2D_TEX_FS = R"(
+#version 410 core
+in vec2 v_uv;
+uniform sampler2D u_tex;
+uniform vec3 u_tint;
+uniform float u_alpha;
+out vec4 frag;
+void main() {
+    vec3 c = texture(u_tex, v_uv).rgb * u_tint;
+    frag = vec4(c, u_alpha);
+}
 )";
 
 GLuint compile_simple(GLenum type, const char* src)
@@ -198,6 +227,52 @@ void ensure_init()
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
     glBindVertexArray(0);
+
+    // Textured-quad program: pos.xy + uv.xy interleaved (4 floats / vertex).
+    GLuint tvs = compile_simple(GL_VERTEX_SHADER,   HUD2D_TEX_VS);
+    GLuint tfs = compile_simple(GL_FRAGMENT_SHADER, HUD2D_TEX_FS);
+    g_hud2d_tex_prog = link_simple(tvs, tfs);
+    g_hud2d_tex_u_tint    = glGetUniformLocation(g_hud2d_tex_prog, "u_tint");
+    g_hud2d_tex_u_alpha   = glGetUniformLocation(g_hud2d_tex_prog, "u_alpha");
+    g_hud2d_tex_u_sampler = glGetUniformLocation(g_hud2d_tex_prog, "u_tex");
+    glGenVertexArrays(1, &g_hud2d_tex_vao);
+    glBindVertexArray(g_hud2d_tex_vao);
+    glGenBuffers(1, &g_hud2d_tex_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, g_hud2d_tex_vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          reinterpret_cast<const void*>(0));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          reinterpret_cast<const void*>(2 * sizeof(float)));
+    glBindVertexArray(0);
+}
+
+void draw_textured_quad_ndc(float x0, float y0, float x1, float y1,
+                            GLuint tex, float r, float g, float b, float alpha)
+{
+    if (!g_hud2d_tex_prog || !tex) return;
+    // UV (0,0) at top-left -> map row 0 to NDC y0 (top). Since y0/y1 are
+    // NDC (top = +1, bottom = -1), and rendered with y1 < y0 typically,
+    // we feed UV.v = 0 at the top vertex.
+    const float verts[] = {
+        x0, y0, 0.0f, 0.0f,
+        x1, y0, 1.0f, 0.0f,
+        x1, y1, 1.0f, 1.0f,
+        x0, y0, 0.0f, 0.0f,
+        x1, y1, 1.0f, 1.0f,
+        x0, y1, 0.0f, 1.0f,
+    };
+    glUseProgram(g_hud2d_tex_prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(g_hud2d_tex_u_sampler, 0);
+    glUniform3f(g_hud2d_tex_u_tint, r, g, b);
+    glUniform1f(g_hud2d_tex_u_alpha, alpha);
+    glBindVertexArray(g_hud2d_tex_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_hud2d_tex_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
 void draw_quad_ndc(float x0, float y0, float x1, float y1,
@@ -539,8 +614,9 @@ void hud2d_render_damage_reticle(int viewport_w, int viewport_h)
 
 // ---- Command map (spec 13/06) ----
 namespace {
-GLuint g_map_tex = 0;
-int    g_map_size = 0;
+GLuint      g_map_tex  = 0;
+int         g_map_size = 0;
+const void* g_map_src  = nullptr;
 }
 
 void hud2d_render_command_map(const float* heightmap,
@@ -559,40 +635,68 @@ void hud2d_render_command_map(const float* heightmap,
     ensure_init();
     if (!g_hud2d_prog) return;
 
-    // Lazily bake a grayscale aerial texture once per heightmap.
-    if (g_map_tex == 0 || g_map_size != size_plus_one) {
+    // Lazily bake an aerial map texture once per heightmap (13/08).
+    // Combines an elevation gradient (light=high, dark=low) with a
+    // slope-shading factor (steep terrain darkens) so the map reads
+    // topographically.
+    if (g_map_tex == 0 || g_map_size != size_plus_one
+        || g_map_src != static_cast<const void*>(heightmap)) {
         if (g_map_tex) glDeleteTextures(1, &g_map_tex);
-        std::vector<std::uint8_t> rgba(
-            static_cast<std::size_t>(size_plus_one) * size_plus_one * 4);
+        const int N = size_plus_one;
+        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(N) * N * 4);
         float hmin = heightmap[0], hmax = heightmap[0];
-        for (int i = 0; i < size_plus_one * size_plus_one; ++i) {
+        for (int i = 0; i < N * N; ++i) {
             hmin = std::min(hmin, heightmap[i]);
             hmax = std::max(hmax, heightmap[i]);
         }
         const float rng = std::max(1.0f, hmax - hmin);
-        for (int i = 0; i < size_plus_one * size_plus_one; ++i) {
-            float t = (heightmap[i] - hmin) / rng;
-            std::uint8_t v = static_cast<std::uint8_t>(t * 255.0f);
-            rgba[i * 4 + 0] = v;
-            rgba[i * 4 + 1] = v;
-            rgba[i * 4 + 2] = v;
-            rgba[i * 4 + 3] = 220;
+        // World step between samples (used to normalise slope into 0..1).
+        const float step = std::max(1.0f, metres_per_quad);
+        // Tunable: maximum slope (radians-equivalent) that maps to 0
+        // shading. 0.7 ≈ 35° — beyond that we're at the dark end.
+        const float slope_full = 0.7f;
+        for (int y = 0; y < N; ++y) {
+            for (int x = 0; x < N; ++x) {
+                const int idx = y * N + x;
+                const float h  = heightmap[idx];
+                const float hL = heightmap[y * N + std::max(0, x - 1)];
+                const float hR = heightmap[y * N + std::min(N - 1, x + 1)];
+                const float hD = heightmap[std::max(0, y - 1) * N + x];
+                const float hU = heightmap[std::min(N - 1, y + 1) * N + x];
+                const float dx = (hR - hL) / (2.0f * step);
+                const float dz = (hU - hD) / (2.0f * step);
+                const float slope = std::sqrt(dx * dx + dz * dz);
+                const float elev_t = (h - hmin) / rng;            // 0..1
+                const float slope_t = std::min(1.0f, slope / slope_full);
+                // Tribes-style topographic green: hue from dark green
+                // (low + flat) to khaki (high) — slope darkens both.
+                float base_r = 0.20f + 0.55f * elev_t;
+                float base_g = 0.30f + 0.45f * elev_t;
+                float base_b = 0.18f + 0.20f * elev_t;
+                const float darken = 1.0f - 0.60f * slope_t;
+                base_r *= darken; base_g *= darken; base_b *= darken;
+                rgba[idx * 4 + 0] = static_cast<std::uint8_t>(
+                    std::min(1.0f, base_r) * 255.0f);
+                rgba[idx * 4 + 1] = static_cast<std::uint8_t>(
+                    std::min(1.0f, base_g) * 255.0f);
+                rgba[idx * 4 + 2] = static_cast<std::uint8_t>(
+                    std::min(1.0f, base_b) * 255.0f);
+                rgba[idx * 4 + 3] = 220;
+            }
         }
         glGenTextures(1, &g_map_tex);
         glBindTexture(GL_TEXTURE_2D, g_map_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size_plus_one, size_plus_one,
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, N, N,
             0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        g_map_size = size_plus_one;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        g_map_size = N;
+        g_map_src  = static_cast<const void*>(heightmap);
     }
-    // The flat shader doesn't sample textures.  v1: render an outline +
-    // icon dots only (no aerial baked-image until a textured shader
-    // joins the family).  Heightmap baking above is kept for the
-    // followup polish spec.
-    (void)g_map_tex;
 
-    glUseProgram(g_hud2d_prog);
     glDisable(GL_DEPTH_TEST);
 
     auto pxX = [&](float x){ return (x / viewport_w) * 2.0f - 1.0f; };
@@ -603,10 +707,24 @@ void hud2d_render_command_map(const float* heightmap,
     const float y = (viewport_h - side) * 0.5f;
     const float world_side = size_plus_one * metres_per_quad;
 
-    // Background
-    draw_quad_ndc(pxX(x),        pxY(y),
-                  pxX(x + side), pxY(y + side),
-                  0.05f, 0.08f, 0.05f);
+    // Backdrop: baked aerial heightmap texture (13/08); falls through to
+    // a dark-green flat fill if the bake failed.
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (g_map_tex) {
+        draw_textured_quad_ndc(pxX(x),        pxY(y),
+                               pxX(x + side), pxY(y + side),
+                               g_map_tex, 1.0f, 1.0f, 1.0f, 0.92f);
+    } else {
+        glUseProgram(g_hud2d_prog);
+        draw_quad_ndc(pxX(x),        pxY(y),
+                      pxX(x + side), pxY(y + side),
+                      0.05f, 0.08f, 0.05f);
+    }
+    glDisable(GL_BLEND);
+
+    // Switch back to flat program for icon overlays.
+    glUseProgram(g_hud2d_prog);
 
     auto world_to_map = [&](float wx, float wz, float& mx, float& my) {
         mx = x + ((wx - world_origin_x) / world_side) * side;
