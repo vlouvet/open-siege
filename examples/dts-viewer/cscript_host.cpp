@@ -3,6 +3,7 @@
 #include "cscript_host.hpp"
 #include "player_simobject.hpp"
 #include "entity_bindings.hpp"
+#include "hud_bindings.hpp"
 
 #include "console/console.h"
 #include "console/script.h"
@@ -46,6 +47,11 @@ namespace {
     // Trigger / VehiclePlaceholder / Door / MissionMarker / SimLight /
     // Sky / Planet / Sensor — 13 entity SimObject subclasses.
     dts_viewer::anchorEntityClasses();
+    // Spec 17/03 — addObjective / setObjectiveState / removeObjective /
+    // notify / centerPrint / bottomPrint / setMissionState free
+    // functions. The anchor only matters if hud_bindings.cpp gets
+    // archive-bundled in the future; today it's a direct TU.
+    dts_viewer::anchorHudBindings();
 }
 
 } // namespace

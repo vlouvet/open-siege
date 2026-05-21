@@ -252,3 +252,12 @@ add_executable(cscript_mission_test EXCLUDE_FROM_ALL
 set_property(TARGET cscript_mission_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_mission_test PRIVATE cscript_core)
 
+# Spec 17/03 HUD bindings — addObjective / setObjectiveState /
+# removeObjective / notify / centerPrint / bottomPrint / setMissionState.
+# The bindings are re-defined inline (same DefineEngineFunction shape as
+# the dts-viewer copy in examples/dts-viewer/hud_bindings.cpp).
+add_executable(cscript_hud_bindings_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/hud_bindings.test.cpp)
+set_property(TARGET cscript_hud_bindings_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_hud_bindings_test PRIVATE cscript_core)
+

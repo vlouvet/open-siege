@@ -59,6 +59,7 @@
 #include "entity_renderer.hpp"
 #include "cscript_host.hpp"
 #include "mission.hpp"
+#include "hud_bindings.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1725,14 +1726,17 @@ int main(int argc, char** argv)
         bool show_command_map = false;
 
         // -----------------------------------------------------------------
-        // Spec 17/02 — script-side mission lifecycle.
-        // Brings up cscript_core, asks MissionContext to build a
+        // Spec 17/02 + 17/03 — script-side mission lifecycle + HUD bindings.
+        // Brings up cscript_core, points the HUD bindings (notify /
+        // centerPrint / addObjective / ...) at the live message_feed +
+        // objective HUD state, and asks MissionContext to build a
         // SimGroup("MissionGroup") with one SimObject per scene_graph
-        // entity, and runs the trailing exec(<gameplay-rules>) idents
-        // from the MIS trailer. The tick call inside the fixed-step
-        // loop later drains script-side schedule() events.
+        // entity. The tick call later inside the fixed-step loop drains
+        // script-side schedule() events.
         // -----------------------------------------------------------------
         dts_viewer::cscript::init();
+        dts_viewer::HudBindingsState hud_bindings_state;
+        dts_viewer::hud_bindings_set_host(&message_feed, &hud_bindings_state);
         {
             const fs::path scripts_a =
                 ted_path.parent_path().parent_path() / "scripts";

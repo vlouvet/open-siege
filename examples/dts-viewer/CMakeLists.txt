@@ -53,7 +53,8 @@ add_executable(dts-viewer
     cscript_host.cpp
     player_simobject.cpp
     entity_bindings.cpp
-    mission.cpp)
+    mission.cpp
+    hud_bindings.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include
