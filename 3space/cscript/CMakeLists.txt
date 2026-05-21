@@ -178,3 +178,11 @@ add_executable(cscript_binding_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/binding.test.cpp)
 set_property(TARGET cscript_binding_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_binding_test PRIVATE cscript_core)
+
+# Spec 16/02 — SimSet / SimGroup container test. Exercises nested group
+# construction, getObject/getGroup navigation, add/remove/isMember/clear,
+# and SimGroup cascade-delete lifetime.
+add_executable(cscript_simgroup_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/simgroup.test.cpp)
+set_property(TARGET cscript_simgroup_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_simgroup_test PRIVATE cscript_core)
