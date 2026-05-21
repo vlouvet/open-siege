@@ -224,3 +224,10 @@ add_executable(cscript_entity_bindings_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/entity_bindings.test.cpp)
 set_property(TARGET cscript_entity_bindings_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_entity_bindings_test PRIVATE cscript_core)
+
+# Spec 16/07 bidirectional callbacks — C++ Con::executef(obj, "onEvent",
+# ...) reaching script-side `function Class::onEvent(%self, ...) {...}`.
+add_executable(cscript_script_callbacks_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/script_callbacks.test.cpp)
+set_property(TARGET cscript_script_callbacks_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_script_callbacks_test PRIVATE cscript_core)
