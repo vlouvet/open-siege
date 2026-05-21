@@ -200,3 +200,10 @@ add_executable(cscript_datablock_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/datablock.test.cpp)
 set_property(TARGET cscript_datablock_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_datablock_test PRIVATE cscript_core)
+
+# Spec 16/04 binding macros — DECLARE_CONOBJECT / IMPLEMENT_CONOBJECT /
+# DefineEngineMethod / DefineEngineFunction end-to-end smoke.
+add_executable(cscript_binding_macros_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/binding_macros.test.cpp)
+set_property(TARGET cscript_binding_macros_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_binding_macros_test PRIVATE cscript_core)
