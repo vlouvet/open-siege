@@ -52,6 +52,28 @@ struct HeightSampler
         const float h1 = h01 + (h11 - h01) * fx;
         return h0 + (h1 - h0) * fz;
     }
+
+    // Returns the surface normal (Y-up) at world (x, z) by central
+    // differences of neighbouring samples.  Default (0,1,0) when invalid.
+    inline void sample_normal(float world_x, float world_z, float out[3]) const
+    {
+        if (!valid()) { out[0] = 0; out[1] = 1; out[2] = 0; return; }
+        const float h = metres_per_quad;
+        const float hl = sample(world_x - h, world_z);
+        const float hr = sample(world_x + h, world_z);
+        const float hd = sample(world_x, world_z - h);
+        const float hu = sample(world_x, world_z + h);
+        // n = normalize(cross(d/dz tangent, d/dx tangent))
+        //   = normalize(-dh/dx, 2h, -dh/dz)
+        float nx = -(hr - hl);
+        float ny =  2.0f * h;
+        float nz = -(hu - hd);
+        float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+        if (len < 1e-6f) { out[0] = 0; out[1] = 1; out[2] = 0; return; }
+        out[0] = nx / len;
+        out[1] = ny / len;
+        out[2] = nz / len;
+    }
 };
 
 } // namespace dts_viewer

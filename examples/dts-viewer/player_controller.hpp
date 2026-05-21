@@ -50,6 +50,10 @@ struct PlayerTuning
     float friction        = 8.0f;      // 1/s — vel *= (1 - friction*dt) when no input on ground
     float sprint_mult     = 1.5f;      // shift multiplies the speed cap
     float mouse_sens      = 0.0022f;   // radians per pixel (camera-side, not physics)
+
+    // Terrain collision (spec 09/05)
+    float max_walk_slope  = 45.0f;     // degrees; steeper -> can't walk up, slides down
+    float slide_friction  = 0.4f;      // damps slide momentum on too-steep slopes
 };
 
 struct PlayerState

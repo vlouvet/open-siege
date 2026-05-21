@@ -131,17 +131,52 @@ void player_update(PlayerState&        ps,
         }
     }
 
-    // ---- Ground contact ----
+    // ---- Ground contact + slope (spec 09/05) ----
     const float terrain_y = terrain.valid()
         ? terrain.sample(ps.pos.x, ps.pos.z)
         : 0.0f;
+    float normal[3] { 0.0f, 1.0f, 0.0f };
+    if (terrain.valid()) terrain.sample_normal(ps.pos.x, ps.pos.z, normal);
+    // Hard floor: never tolerate the player below terrain (covers
+    // tunneling at high downward speeds, not just first-contact snap).
+    bool was_below = ps.pos.y < terrain_y;
     const bool was_on_ground = ps.on_ground;
-    if (ps.pos.y <= terrain_y + t.ground_slop && ps.vel.y <= 0.0f) {
-        ps.pos.y    = terrain_y;
-        ps.vel.y    = 0.0f;
+    if (was_below || (ps.pos.y <= terrain_y + t.ground_slop && ps.vel.y <= 0.0f)) {
+        ps.pos.y     = terrain_y;
+        if (ps.vel.y < 0.0f) ps.vel.y = 0.0f;
         ps.on_ground = true;
     } else {
         ps.on_ground = false;
+    }
+    // Slope angle: 0° on flat ground, 90° on a wall.
+    const float dot_up = std::clamp(normal[1], -1.0f, 1.0f);
+    const float slope_rad = std::acos(dot_up);
+    ps.slope_deg = slope_rad * (180.0f / 3.14159265358979323846f);
+
+    // Slope walk-clamp: too-steep, grounded, not jetting, not skiing →
+    // can't climb; instead, project velocity onto slope tangent and add
+    // downhill gravity component.
+    if (ps.on_ground && !ps.jet_active && !ps.skiing &&
+        ps.slope_deg > t.max_walk_slope)
+    {
+        // Project (vel.x, vel.y, vel.z) onto tangent plane defined by normal.
+        glm::vec3 N{ normal[0], normal[1], normal[2] };
+        glm::vec3 v = ps.vel;
+        v -= glm::dot(v, N) * N;
+        // Slide friction damps slide momentum a bit.
+        v *= std::max(0.0f, 1.0f - t.slide_friction * dt);
+        // Add gravity component along slope: g * sin(slope), pointing downhill.
+        // Downhill direction is the projection of -Y onto the tangent plane.
+        glm::vec3 down{ 0.0f, -1.0f, 0.0f };
+        glm::vec3 downhill = down - glm::dot(down, N) * N;
+        float dlen = glm::length(downhill);
+        if (dlen > 1e-4f) {
+            downhill /= dlen;
+            v += downhill * (t.gravity * std::sin(slope_rad) * dt);
+        }
+        ps.vel = v;
+        // Re-clamp Y to terrain since velocity reprojection may have lifted us slightly.
+        ps.pos.y = terrain_y;
     }
 
     // Coyote timer
