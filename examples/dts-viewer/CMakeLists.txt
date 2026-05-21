@@ -19,7 +19,7 @@ find_package(span-lite REQUIRED)
 find_package(pegtl REQUIRED)
 find_package(libzip REQUIRED)
 
-add_executable(dts-viewer main.cpp interior_renderer.cpp)
+add_executable(dts-viewer main.cpp interior_renderer.cpp mission_loader.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include

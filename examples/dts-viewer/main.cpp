@@ -39,6 +39,7 @@
 #include "content/dml/dml.hpp"
 #include "content/terrain/dtf.hpp"
 #include "content/terrain/dtb.hpp"
+#include "mission_loader.hpp"
 #include <set>
 #include <cstdint>
 
@@ -1520,6 +1521,64 @@ int main(int argc, char** argv)
         SDL_GL_DeleteContext(ctx);
         SDL_DestroyWindow(win);
         SDL_Quit();
+        return 0;
+    }
+
+    // ---- --mission-info <name> mode: parse MIS + print summary ----
+    if (argc >= 3 && std::string(argv[1]) == "--mission-info") {
+        const std::string name = argv[2];
+        const fs::path missions_dir = "/Users/v/code/tribes-emscripten/tribes-game/base/missions";
+        const fs::path base_dir     = "/Users/v/code/tribes-emscripten/tribes-game/base";
+
+        // Support direct .mis path too.
+        fs::path direct(name);
+        std::optional<dts_viewer::LoadedMission> lm;
+        if (direct.extension() == ".mis" && fs::exists(direct)) {
+            std::ifstream f(direct);
+            if (f) {
+                try {
+                    auto parsed = studio::content::mission::read_mis_file(f);
+                    dts_viewer::LoadedMission m;
+                    m.mis_path = direct;
+                    m.scene = studio::content::mission::build_scene(parsed);
+                    m.mission_type = m.scene.trailer.game_mission_type.value_or("");
+                    for (const auto& sv : m.scene.volumes_in_order) {
+                        fs::path resolved;
+                        for (const auto& dir : { base_dir, missions_dir }) {
+                            for (const auto& ent : fs::directory_iterator(dir)) {
+                                if (!ent.is_regular_file()) continue;
+                                auto p = ent.path();
+                                auto lo = p.filename().string();
+                                for (auto& c : lo) c = std::tolower((unsigned char)c);
+                                auto svlo = sv.file_name;
+                                for (auto& c : svlo) c = std::tolower((unsigned char)c);
+                                if (lo == svlo) { resolved = p; break; }
+                            }
+                            if (!resolved.empty()) break;
+                        }
+                        m.mounted_vols.push_back(
+                            resolved.empty() ? missions_dir / sv.file_name : resolved);
+                    }
+                    lm = std::move(m);
+                } catch (...) {}
+            }
+        } else {
+            lm = dts_viewer::load_mission(missions_dir, base_dir, name);
+        }
+
+        if (!lm) {
+            std::fprintf(stderr, "mission-info: cannot load mission '%s'\n", name.c_str());
+            // Suggest similar names.
+            std::fprintf(stderr, "Available missions:\n");
+            if (fs::is_directory(missions_dir)) {
+                for (const auto& ent : fs::directory_iterator(missions_dir)) {
+                    if (ent.path().extension() == ".mis")
+                        std::fprintf(stderr, "  %s\n", ent.path().stem().string().c_str());
+                }
+            }
+            return 1;
+        }
+        dts_viewer::print_mission_summary(*lm, std::cout);
         return 0;
     }
 
