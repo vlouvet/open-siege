@@ -44,7 +44,8 @@ void player_update(PlayerState&        ps,
                                      : (t.ground_accel * t.air_control);
 
     // Lerp horizontal velocity toward wish_vel at `accel`.  When grounded
-    // and no input, apply friction to bleed off momentum.
+    // and no input, apply friction to bleed off momentum — UNLESS skiing,
+    // in which case friction is zero (track 10 spec 01).
     glm::vec3 vel_h{ ps.vel.x, 0.0f, ps.vel.z };
     if (has_input) {
         glm::vec3 dv = wish_vel - vel_h;
@@ -54,14 +55,14 @@ void player_update(PlayerState&        ps,
             dv *= (max_step / dv_len);
         }
         vel_h += dv;
-    } else if (ps.on_ground) {
+    } else if (ps.on_ground && !ps.skiing) {
         const float decay = std::max(0.0f, 1.0f - t.friction * dt);
         vel_h *= decay;
     }
 
-    // Ground speed cap (does NOT apply while airborne — preserves
-    // jump-momentum and is the prerequisite for skiing in Track 10).
-    if (ps.on_ground) {
+    // Ground speed cap.  Doesn't apply while airborne (preserves
+    // jump-momentum) nor while skiing (the whole point of skiing).
+    if (ps.on_ground && !ps.skiing) {
         const float h_speed = std::sqrt(vel_h.x * vel_h.x + vel_h.z * vel_h.z);
         if (h_speed > speed_cap && h_speed > 1e-6f) {
             const float k = speed_cap / h_speed;
@@ -88,7 +89,9 @@ void player_update(PlayerState&        ps,
     const bool jet_has_fuel = (ps.jet_fuel > 0.0f) &&
                               (ps.jet_lockout <= 0.0f);
 
-    ps.jet_active = jet_eligible && jet_has_fuel;
+    // Skiing preempts jet — on a slope with Space held, the player skis
+    // instead of lifting off.  Track 10 spec 01.
+    ps.jet_active = jet_eligible && jet_has_fuel && !ps.skiing;
     if (ps.jet_active) {
         const bool burst = in.sprint;
         const float thrust = burst ? t.jet_thrust_burst : t.jet_thrust;
@@ -185,6 +188,14 @@ void player_update(PlayerState&        ps,
     const float dot_up = std::clamp(normal[1], -1.0f, 1.0f);
     const float slope_rad = std::acos(dot_up);
     ps.slope_deg = slope_rad * (180.0f / 3.14159265358979323846f);
+
+    // Skiing predicate (track 10 spec 01).  Engaged when:
+    //   on_ground  AND  in.jump is held  AND  slope is >= ski_min_slope
+    // Skiing is what flips friction off and uncaps the horizontal speed
+    // — both of those gates are upstream of here, but they read the same
+    // ps.skiing latch on the next step.
+    ps.skiing = ps.on_ground && in.jump &&
+                ps.slope_deg >= t.ski_min_slope;
 
     // Slope walk-clamp: too-steep, grounded, not jetting, not skiing →
     // can't climb; instead, project velocity onto slope tangent and add

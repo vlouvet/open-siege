@@ -60,6 +60,10 @@ struct PlayerTuning
     float capsule_half_h  = 0.9f;      // metres from centre to hemisphere centre
     float step_height     = 0.4f;      // max ledge height the capsule auto-mounts
     int   max_slide_iters = 3;         // Quake-style slide iteration cap
+
+    // Skiing (track 10)
+    float ski_min_slope   = 5.0f;      // degrees; below this, Space won't ski
+    float ski_max_speed   = 80.0f;     // m/s global cap on skiing momentum
 };
 
 struct PlayerState
