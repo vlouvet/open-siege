@@ -64,6 +64,9 @@ struct PlayerTuning
     // Skiing (track 10)
     float ski_min_slope   = 5.0f;      // degrees; below this, Space won't ski
     float ski_max_speed   = 80.0f;     // m/s global cap on skiing momentum
+
+    // Disc-jumping (track 10 spec 03; splash code lives in track 12)
+    float self_damage_coef = 0.5f;     // self-disc applies this fraction of splash dmg
 };
 
 struct PlayerState
@@ -124,6 +127,16 @@ void player_update(PlayerState&        ps,
 inline glm::vec3 player_eye(const PlayerState& ps, const PlayerTuning& t)
 {
     return ps.pos + glm::vec3(0.0f, t.eye_height, 0.0f);
+}
+
+// Track 10 spec 03 — disc-jumping impulse hook.  Splash code (Track 12
+// spec 02) calls this when an explosion includes the player in its
+// radius; the impulse is interpreted as a delta-velocity in m/s and
+// added directly to `vel`.  Mass scaling is deferred to a future
+// refactor since v1 only cares about the player.
+inline void player_apply_impulse(PlayerState& ps, const glm::vec3& delta_v)
+{
+    ps.vel += delta_v;
 }
 
 } // namespace dts_viewer
