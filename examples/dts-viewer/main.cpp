@@ -54,6 +54,7 @@
 #include "player_controller.hpp"
 #include "audio.hpp"
 #include "mission_sounds.hpp"
+#include "projectile.hpp"
 #include <set>
 #include <unistd.h>
 #include <cstdint>
@@ -1652,6 +1653,12 @@ int main(int argc, char** argv)
         const float kMinFootstepSpeed = 1.5f;
         float footstep_timer = 0.0f;
 
+        // Projectile system (Track 12).  Mouse1 fires the current weapon;
+        // weapon switching lands in spec 12/03.
+        dts_viewer::ProjectileSystem proj_sys;
+        dts_viewer::ProjectileTuning proj_tune;
+        dts_viewer::ProjType current_weapon = dts_viewer::ProjType::Disc;
+
         // Mission ambient sounds (spec 11/05).
         dts_viewer::MissionSoundsState mission_audio;
         if (ter_mission) {
@@ -1826,8 +1833,16 @@ int main(int argc, char** argv)
                         }
                         break;
                     case SDL_MOUSEBUTTONDOWN:
-                        if (!ter_cam.mouse_captured)
+                        if (!ter_cam.mouse_captured) {
                             dts_viewer::set_mouse_capture(ter_cam, true);
+                        } else if (ev.button.button == SDL_BUTTON_LEFT) {
+                            // Fire the current weapon (Track 12).
+                            glm::vec3 origin = dts_viewer::player_eye(pstate, ptune);
+                            glm::vec3 aim = dts_viewer::camera_forward(ter_cam);
+                            dts_viewer::projectile_fire(
+                                proj_sys, proj_tune, current_weapon,
+                                origin, aim, /*owner_id*/0);
+                        }
                         break;
                     case SDL_MOUSEMOTION:
                         if (ter_cam.mouse_captured)
@@ -1876,6 +1891,9 @@ int main(int argc, char** argv)
                 pstep_accumulator += dt_ter;
                 int steps = 0;
                 while (pstep_accumulator >= kFixedStep && steps < 5) {
+                    dts_viewer::projectiles_update(
+                        proj_sys, proj_tune, height_sampler, pstate, kFixedStep);
+
                     if (cam_mode == dts_viewer::CameraMode::Walk) {
                         dts_viewer::player_update(
                             pstate, ptune, in, height_sampler, &bounds, kFixedStep);

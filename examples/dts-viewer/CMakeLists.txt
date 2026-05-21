@@ -34,7 +34,8 @@ add_executable(dts-viewer
     physics_capsule.cpp
     wav_loader.cpp
     audio.cpp
-    mission_sounds.cpp)
+    mission_sounds.cpp
+    projectile.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include
