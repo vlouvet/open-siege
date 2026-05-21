@@ -40,6 +40,7 @@
 #include "content/terrain/dtf.hpp"
 #include "content/terrain/dtb.hpp"
 #include "mission_loader.hpp"
+#include "camera.hpp"
 #include <set>
 #include <cstdint>
 
@@ -1387,28 +1388,33 @@ int main(int argc, char** argv)
         glEnable(GL_MULTISAMPLE);
         glDisable(GL_CULL_FACE);
 
-        // Camera centered on terrain midpoint, elevated to see the full surface.
+        // Camera positioned above terrain centre, looking inward.
         glm::vec3 ter_center = 0.5f * (terrain.bbox_min + terrain.bbox_max);
         glm::vec3 ter_extent = terrain.bbox_max - terrain.bbox_min;
         float ter_radius = 0.5f * glm::length(ter_extent);
         if (ter_radius < 1.0f) ter_radius = 1.0f;
 
-        float yaw   = 0.6f;
-        float pitch = 0.5f;   // elevated view to see rolling terrain
-        float dist  = ter_radius * 1.4f;
-        bool dragging = false; int last_x = 0, last_y = 0;
+        dts_viewer::Camera ter_cam;
+        ter_cam.position    = ter_center + glm::vec3(0, ter_radius * 0.4f, ter_radius);
+        ter_cam.yaw         = glm::pi<float>();  // face -Z toward center
+        ter_cam.pitch       = -0.35f;
+        ter_cam.move_speed  = ter_radius * 0.05f;
+        ter_cam.near_plane  = ter_radius * 0.001f;
+        ter_cam.far_plane   = ter_radius * 10.0f;
+        dts_viewer::set_mouse_capture(ter_cam, true);
 
         bool wireframe = false;
         bool running = true;
 
-        Uint64 fps_window_start = SDL_GetPerformanceCounter();
+        Uint64 fps_last = SDL_GetPerformanceCounter();
         const Uint64 perf_freq  = SDL_GetPerformanceFrequency();
+        Uint64 fps_window_start = fps_last;
         int    fps_window_frames = 0;
 
         int  screenshot_warmup = screenshot_path_ter.empty() ? -1 : 0;
         bool screenshot_done   = false;
 
-        std::printf("keys: F1=wireframe toggle  drag=orbit  scroll=zoom  Q/Esc=quit\n");
+        std::printf("keys: F1=wireframe  WASD=fly  mouse=look  Esc=release cursor  Q=quit\n");
 
         while (running) {
             SDL_Event ev;
@@ -1416,51 +1422,38 @@ int main(int argc, char** argv)
                 switch (ev.type) {
                     case SDL_QUIT: running = false; break;
                     case SDL_KEYDOWN:
-                        if (ev.key.keysym.sym == SDLK_ESCAPE
-                            || ev.key.keysym.sym == SDLK_q) running = false;
+                        if (ev.key.keysym.sym == SDLK_q) running = false;
+                        if (ev.key.keysym.sym == SDLK_ESCAPE)
+                            dts_viewer::toggle_mouse_capture(ter_cam);
                         if (ev.key.keysym.sym == SDLK_F1) {
                             wireframe = !wireframe;
                             std::printf("wireframe: %s\n", wireframe ? "on" : "off");
                         }
                         break;
                     case SDL_MOUSEBUTTONDOWN:
-                        if (ev.button.button == SDL_BUTTON_LEFT) {
-                            dragging = true; last_x = ev.button.x; last_y = ev.button.y;
-                        }
-                        break;
-                    case SDL_MOUSEBUTTONUP:
-                        if (ev.button.button == SDL_BUTTON_LEFT) dragging = false;
+                        if (!ter_cam.mouse_captured)
+                            dts_viewer::set_mouse_capture(ter_cam, true);
                         break;
                     case SDL_MOUSEMOTION:
-                        if (dragging) {
-                            yaw   += (ev.motion.x - last_x) * 0.005f;
-                            pitch += (ev.motion.y - last_y) * 0.005f;
-                            pitch = glm::clamp(pitch, 0.05f, 1.55f);
-                            last_x = ev.motion.x; last_y = ev.motion.y;
-                        }
-                        break;
-                    case SDL_MOUSEWHEEL:
-                        dist *= (ev.wheel.y > 0) ? 0.9f : 1.1f;
-                        dist = glm::clamp(dist, ter_radius * 0.05f, ter_radius * 5.0f);
+                        if (ter_cam.mouse_captured)
+                            dts_viewer::handle_mouse_motion(ter_cam, ev.motion.xrel, ev.motion.yrel);
                         break;
                 }
             }
+
+            Uint64 now_ter = SDL_GetPerformanceCounter();
+            float dt_ter = static_cast<float>(
+                static_cast<double>(now_ter - fps_last) / static_cast<double>(perf_freq));
+            fps_last = now_ter;
+            dts_viewer::update_camera_free(ter_cam, dt_ter);
 
             int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
             glViewport(0, 0, w, h);
             glClearColor(0.10f, 0.14f, 0.20f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            glm::vec3 eye = ter_center + dist * glm::vec3(
-                std::cos(pitch) * std::sin(yaw),
-                std::sin(pitch),
-                std::cos(pitch) * std::cos(yaw));
-
-            glm::mat4 V = glm::lookAt(eye, ter_center, glm::vec3(0, 1, 0));
-            glm::mat4 P = glm::perspective(glm::radians(45.0f),
-                                           (float)w / (float)h,
-                                           ter_radius * 0.001f,
-                                           ter_radius * 10.0f);
+            glm::mat4 V   = dts_viewer::camera_view(ter_cam);
+            glm::mat4 P   = dts_viewer::camera_projection(ter_cam, (float)w / (float)h);
             glm::mat4 MVP = P * V;
 
             glUseProgram(terrain_prog);
@@ -2623,7 +2616,8 @@ int main(int argc, char** argv)
                     (int)(bone_vertex_count / 2));
     }
 
-    std::printf("keys: Space=play/pause  Left/Right=scrub +/-0.05s  R=reset  Tab=next seq (Shift+Tab=prev)  1-9=pick seq by index  L=cycle loop mode  B=bones  Q/Esc=quit\n");
+    std::printf("keys: WASD=fly  mouse=look  Shift=sprint  Space/Ctrl=up/dn  Esc=release cursor\n"
+                "      Space=play/pause  Left/Right=scrub  R=reset  Tab=next seq  L=loop mode  B=bones  Q=quit\n");
     bool show_bones = false;
 
     glEnable(GL_DEPTH_TEST);
@@ -2656,8 +2650,16 @@ int main(int argc, char** argv)
     // chosen empirically for the smallest meshes; tested fine for larmor.
     float grid_radius = radius
         + grid_half_span * std::sqrt(2.0f);
-    float dist = grid_radius * 2.5f;
-    bool dragging = false; int last_x = 0, last_y = 0;
+
+    // Free-fly camera (spec 08/01). Start behind and above the mesh.
+    dts_viewer::Camera dts_cam;
+    dts_cam.position   = center + glm::vec3(0, radius * 0.5f, grid_radius * 2.5f);
+    dts_cam.yaw        = glm::pi<float>();  // face -Z toward origin
+    dts_cam.pitch      = -0.2f;
+    dts_cam.move_speed = std::max(1.0f, radius * 0.05f);
+    dts_cam.near_plane = radius * 0.05f;
+    dts_cam.far_plane  = radius * 200.0f;
+    dts_viewer::set_mouse_capture(dts_cam, true);
 
     // ---- spec 04 timeline state ----
     //
@@ -2781,7 +2783,9 @@ int main(int argc, char** argv)
             switch (ev.type) {
                 case SDL_QUIT: running = false; break;
                 case SDL_KEYDOWN:
-                    if (ev.key.keysym.sym == SDLK_ESCAPE || ev.key.keysym.sym == SDLK_q) running = false;
+                    if (ev.key.keysym.sym == SDLK_q) running = false;
+                    if (ev.key.keysym.sym == SDLK_ESCAPE)
+                        dts_viewer::toggle_mouse_capture(dts_cam);
                     if (ev.key.keysym.sym == SDLK_b) {
                         show_bones = !show_bones;
                         std::printf("bones: %s\n", show_bones ? "on" : "off");
@@ -2864,22 +2868,12 @@ int main(int argc, char** argv)
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
-                    if (ev.button.button == SDL_BUTTON_LEFT) { dragging = true; last_x = ev.button.x; last_y = ev.button.y; }
-                    break;
-                case SDL_MOUSEBUTTONUP:
-                    if (ev.button.button == SDL_BUTTON_LEFT) dragging = false;
+                    if (!dts_cam.mouse_captured)
+                        dts_viewer::set_mouse_capture(dts_cam, true);
                     break;
                 case SDL_MOUSEMOTION:
-                    if (dragging) {
-                        yaw   += (ev.motion.x - last_x) * 0.01f;
-                        pitch += (ev.motion.y - last_y) * 0.01f;
-                        pitch = glm::clamp(pitch, -1.5f, 1.5f);
-                        last_x = ev.motion.x; last_y = ev.motion.y;
-                    }
-                    break;
-                case SDL_MOUSEWHEEL:
-                    dist *= (ev.wheel.y > 0) ? 0.9f : 1.1f;
-                    dist = glm::clamp(dist, radius * 0.2f, radius * 50.0f);
+                    if (dts_cam.mouse_captured)
+                        dts_viewer::handle_mouse_motion(dts_cam, ev.motion.xrel, ev.motion.yrel);
                     break;
             }
         }
@@ -2938,20 +2932,17 @@ int main(int argc, char** argv)
             last_hud_print_t = current_time;
         }
 
+        dts_viewer::update_camera_free(dts_cam, dt);
+
         int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
         glViewport(0, 0, w, h);
         glClearColor(0.08f, 0.12f, 0.16f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glm::vec3 eye = center + dist * glm::vec3(
-            std::cos(pitch) * std::sin(yaw),
-            std::sin(pitch),
-            std::cos(pitch) * std::cos(yaw));
-
-        glm::mat4 V = glm::lookAt(eye, center, glm::vec3(0,1,0));
-        glm::mat4 P = glm::perspective(glm::radians(45.0f), (float)w / (float)h, radius * 0.05f, radius * 200.0f);
+        glm::mat4 V   = dts_viewer::camera_view(dts_cam);
+        glm::mat4 P   = dts_viewer::camera_projection(dts_cam, (float)w / (float)h);
         glm::mat4 MVP = P * V;
-        glm::mat3 N = glm::mat3(glm::transpose(glm::inverse(V)));
+        glm::mat3 N   = glm::mat3(glm::transpose(glm::inverse(V)));
 
         // ---- spec 06/08/09: CPU skinning + per-bucket draws, NxN grid ----
         // 1) For each grid instance (i, j) compute a per-instance time
