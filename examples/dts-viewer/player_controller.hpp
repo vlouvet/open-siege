@@ -37,6 +37,13 @@ struct PlayerTuning
     float jump_speed      = 7.5f;      // m/s applied upward on jump rising edge
     float ground_slop     = 0.05f;     // metres; on-ground if feet within this of terrain
     float coyote_seconds  = 0.10f;     // grace window after walking off a ledge
+
+    // Walking (spec 09/03)
+    float ground_accel    = 60.0f;     // m/s^2 toward wish-velocity while grounded
+    float air_control     = 0.3f;      // scales ground_accel while airborne
+    float friction        = 8.0f;      // 1/s — vel *= (1 - friction*dt) when no input on ground
+    float sprint_mult     = 1.5f;      // shift multiplies the speed cap
+    float mouse_sens      = 0.0022f;   // radians per pixel (camera-side, not physics)
 };
 
 struct PlayerState
@@ -77,13 +84,16 @@ struct InputState
 };
 
 // Step the player one fixed dt.  Currently applies gravity + ground
-// detection + jump impulse (spec 09/02).  Subsequent specs add walking
-// (03), jetpack (04), interior collision (06).  The HeightSampler is
-// borrowed; pass an empty/default sampler when no terrain is loaded.
+// detection + jump impulse (spec 09/02) and walking (spec 09/03).
+// Subsequent specs add jetpack (04) and interior collision (06).
+// The HeightSampler is borrowed; pass an empty/default sampler when
+// no terrain is loaded.
+struct MissionBounds;
 void player_update(PlayerState&        ps,
                    const PlayerTuning& t,
                    const InputState&   in,
                    const HeightSampler& terrain,
+                   const MissionBounds* bounds,    // may be nullptr
                    float               dt);
 
 // Compute the camera eye position (feet + eye_height in world Y).

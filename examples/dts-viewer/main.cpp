@@ -1815,14 +1815,12 @@ int main(int argc, char** argv)
             float dt_ter = static_cast<float>(
                 static_cast<double>(now_ter - fps_last) / static_cast<double>(perf_freq));
             fps_last = now_ter;
-            if (cam_mode == dts_viewer::CameraMode::Walk) {
-                dts_viewer::update_camera_walk(ter_cam, dt_ter, height_sampler, bounds);
-            } else {
+            if (cam_mode == dts_viewer::CameraMode::Free) {
                 dts_viewer::update_camera_free(ter_cam, dt_ter);
             }
             dts_viewer::update_hud(hud, dt_ter);
 
-            // ---- 60 Hz fixed-step PlayerState update (spec 09/02) ----
+            // ---- 60 Hz fixed-step PlayerState update (spec 09/03) ----
             {
                 const Uint8* keys = SDL_GetKeyboardState(nullptr);
                 dts_viewer::InputState in;
@@ -1834,22 +1832,16 @@ int main(int argc, char** argv)
                 in.jet    = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
                 in.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
 
-                // Yaw/pitch always come from the camera (mouse-look).
+                // Yaw/pitch always come from the camera (mouse-look runs
+                // per render-frame, never per fixed step).
                 pstate.yaw   = ter_cam.yaw;
                 pstate.pitch = ter_cam.pitch;
 
-                // Walk mode: the camera's XZ is now the source of truth
-                // (driven by update_camera_walk above); pstate.pos.xz
-                // mirrors.  pstate.pos.y is owned by physics.
-                // Free mode: the camera owns all three axes; pstate
-                // mirrors entirely so debug stats still make sense.
-                if (cam_mode == dts_viewer::CameraMode::Walk) {
-                    pstate.pos.x = ter_cam.position.x;
-                    pstate.pos.z = ter_cam.position.z;
-                } else {
+                if (cam_mode != dts_viewer::CameraMode::Walk) {
+                    // Free mode: camera is authority, pstate mirrors for debug.
                     pstate.pos = ter_cam.position
                                - glm::vec3(0.0f, ptune.eye_height, 0.0f);
-                    pstate.vel = glm::vec3(0.0f);   // physics not active
+                    pstate.vel = glm::vec3(0.0f);
                     pstate.on_ground = false;
                 }
 
@@ -1858,16 +1850,18 @@ int main(int argc, char** argv)
                 while (pstep_accumulator >= kFixedStep && steps < 5) {
                     if (cam_mode == dts_viewer::CameraMode::Walk) {
                         dts_viewer::player_update(
-                            pstate, ptune, in, height_sampler, kFixedStep);
+                            pstate, ptune, in, height_sampler, &bounds, kFixedStep);
                     }
                     pstep_accumulator -= kFixedStep;
                     ++steps;
                     ++pstep_count_window;
                 }
 
-                // Push physics Y back into the camera in walk mode.
+                // Walk mode: pstate is authoritative — sync camera FROM it.
                 if (cam_mode == dts_viewer::CameraMode::Walk) {
+                    ter_cam.position.x = pstate.pos.x;
                     ter_cam.position.y = pstate.pos.y + ptune.eye_height;
+                    ter_cam.position.z = pstate.pos.z;
                 }
 
                 Uint32 now_ms = SDL_GetTicks();
