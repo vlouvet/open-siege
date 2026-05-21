@@ -48,4 +48,9 @@ install(TARGETS 3space
         CONFIGURATIONS Debug Release
         RUNTIME DESTINATION lib)
 
+# cscript — vendored Torque 3D console (spec 15/02). Experimental, not
+# linked into lib3space yet. Build explicitly with
+#   cmake --build build --target cscript_core
+add_subdirectory(cscript)
+
 
