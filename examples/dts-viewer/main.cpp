@@ -52,6 +52,8 @@
 #include "screenshot.hpp"
 #include "mission_switcher.hpp"
 #include "player_controller.hpp"
+#include "audio.hpp"
+#include "mission_sounds.hpp"
 #include <set>
 #include <unistd.h>
 #include <cstdint>
@@ -1438,6 +1440,11 @@ int main(int argc, char** argv)
         SDL_GL_SetSwapInterval(1);
         std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
 
+        // Spec 11/02 — bring up the audio backend.  The stub backend
+        // logs to stderr and returns true; a future spec swaps in a
+        // miniaudio / OpenAL Soft implementation behind the same API.
+        dts_viewer::audio_init();
+
         // Build terrain mesh.
         dts_viewer::TerrainMesh terrain = dts_viewer::build_terrain_mesh(block, metres_per_quad);
         if (!terrain.valid()) {
@@ -1637,6 +1644,24 @@ int main(int argc, char** argv)
         float       pstep_accumulator = 0.0f;
         int         pstep_count_window = 0;
         Uint32      pstep_log_last_ms  = SDL_GetTicks();
+
+        // Footstep gait (spec 11/06): stride length / horizontal speed
+        // gives the seconds between foot strikes; resets when not
+        // grounded or below the minimum speed.
+        const float kStrideLength    = 1.8f;
+        const float kMinFootstepSpeed = 1.5f;
+        float footstep_timer = 0.0f;
+
+        // Mission ambient sounds (spec 11/05).
+        dts_viewer::MissionSoundsState mission_audio;
+        if (ter_mission) {
+            mission_audio = dts_viewer::mission_sounds_load(
+                ter_mission->scene, ted_path.parent_path().parent_path());
+            std::fprintf(stderr,
+                "audio: registered %zu mission ambient voices%s\n",
+                mission_audio.voices.size(),
+                mission_audio.wind_active ? " + wind" : "");
+        }
 
         Uint64 fps_last = SDL_GetPerformanceCounter();
         const Uint64 perf_freq  = SDL_GetPerformanceFrequency();
@@ -1854,6 +1879,24 @@ int main(int argc, char** argv)
                     if (cam_mode == dts_viewer::CameraMode::Walk) {
                         dts_viewer::player_update(
                             pstate, ptune, in, height_sampler, &bounds, kFixedStep);
+
+                        // Footstep gait (spec 11/06).
+                        const float h_speed = std::sqrt(
+                            pstate.vel.x * pstate.vel.x +
+                            pstate.vel.z * pstate.vel.z);
+                        if (pstate.on_ground && !pstate.skiing &&
+                            h_speed > kMinFootstepSpeed)
+                        {
+                            footstep_timer -= kFixedStep;
+                            if (footstep_timer <= 0.0f) {
+                                dts_viewer::audio_play_at(
+                                    dts_viewer::WavSample{},  // placeholder
+                                    pstate.pos, 4.0f, 30.0f, 1.0f, false);
+                                footstep_timer = kStrideLength / h_speed;
+                            }
+                        } else {
+                            footstep_timer = 0.0f;
+                        }
                     }
                     pstep_accumulator -= kFixedStep;
                     ++steps;
@@ -1865,6 +1908,13 @@ int main(int argc, char** argv)
                     ter_cam.position.x = pstate.pos.x;
                     ter_cam.position.y = pstate.pos.y + ptune.eye_height;
                     ter_cam.position.z = pstate.pos.z;
+                }
+
+                // Audio listener tracks the camera every frame (spec 11/03).
+                {
+                    glm::vec3 fwd = dts_viewer::camera_forward(ter_cam);
+                    dts_viewer::audio_set_listener(
+                        ter_cam.position, fwd, glm::vec3{0, 1, 0});
                 }
 
                 Uint32 now_ms = SDL_GetTicks();
@@ -1994,6 +2044,8 @@ int main(int argc, char** argv)
             }
         }
 
+        dts_viewer::mission_sounds_unload(mission_audio);
+        dts_viewer::audio_shutdown();
         SDL_GL_DeleteContext(ctx);
         SDL_DestroyWindow(win);
         SDL_Quit();
