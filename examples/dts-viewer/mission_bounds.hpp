@@ -34,11 +34,15 @@ struct MissionBounds
 // Compute bounds from a parsed scene graph and the terrain side length.
 //   terrain_metres_per_side = (size+1) * metres_per_quad
 //   terrain_y_min/max       = observed range from heightmap bbox
+//   terrain_world_origin_x/z = world-space origin of the rendered tile
+//     (mission mode passes -half_size so bounds center at origin).
 MissionBounds compute_bounds(
     const studio::content::mission::scene_graph& scene,
     float terrain_metres_per_side,
     float terrain_y_min,
-    float terrain_y_max);
+    float terrain_y_max,
+    float terrain_world_origin_x = 0.0f,
+    float terrain_world_origin_z = 0.0f);
 
 // Clamp a position to the box.  Optional out-param flags whether any
 // component changed.

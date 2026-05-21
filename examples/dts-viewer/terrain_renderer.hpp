@@ -57,9 +57,14 @@ struct TerrainMesh
 
 // Build a GL-ready TerrainMesh from a parsed grid_block.
 // metres_per_quad = (1 << dtf.scale), typically 8 for shipped Tribes missions.
+// `world_origin` is added to every output X/Z so the mesh can be placed
+// centered on world origin (mission mode passes -half_size so entities
+// at negative world coords land on the rendered tile — Tribes' wrap-around
+// terrain semantics).
 TerrainMesh build_terrain_mesh(
     const studio::content::terrain::grid_block& block,
-    float metres_per_quad);
+    float metres_per_quad,
+    glm::vec2 world_origin = glm::vec2(0.0f, 0.0f));
 
 // Draw the terrain.  The caller must have a program active with:
 //   uniform mat4 u_mvp_terrain;
@@ -81,7 +86,8 @@ namespace dts_viewer
 
 inline TerrainMesh build_terrain_mesh(
     const studio::content::terrain::grid_block& block,
-    float metres_per_quad)
+    float metres_per_quad,
+    glm::vec2 world_origin)
 {
     const int sx = block.size[0];  // 256
     const int sy = block.size[1];  // 256
@@ -104,9 +110,9 @@ inline TerrainMesh build_terrain_mesh(
 
     for (int y = 0; y < vy; ++y) {
         for (int x = 0; x < vx; ++x) {
-            float wx = x * metres_per_quad;
+            float wx = x * metres_per_quad + world_origin.x;
             float wy = H(x, y);
-            float wz = y * metres_per_quad;
+            float wz = y * metres_per_quad + world_origin.y;
 
             mesh.bbox_min = glm::min(mesh.bbox_min, glm::vec3(wx, wy, wz));
             mesh.bbox_max = glm::max(mesh.bbox_max, glm::vec3(wx, wy, wz));

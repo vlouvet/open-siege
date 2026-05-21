@@ -19,6 +19,11 @@ struct HeightSampler
     const float* heights      = nullptr;  // (size_plus_one * size_plus_one) floats
     int          size_plus_one = 0;       // typically 257
     float        metres_per_quad = 8.0f;
+    // World-space origin of the terrain block. Mission mode passes
+    // -half_size so the rendered tile is centered at origin; the
+    // sampler subtracts this before computing the quad index.
+    float        world_origin_x = 0.0f;
+    float        world_origin_z = 0.0f;
 
     bool valid() const { return heights != nullptr && size_plus_one > 1; }
 
@@ -26,8 +31,8 @@ struct HeightSampler
     {
         if (!valid()) return 0.0f;
 
-        const float qx_f = world_x / metres_per_quad;
-        const float qz_f = world_z / metres_per_quad;
+        const float qx_f = (world_x - world_origin_x) / metres_per_quad;
+        const float qz_f = (world_z - world_origin_z) / metres_per_quad;
 
         const int max_q = size_plus_one - 1;     // last valid vertex index
         int qx = static_cast<int>(std::floor(qx_f));

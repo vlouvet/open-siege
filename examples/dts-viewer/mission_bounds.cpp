@@ -12,15 +12,17 @@ MissionBounds compute_bounds(
     const studio::content::mission::scene_graph& scene,
     float terrain_metres_per_side,
     float terrain_y_min,
-    float terrain_y_max)
+    float terrain_y_max,
+    float terrain_world_origin_x,
+    float terrain_world_origin_z)
 {
     MissionBounds b;
 
     const float half = 0.5f * terrain_metres_per_side;
-    b.world_min[0] = 0.0f;
-    b.world_min[2] = 0.0f;
-    b.world_max[0] = terrain_metres_per_side;
-    b.world_max[2] = terrain_metres_per_side;
+    b.world_min[0] = terrain_world_origin_x;
+    b.world_min[2] = terrain_world_origin_z;
+    b.world_max[0] = terrain_world_origin_x + terrain_metres_per_side;
+    b.world_max[2] = terrain_world_origin_z + terrain_metres_per_side;
     b.horizontal_radius = half;
 
     b.world_min[1] = std::min(terrain_y_min, -50.0f);

@@ -130,7 +130,9 @@ void hud2d_render_command_map(const float* heightmap,    // row-major (size+1)^2
                               const glm::vec3& player_pos,
                               float player_yaw,
                               int viewport_w,
-                              int viewport_h);
+                              int viewport_h,
+                              float world_origin_x = 0.0f,
+                              float world_origin_z = 0.0f);
 
 } // namespace dts_viewer
 

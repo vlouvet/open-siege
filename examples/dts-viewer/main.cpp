@@ -1569,7 +1569,18 @@ int main(int argc, char** argv)
         dts_viewer::audio_init();
 
         // Build terrain mesh.
-        dts_viewer::TerrainMesh terrain = dts_viewer::build_terrain_mesh(block, metres_per_quad);
+        // Center the terrain on world origin so entities at negative
+        // world coords (the typical Tribes mission layout — SimTerrain
+        // is at -3072,-3072 but the heightmap wraps modulo block size,
+        // so entities sit in the wrap-aligned tile around origin) land
+        // on the rendered tile. Without this, missions like Citadels
+        // place their bases at world (-600, -650) while the terrain
+        // renders at [0, 2048] — entities float in empty space off to
+        // the side. See docs/bugfix/citadels-offset for the analysis.
+        const float terrain_side_m = static_cast<float>(block.size[0]) * metres_per_quad;
+        const glm::vec2 terrain_origin(-0.5f * terrain_side_m, -0.5f * terrain_side_m);
+        dts_viewer::TerrainMesh terrain = dts_viewer::build_terrain_mesh(
+            block, metres_per_quad, terrain_origin);
         if (!terrain.valid()) {
             std::fprintf(stderr, "terrain: build_terrain_mesh failed\n");
             return 2;
@@ -1648,7 +1659,9 @@ int main(int argc, char** argv)
         dts_viewer::HeightSampler height_sampler{
             block.heights.data(),
             static_cast<int>(block.size[0]) + 1,
-            metres_per_quad
+            metres_per_quad,
+            terrain_origin.x,
+            terrain_origin.y
         };
 
         dts_viewer::MissionBounds bounds = dts_viewer::compute_bounds(
@@ -1656,7 +1669,9 @@ int main(int argc, char** argv)
                         : studio::content::mission::scene_graph{},
             (block.size[0] + 1) * metres_per_quad,
             terrain.bbox_min.y,
-            terrain.bbox_max.y);
+            terrain.bbox_max.y,
+            terrain_origin.x,
+            terrain_origin.y);
 
         // Stretch the camera's far plane to fit the playable area.
         ter_cam.far_plane = std::max(ter_cam.far_plane, bounds.recommended_far_plane);
@@ -2524,7 +2539,8 @@ int main(int argc, char** argv)
                         block.heights.data(),
                         static_cast<int>(block.size[0]) + 1,
                         metres_per_quad,
-                        map_icons, pstate.pos, pstate.yaw, w, h);
+                        map_icons, pstate.pos, pstate.yaw, w, h,
+                        terrain_origin.x, terrain_origin.y);
                 }
             }
             dts_viewer::hud2d_tick(dt_ter);

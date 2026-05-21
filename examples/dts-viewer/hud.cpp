@@ -549,7 +549,9 @@ void hud2d_render_command_map(const float* heightmap,
                               const glm::vec3& player_pos,
                               float player_yaw,
                               int viewport_w,
-                              int viewport_h)
+                              int viewport_h,
+                              float world_origin_x,
+                              float world_origin_z)
 {
     if (viewport_w <= 0 || viewport_h <= 0 || !heightmap || size_plus_one <= 1)
         return;
@@ -606,8 +608,8 @@ void hud2d_render_command_map(const float* heightmap,
                   0.05f, 0.08f, 0.05f);
 
     auto world_to_map = [&](float wx, float wz, float& mx, float& my) {
-        mx = x + (wx / world_side) * side;
-        my = y + (wz / world_side) * side;
+        mx = x + ((wx - world_origin_x) / world_side) * side;
+        my = y + ((wz - world_origin_z) / world_side) * side;
     };
 
     // Icons
