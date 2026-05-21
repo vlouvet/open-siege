@@ -161,3 +161,11 @@ add_executable(cscript_hello_smoke EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/hello_smoke.cpp)
 set_property(TARGET cscript_hello_smoke PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_hello_smoke PRIVATE cscript_core)
+
+# Spec 15/07 — VM behavioural test suite. Exercises literals, arithmetic,
+# variables, functions, recursion, control flow, instant SimGroup, and
+# loads real T1 scripts from scripts.vol.
+add_executable(cscript_vm_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/vm.test.cpp)
+set_property(TARGET cscript_vm_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_vm_test PRIVATE cscript_core)
