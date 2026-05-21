@@ -1906,6 +1906,9 @@ int main(int argc, char** argv)
                 // (mouse over a panel, keyboard in a text widget).
                 bool imgui_consumed = dts_viewer::imgui_process_event(ev);
                 if (imgui_consumed && ev.type != SDL_QUIT) continue;
+                // Spec 25/02 — menu-shortcut dispatch. Cmd/Ctrl-O,
+                // Cmd/Ctrl-Q, Cmd/Ctrl-R, Cmd/Ctrl-E, F1.
+                if (dts_viewer::imgui_try_menu_shortcut(ev)) continue;
                 switch (ev.type) {
                     case SDL_QUIT: running = false; break;
                     case SDL_KEYDOWN:
@@ -3816,6 +3819,7 @@ void main() {
         while (SDL_PollEvent(&ev)) {
             bool imgui_consumed = dts_viewer::imgui_process_event(ev);
             if (imgui_consumed && ev.type != SDL_QUIT) continue;
+            if (dts_viewer::imgui_try_menu_shortcut(ev)) continue;
             switch (ev.type) {
                 case SDL_QUIT: running = false; break;
                 case SDL_KEYDOWN:
