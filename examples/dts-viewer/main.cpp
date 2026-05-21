@@ -46,6 +46,7 @@
 #include "walk_camera.hpp"
 #include "skybox_renderer.hpp"
 #include "lighting.hpp"
+#include "terrain_textures.hpp"
 #include <set>
 #include <cstdint>
 
@@ -950,8 +951,11 @@ uniform int   u_point_count;
 uniform vec3  u_point_pos[8];
 uniform vec3  u_point_color[8];
 uniform float u_point_radius[8];
+uniform sampler2DArray u_terrain_tex;
+uniform int            u_terrain_layers;     // 0 = no texture array bound
+uniform float          u_terrain_uv_scale;   // metres-per-quad; tiles per quad
 void main() {
-    // 16 visually distinct colors (debug per-material palette).
+    // Fallback palette used when no texture array is bound.
     const vec3 palette[16] = vec3[16](
         vec3(0.90, 0.20, 0.20),
         vec3(0.20, 0.75, 0.20),
@@ -970,8 +974,15 @@ void main() {
         vec3(0.50, 0.10, 0.10),
         vec3(0.70, 0.70, 0.70)
     );
-    int idx = int(v_mat_idx) % 16;
-    vec3 base = palette[idx];
+    int mat = int(v_mat_idx);
+    vec3 base;
+    if (u_terrain_layers > 0) {
+        int layer = clamp(mat, 0, u_terrain_layers - 1);
+        vec2 uv = fract(v_pos_ws.xz / max(u_terrain_uv_scale, 1.0));
+        base = texture(u_terrain_tex, vec3(uv, float(layer))).rgb;
+    } else {
+        base = palette[mat % 16];
+    }
     vec3 N = normalize(v_normal_ws);
     float sun = max(dot(N, normalize(u_sun_dir)), 0.0);
     vec3 lit = base * u_ambient_color + base * u_sun_color * sun;
@@ -1545,6 +1556,17 @@ int main(int argc, char** argv)
         }
         bool show_sky = sky_box.has_value();
 
+        // Terrain texture array: derive world prefix from the DTF's DML name
+        // (e.g. "lush.dml" -> "lush"), then load <prefix>.Terrain.dat.
+        dts_viewer::TerrainTextureArray terrain_tex;
+        if (ter_mission && !dtf.material_list_name.empty()) {
+            std::string dml = dtf.material_list_name;
+            auto dot = dml.find('.');
+            std::string prefix = (dot == std::string::npos) ? dml : dml.substr(0, dot);
+            auto pal_map = by_index(ter_palettes);
+            terrain_tex = dts_viewer::build_terrain_textures(prefix, ter_resolver, pal_map);
+        }
+
         // Mission lighting.
         dts_viewer::SceneLighting lighting = ter_mission
             ? dts_viewer::build_scene_lighting(ter_mission->scene)
@@ -1681,6 +1703,20 @@ int main(int argc, char** argv)
             glUniformMatrix4fv(u_ter_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
             dts_viewer::apply_scene_lighting(terrain_prog,
                 dts_viewer::masked_lighting(lighting, lighting_mode));
+            {
+                GLint u_layers   = glGetUniformLocation(terrain_prog, "u_terrain_layers");
+                GLint u_uv_scale = glGetUniformLocation(terrain_prog, "u_terrain_uv_scale");
+                GLint u_tex      = glGetUniformLocation(terrain_prog, "u_terrain_tex");
+                if (terrain_tex.valid()) {
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D_ARRAY, terrain_tex.texture);
+                    if (u_tex >= 0)      glUniform1i(u_tex, 0);
+                    if (u_layers >= 0)   glUniform1i(u_layers, terrain_tex.layer_count);
+                    if (u_uv_scale >= 0) glUniform1f(u_uv_scale, metres_per_quad);
+                } else {
+                    if (u_layers >= 0)   glUniform1i(u_layers, 0);
+                }
+            }
 
             if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             dts_viewer::draw_terrain(terrain, u_ter_mvp);
