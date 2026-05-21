@@ -35,7 +35,8 @@ add_executable(dts-viewer
     wav_loader.cpp
     audio.cpp
     mission_sounds.cpp
-    projectile.cpp)
+    projectile.cpp
+    weapons.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include

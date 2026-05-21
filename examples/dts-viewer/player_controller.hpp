@@ -15,6 +15,7 @@
 #include <cstdint>
 
 #include "height_sampler.hpp"
+#include "weapons.hpp"
 
 namespace dts_viewer
 {
@@ -95,6 +96,11 @@ struct PlayerState
     bool      jet_active     = false;  // true while thrust is being applied
     float     jet_hold_timer = 0.0f;   // how long in.jet has been held continuously
     float     jet_lockout    = 0.0f;   // post-empty cooldown countdown
+    // Spec 12/03: weapon inventory.
+    Inventory inventory      {};
+    // Spec 12/02: health is exposed for the splash code in projectile.cpp.
+    float     health         = 100.0f;
+    float     health_max     = 100.0f;
 };
 
 struct InputState

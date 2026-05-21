@@ -19,10 +19,11 @@
 #include <vector>
 
 #include "height_sampler.hpp"
-#include "player_controller.hpp"
 
 namespace dts_viewer
 {
+
+struct PlayerState;
 
 enum class ProjType : std::uint8_t
 {

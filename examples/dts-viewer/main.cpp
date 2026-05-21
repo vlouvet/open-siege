@@ -1653,11 +1653,10 @@ int main(int argc, char** argv)
         const float kMinFootstepSpeed = 1.5f;
         float footstep_timer = 0.0f;
 
-        // Projectile system (Track 12).  Mouse1 fires the current weapon;
-        // weapon switching lands in spec 12/03.
+        // Projectile system + Inventory (Track 12).
         dts_viewer::ProjectileSystem proj_sys;
         dts_viewer::ProjectileTuning proj_tune;
-        dts_viewer::ProjType current_weapon = dts_viewer::ProjType::Disc;
+        pstate.inventory = dts_viewer::default_loadout();
 
         // Mission ambient sounds (spec 11/05).
         dts_viewer::MissionSoundsState mission_audio;
@@ -1687,13 +1686,35 @@ int main(int argc, char** argv)
                 switch (ev.type) {
                     case SDL_QUIT: running = false; break;
                     case SDL_KEYDOWN:
-                        if (ev.key.keysym.sym == SDLK_q) running = false;
+                        // Q now cycles weapons (track 12 spec 03); use the
+                        // window-close button or Cmd-Q to quit.
                         if (ev.key.keysym.sym == SDLK_ESCAPE)
                             dts_viewer::toggle_mouse_capture(ter_cam);
                         if (ev.key.keysym.sym == SDLK_F1) {
                             hud.visible = !hud.visible;
                             dts_viewer::print_hud_snapshot(hud, ter_cam,
                                 cam_mode, hud_mission_name);
+                        }
+                        if (ev.key.keysym.sym == SDLK_1) {
+                            dts_viewer::select_weapon(pstate.inventory, 0);
+                            std::fprintf(stderr, "weapon: slot 1\n");
+                        }
+                        if (ev.key.keysym.sym == SDLK_2) {
+                            dts_viewer::select_weapon(pstate.inventory, 1);
+                            std::fprintf(stderr, "weapon: slot 2\n");
+                        }
+                        if (ev.key.keysym.sym == SDLK_3) {
+                            dts_viewer::select_weapon(pstate.inventory, 2);
+                            std::fprintf(stderr, "weapon: slot 3\n");
+                        }
+                        if (ev.key.keysym.sym == SDLK_4) {
+                            dts_viewer::select_weapon(pstate.inventory, 3);
+                            std::fprintf(stderr, "weapon: slot 4\n");
+                        }
+                        if (ev.key.keysym.sym == SDLK_q) {
+                            dts_viewer::cycle_weapon(pstate.inventory);
+                            std::fprintf(stderr, "weapon: cycle -> %d\n",
+                                pstate.inventory.active_slot);
                         }
                         if (ev.key.keysym.sym == SDLK_F12) {
                             int sw, sh; SDL_GL_GetDrawableSize(win, &sw, &sh);
@@ -1836,12 +1857,21 @@ int main(int argc, char** argv)
                         if (!ter_cam.mouse_captured) {
                             dts_viewer::set_mouse_capture(ter_cam, true);
                         } else if (ev.button.button == SDL_BUTTON_LEFT) {
-                            // Fire the current weapon (Track 12).
-                            glm::vec3 origin = dts_viewer::player_eye(pstate, ptune);
-                            glm::vec3 aim = dts_viewer::camera_forward(ter_cam);
-                            dts_viewer::projectile_fire(
-                                proj_sys, proj_tune, current_weapon,
-                                origin, aim, /*owner_id*/0);
+                            auto& w = dts_viewer::active_weapon(pstate.inventory);
+                            if (w.equipped && w.cooldown <= 0.0f && w.ammo > 0) {
+                                glm::vec3 origin = dts_viewer::player_eye(pstate, ptune);
+                                glm::vec3 aim = dts_viewer::camera_forward(ter_cam);
+                                if (dts_viewer::projectile_fire(
+                                        proj_sys, proj_tune, w.projectile,
+                                        origin, aim, /*owner_id*/0)) {
+                                    --w.ammo;
+                                    w.cooldown = w.fire_interval;
+                                    if (w.ammo == 0) {
+                                        dts_viewer::auto_switch_on_empty(
+                                            pstate.inventory);
+                                    }
+                                }
+                            }
                         }
                         break;
                     case SDL_MOUSEMOTION:
@@ -1893,6 +1923,8 @@ int main(int argc, char** argv)
                 while (pstep_accumulator >= kFixedStep && steps < 5) {
                     dts_viewer::projectiles_update(
                         proj_sys, proj_tune, height_sampler, pstate, kFixedStep);
+                    dts_viewer::weapons_tick_cooldowns(
+                        pstate.inventory, kFixedStep);
 
                     if (cam_mode == dts_viewer::CameraMode::Walk) {
                         dts_viewer::player_update(
