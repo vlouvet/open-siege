@@ -66,6 +66,20 @@ void print_hud_snapshot(
     CameraMode mode,
     const std::string& mission_name);
 
+// Track 13 spec 01 — 2D screen-space HUD.
+// Crosshair (center cross) + health/energy/ammo bars (bottom-left).
+// No font dependency; ammo is shown as a length-encoded bar plus a
+// row of slot indicator squares.  Active weapon is highlighted.
+struct PlayerState;
+struct PlayerTuning;
+
+void hud2d_init();          // lazy GL init; idempotent
+void hud2d_render(const PlayerState& ps,
+                  const PlayerTuning& tune,
+                  int viewport_w,
+                  int viewport_h);
+void hud2d_shutdown();
+
 } // namespace dts_viewer
 
 #endif // DTS_VIEWER_HUD_HPP

@@ -2048,6 +2048,10 @@ int main(int argc, char** argv)
                 glEnable(GL_DEPTH_TEST);
             }
 
+            if (hud.visible) {
+                dts_viewer::hud2d_render(pstate, ptune, w, h);
+            }
+
             // Update window-title HUD once a second.
             {
                 Uint32 now_ms = SDL_GetTicks();
@@ -2109,6 +2113,7 @@ int main(int argc, char** argv)
 
         dts_viewer::mission_sounds_unload(mission_audio);
         dts_viewer::audio_shutdown();
+        dts_viewer::hud2d_shutdown();
         SDL_GL_DeleteContext(ctx);
         SDL_DestroyWindow(win);
         SDL_Quit();
