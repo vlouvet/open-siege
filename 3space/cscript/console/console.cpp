@@ -270,7 +270,11 @@ static Vector< String > sInstantGroupStack( __FILE__, __LINE__ );
 static DataChunker consoleLogChunker;
 static Vector<ConsoleLogEntry> consoleLog(__FILE__, __LINE__);
 static bool consoleLogLocked;
-bool scriptWarningsAsAsserts = true;
+// Spec 17/05 — Tribes-1 scripts ship with warnings (variable-before-assignment,
+// etc.) that the original engine treats as non-fatal. AssertISV would SIGTRAP
+// the whole binary on every game.cs load. `Con::scriptWarningsAsAsserts=true`
+// at runtime still re-enables strict mode for debugging.
+bool scriptWarningsAsAsserts = false;
 static bool logBufferEnabled=true;
 static S32 printLevel = 10;
 static FileStream consoleLogFile;
