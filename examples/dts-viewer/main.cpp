@@ -56,6 +56,7 @@
 #include "mission_sounds.hpp"
 #include "projectile.hpp"
 #include "inv_station.hpp"
+#include "entity_renderer.hpp"
 #include <set>
 #include <unistd.h>
 #include <cstdint>
@@ -1669,6 +1670,30 @@ int main(int argc, char** argv)
         std::deque<std::string> message_feed;
         bool show_command_map = false;
 
+        // Track 14 — entity stubs (collect at mission load).
+        std::vector<dts_viewer::StaticShapeState>      ent_statics;
+        std::vector<dts_viewer::ItemState>             ent_items;
+        std::vector<dts_viewer::TurretState>           ent_turrets;
+        std::vector<dts_viewer::MoveableState>         ent_moveables;
+        std::vector<dts_viewer::GeneratorState>        ent_generators;
+        std::vector<dts_viewer::TriggerState>          ent_triggers;
+        std::vector<dts_viewer::VehiclePlaceholderState> ent_vehicles;
+        if (ter_mission) {
+            ent_statics    = dts_viewer::collect_static_shapes(ter_mission->scene);
+            ent_items      = dts_viewer::collect_items(ter_mission->scene);
+            ent_turrets    = dts_viewer::collect_turrets(ter_mission->scene);
+            ent_moveables  = dts_viewer::collect_moveables(ter_mission->scene);
+            ent_generators = dts_viewer::collect_generators(ter_mission->scene);
+            ent_triggers   = dts_viewer::collect_triggers(ter_mission->scene);
+            ent_vehicles   = dts_viewer::collect_vehicle_placeholders(ter_mission->scene);
+            std::fprintf(stderr,
+                "entities: %zu static, %zu items, %zu turrets, %zu moveables, "
+                "%zu generators, %zu triggers, %zu vehicles\n",
+                ent_statics.size(), ent_items.size(), ent_turrets.size(),
+                ent_moveables.size(), ent_generators.size(),
+                ent_triggers.size(), ent_vehicles.size());
+        }
+
         // Pre-collect entity positions for compass/sensor/map (specs
         // 13/02, 13/03, 13/06).  For v1 we just enumerate the scene's
         // generators + inventory stations as static blips.
@@ -1981,6 +2006,16 @@ int main(int argc, char** argv)
                     dts_viewer::inv_stations_update(
                         inv_sys, pstate, ptune, kFixedStep);
 
+                    // Track 14 entity ticks.
+                    dts_viewer::tick_items(ent_items, pstate, ptune,
+                        message_feed, kFixedStep);
+                    const bool tp = dts_viewer::team_has_power(0, ent_generators);
+                    dts_viewer::tick_turrets(ent_turrets, pstate,
+                        message_feed, tp, kFixedStep);
+                    dts_viewer::tick_moveables(ent_moveables, pstate, kFixedStep);
+                    dts_viewer::tick_triggers(ent_triggers, pstate,
+                        message_feed, kFixedStep);
+
                     if (cam_mode == dts_viewer::CameraMode::Walk) {
                         dts_viewer::player_update(
                             pstate, ptune, in, height_sampler, &bounds, kFixedStep);
@@ -2088,6 +2123,49 @@ int main(int argc, char** argv)
                 dts_viewer::draw_markers_debug(
                     ter_mission->scene, u_flat_mvp, u_flat_color, MVP);
                 glEnable(GL_DEPTH_TEST);
+            }
+
+            // Track 14 — render entity cubes (placeholder until DTS pipe
+            // is wired in --mission mode).
+            if (ter_mission) {
+                glUseProgram(flat_prog);
+                auto draw = [&](const glm::vec3& p, float s,
+                                const std::array<float,3>& col) {
+                    dts_viewer::render_entity_cube(p, s, col,
+                        u_flat_mvp, u_flat_color, MVP);
+                };
+                for (auto& ss : ent_statics) {
+                    glm::vec3 wp{ ss.xf.position[0], ss.xf.position[1], ss.xf.position[2] };
+                    std::array<float,3> col{ 0.6f, 0.6f, 0.6f };
+                    if (ss.data_block_name == "Generator" ||
+                        ss.data_block_name == "PortGenerator")
+                        col = { 0.9f, 0.2f, 0.2f };
+                    else if (ss.data_block_name == "InventoryStation")
+                        col = { 0.2f, 0.6f, 0.95f };
+                    else if (ss.data_block_name == "vehiclePad")
+                        col = { 0.9f, 0.7f, 0.1f };
+                    draw(wp, 3.0f, col);
+                }
+                for (auto& it : ent_items) {
+                    if (!it.active) continue;
+                    glm::vec3 wp{ it.xf.position[0], it.xf.position[1], it.xf.position[2] };
+                    draw(wp, 1.0f, { 1.0f, 0.4f, 1.0f });
+                }
+                for (auto& tu : ent_turrets) {
+                    if (tu.destroyed) continue;
+                    glm::vec3 wp{ tu.xf.position[0], tu.xf.position[1], tu.xf.position[2] };
+                    draw(wp, 2.0f, { 0.95f, 0.1f, 0.1f });
+                }
+                for (auto& m : ent_moveables) {
+                    draw(dts_viewer::moveable_position(m), 4.0f, { 0.4f, 0.7f, 1.0f });
+                }
+                for (auto& v : ent_vehicles) {
+                    if (!v.visible) continue;
+                    glm::vec3 wp{ v.pad_xf.position[0],
+                                  v.pad_xf.position[1] + 1.5f,
+                                  v.pad_xf.position[2] };
+                    draw(wp, 4.0f, { 0.1f, 0.8f, 0.9f });
+                }
             }
 
             if (hud.visible) {
