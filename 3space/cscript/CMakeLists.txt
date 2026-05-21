@@ -1,82 +1,163 @@
-# cscript — Torque 3D console fork (spec 15/02 build wiring)
+# cscript — Torque 3D console fork
 #
-# This subdirectory hosts a vendored copy of the Torque 3D console subsystem
-# (see LICENSE-Torque3D.md). Spec 15/02 stands up the minimum CMake plumbing
-# so the VM internals (torquescript/) can be compiled in isolation, and so
-# subsequent specs (15/03 namespace rename, 15/06 smoke test) have a target
-# to attach to.
-#
-# Status: EXPERIMENTAL. The full Torque console transitively depends on
-# subtrees we have NOT imported (T3D/, gfx/, gui/, persistence/, math/,
-# collision/, app/). The carveout below intentionally compiles only files
-# whose transitive closure stays inside cscript/. See README.md for the
-# measured prune list.
+# Spec 15/02 stood up the build wiring with a single proof-of-life TU.
+# Spec 15/02b (this revision) widens the compilation set to the full
+# script-VM surface — every TU under console/torquescript/, the bulk of
+# console/, and the core/ + platform/ runtime — by vendoring the missing
+# upstream headers + shimming engine subsystems we don't need.
 #
 # To build:
 #   cmake --build build --target cscript_core
 #
-# The target is marked EXCLUDE_FROM_ALL so a plain `cmake --build` of the
-# parent lib3space project is unaffected.
+# EXCLUDE_FROM_ALL keeps cscript_core out of the default lib3space build.
 
 set(CSCRIPT_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
-# --- Files we attempt to compile ------------------------------------------
-#
-# The transitive include closure of the full torquescript/ VM reaches into
-# Engine/source/math/, gfx/, gui/, persistence/, and T3D/ — none of which we
-# vendored (the spec was explicit about a VM-only fork, not a full engine).
-#
-# Spec 15/02 therefore compiles only the LEAF translation units whose
-# transitive include closure stays inside what we have vendored
-# (cscript/console/ + cscript/core/ + cscript/platform/) plus the four
-# shim headers (torqueConfig.h, app/version.h, util/returnType.h,
-# math/mathTypes.h). The set is intentionally tiny — it exists as proof
-# that the build wiring works end-to-end and produces real object code.
-#
-# Spec 15/03 (namespace rename) and a later 15/02-followup (math/ import)
-# will widen the set as the cascade is resolved.
+# ---------------------------------------------------------------------------
+# Excluded TUs — files in console/ / core/ that pull in engine subsystems
+# (GUI, persistence/TAML, T3D/, 3D shape loaders, etc.) we have NOT
+# vendored. Their functionality (XML object dump, mission editor save,
+# Collada-driven persistence) is not on the VM's critical path.
+# ---------------------------------------------------------------------------
+set(CSCRIPT_CONSOLE_EXCLUDE
+        ${CSCRIPT_ROOT}/console/SimXMLDocument.cpp
+        ${CSCRIPT_ROOT}/console/consoleXMLExport.cpp
+        ${CSCRIPT_ROOT}/console/engineXMLExport.cpp
+        ${CSCRIPT_ROOT}/console/persistenceManager.cpp)
+
+set(CSCRIPT_PLATFORM_EXCLUDE
+        # platform.cpp + macMain.mm + POSIXMain.cpp pull in app/mainLoop.h
+        # (engine main loop), GFX adapters, and the SDL window manager.
+        # We're producing a library, not a standalone game; no main loop.
+        ${CSCRIPT_ROOT}/platform/platform.cpp
+        ${CSCRIPT_ROOT}/platformMac/macMain.mm
+        ${CSCRIPT_ROOT}/platformMac/macPlatform.mm
+        ${CSCRIPT_ROOT}/platformPOSIX/POSIXMain.cpp
+        ${CSCRIPT_ROOT}/platformPOSIX/POSIXGL.client.cpp)
+
+# core/ exclusions — ogg/vorbis/theora require external libs we haven't
+# vendored; zip uses a password macro defined in T3D/. Audio + zip aren't
+# script-VM critical.
+set(CSCRIPT_CORE_EXCLUDE
+        ${CSCRIPT_ROOT}/core/ogg/oggInputStream.cpp
+        ${CSCRIPT_ROOT}/core/ogg/oggTheoraDecoder.cpp
+        ${CSCRIPT_ROOT}/core/ogg/oggVorbisDecoder.cpp
+        ${CSCRIPT_ROOT}/core/util/zip/zipArchive.cpp)
+
+# math/ exclusions — mathUtils.cpp uses Frustum which lives in math/util/
+# (we didn't vendor frustum.cpp because its include closure touches gfx).
+# Frustum is only used by 3D viewport math, not by anything the script
+# VM exercises during evaluation.
+set(CSCRIPT_MATH_EXCLUDE
+        ${CSCRIPT_ROOT}/math/mathUtils.cpp)
+
+# ---------------------------------------------------------------------------
+# Source globs — collect every .cpp under the vendored subtrees, then
+# filter the exclude list.
+# ---------------------------------------------------------------------------
+file(GLOB CSCRIPT_TORQUESCRIPT_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/console/torquescript/*.cpp)
+file(GLOB CSCRIPT_CONSOLE_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/console/*.cpp)
+file(GLOB_RECURSE CSCRIPT_CORE_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/core/*.cpp)
+file(GLOB CSCRIPT_PLATFORM_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/platform/*.cpp)
+file(GLOB CSCRIPT_POSIX_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/platformPOSIX/*.cpp)
+file(GLOB CSCRIPT_MAC_MM CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/platformMac/*.mm)
+file(GLOB CSCRIPT_SDLTHREADS_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/platformSDL_threads/*.cpp)
+file(GLOB CSCRIPT_MATH_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/math/*.cpp
+        ${CSCRIPT_ROOT}/math/public/*.cpp
+        ${CSCRIPT_ROOT}/math/impl/*.cpp
+        ${CSCRIPT_ROOT}/math/isa/neon/*.cpp)
+file(GLOB CSCRIPT_THREADPOOL_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/platform/threads/*.cpp)
+# cinterface/ pulls in app/mainLoop.h + game-controller deps we don't carry.
+# The only symbol the platform layer needs (torque_getexecutablepath) is
+# stubbed in stubs/engine_stubs.cpp instead.
+set(CSCRIPT_CINTERFACE_CPP "")
+set(CSCRIPT_EXTRA_CPP
+        ${CSCRIPT_ROOT}/util/messaging/message.cpp
+        ${CSCRIPT_ROOT}/stubs/engine_stubs.cpp)
+
+list(REMOVE_ITEM CSCRIPT_CONSOLE_CPP ${CSCRIPT_CONSOLE_EXCLUDE})
+list(REMOVE_ITEM CSCRIPT_PLATFORM_CPP ${CSCRIPT_PLATFORM_EXCLUDE})
+list(REMOVE_ITEM CSCRIPT_CORE_CPP ${CSCRIPT_CORE_EXCLUDE})
+list(REMOVE_ITEM CSCRIPT_POSIX_CPP ${CSCRIPT_PLATFORM_EXCLUDE})
+list(REMOVE_ITEM CSCRIPT_MAC_MM ${CSCRIPT_PLATFORM_EXCLUDE})
+list(REMOVE_ITEM CSCRIPT_MATH_CPP ${CSCRIPT_MATH_EXCLUDE})
+
 set(CSCRIPT_VM_SOURCES
-        ${CSCRIPT_ROOT}/core/strings/stringFunctions.cpp
-        # Spec 15/05 — dialect detector. Pure string analysis, no VM deps.
-        ${CSCRIPT_ROOT}/console/torquescript/dialectDetect.cpp)
+        ${CSCRIPT_TORQUESCRIPT_CPP}
+        ${CSCRIPT_CONSOLE_CPP}
+        ${CSCRIPT_CORE_CPP}
+        ${CSCRIPT_PLATFORM_CPP}
+        ${CSCRIPT_POSIX_CPP}
+        ${CSCRIPT_MAC_MM}
+        ${CSCRIPT_SDLTHREADS_CPP}
+        ${CSCRIPT_MATH_CPP}
+        ${CSCRIPT_THREADPOOL_CPP}
+        ${CSCRIPT_CINTERFACE_CPP}
+        ${CSCRIPT_EXTRA_CPP}
+        ${CSCRIPT_ROOT}/lib/tinyxml2/tinyxml2.cpp)
 
 add_library(cscript_core STATIC EXCLUDE_FROM_ALL ${CSCRIPT_VM_SOURCES})
 set_property(TARGET cscript_core PROPERTY CXX_STANDARD 17)
 
 target_include_directories(cscript_core PUBLIC
-        ${CSCRIPT_ROOT}              # so #include "torqueConfig.h" works
-        ${CSCRIPT_ROOT}/console      # so #include "ast.h" from torquescript/ works
-        ${CSCRIPT_ROOT}/console/torquescript)
+        ${CSCRIPT_ROOT}
+        ${CSCRIPT_ROOT}/console
+        ${CSCRIPT_ROOT}/console/torquescript
+        ${CSCRIPT_ROOT}/lib
+        ${CSCRIPT_ROOT}/lib/tinyxml2
+        ${CSCRIPT_ROOT}/math/public
+        ${CSCRIPT_ROOT}/math/impl)
 
-# Torque expects platform + arch defines from torqueConfig.h. The shim at
-# cscript/torqueConfig.h sets TORQUE_OS_MAC / TORQUE_CPU_ARM64 / TORQUE_64
-# / TORQUE_PLAYER based on compiler-builtin platform macros.
 target_compile_definitions(cscript_core PUBLIC TORQUE_PLAYER)
 
-# Quiet Torque-internal warnings — upstream code triggers a flood of
-# -Wunused / -Wparentheses on apple-clang 17. These are pre-existing in
-# the vendored source, not regressions; treat them like third-party deps.
-if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR
-   CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_compile_options(cscript_core PRIVATE
-            -Wno-everything)
+# SDL2 — needed only for the platformSDL_threads/* mutex + semaphore impl.
+# dts-viewer's CMakeLists already resolves SDL2 via find_package; we reuse
+# the same lookup so a Homebrew-installed SDL2 satisfies the include path.
+find_package(SDL2 QUIET)
+if(SDL2_FOUND)
+    target_include_directories(cscript_core PRIVATE ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(cscript_core PUBLIC ${SDL2_LIBRARIES})
 endif()
 
-# --- Spec 15/05 dialect-detector test executable ---------------------------
-#
-# Standalone unit test that exercises detectDialect() against canned
-# inputs mirroring the shipping T1 .cs / ted.vol corpus. Doesn't depend
-# on Catch2 or the VM — pure printf-based assertion. EXCLUDE_FROM_ALL
-# so it doesn't slow normal builds.
+# macOS frameworks needed for platformMac/*.mm — Cocoa pulls in
+# Foundation + AppKit + the Obj-C runtime. CoreFoundation is the
+# host for CFConstantString / _NSConstantString literals.
+if(APPLE)
+    target_link_libraries(cscript_core PUBLIC
+            "-framework Cocoa"
+            "-framework Foundation"
+            "-framework CoreFoundation"
+            "-framework IOKit")
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(cscript_core PRIVATE -Wno-everything)
+endif()
+
+# --- Spec 15/05 dialect-detector test executables --------------------------
 add_executable(cscript_dialect_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/dialectDetect.test.cpp)
 set_property(TARGET cscript_dialect_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_dialect_test PRIVATE cscript_core)
 
-# Corpus walker — classifies every .cs file in a directory and compares
-# against an expected dialect. Drives the extracted scripts.vol / ted.vol
-# fixtures (extracted with vol-list).
 add_executable(cscript_dialect_corpus EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/dialectCorpus.test.cpp)
 set_property(TARGET cscript_dialect_corpus PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_dialect_corpus PRIVATE cscript_core)
+
+# Spec 15/06 — hello.cs smoke test. Calls Con::init() then Con::evaluate()
+# on a few canned snippets to prove the VM actually runs end-to-end.
+add_executable(cscript_hello_smoke EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/hello_smoke.cpp)
+set_property(TARGET cscript_hello_smoke PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_hello_smoke PRIVATE cscript_core)

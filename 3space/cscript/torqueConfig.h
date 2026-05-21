@@ -50,4 +50,12 @@
 #define TORQUE_TOOLS    0
 #define TORQUE_PLAYER
 
+// Default TorqueScript file extension. Upstream's CMakeLists.txt sets this
+// as a compile define (-DTORQUE_SCRIPT_EXTENSION="tscript"). We override it
+// here to "cs" — the Tribes-1 convention — since we're vendoring under
+// cscript_core without the upstream CMake driver.
+#ifndef TORQUE_SCRIPT_EXTENSION
+#  define TORQUE_SCRIPT_EXTENSION "cs"
+#endif
+
 #endif // _TORQUECONFIG_H_
