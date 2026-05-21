@@ -44,4 +44,9 @@ void set_shape_catalogue(std::vector<std::string> names);
 const std::vector<std::string>& mission_catalogue();
 const std::vector<std::string>& shape_catalogue();
 
+// Spec 25/07 — edit mode global. When true the host suspends player
+// input; the ImGui layer paints an "EDIT MODE" overlay.
+bool edit_mode_active();
+void set_edit_mode(bool active);
+
 } // namespace dts_viewer

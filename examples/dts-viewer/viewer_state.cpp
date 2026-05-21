@@ -145,4 +145,14 @@ void set_shape_catalogue(std::vector<std::string> names)
 const std::vector<std::string>& mission_catalogue() { return g_mission_catalogue; }
 const std::vector<std::string>& shape_catalogue()   { return g_shape_catalogue; }
 
+namespace { bool g_edit_mode = false; }
+
+bool edit_mode_active() { return g_edit_mode; }
+void set_edit_mode(bool active)
+{
+    if (g_edit_mode == active) return;
+    g_edit_mode = active;
+    std::fprintf(stdout, "[edit-mode] %s\n", active ? "ON" : "OFF");
+}
+
 } // namespace dts_viewer

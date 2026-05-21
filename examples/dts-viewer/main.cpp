@@ -1962,6 +1962,13 @@ int main(int argc, char** argv)
         {
             dts_viewer::MenuActions a;
             a.quit            = [&]{ running = false; };
+            a.toggle_edit_mode = [&]{
+                const bool to = !dts_viewer::edit_mode_active();
+                dts_viewer::set_edit_mode(to);
+                // Switch to Free camera so the user can fly freely
+                // without the walk-mode terrain clamp fighting them.
+                if (to) cam_mode = dts_viewer::CameraMode::Free;
+            };
             a.is_wireframe    = [&]{ return wireframe; };
             a.toggle_wireframe= [&]{
                 wireframe = !wireframe;
@@ -1990,6 +1997,11 @@ int main(int argc, char** argv)
                 v = !v;
             };
             dts_viewer::set_menu_actions(a);
+        }
+
+        if (const char* em = std::getenv("DTS_TEST_EDIT_MODE"); em && *em == '1') {
+            dts_viewer::set_edit_mode(true);
+            cam_mode = dts_viewer::CameraMode::Free;
         }
 
         while (running) {
@@ -2253,16 +2265,23 @@ int main(int argc, char** argv)
             {
                 const Uint8* keys = SDL_GetKeyboardState(nullptr);
                 dts_viewer::InputState in;
-                in.fwd    = keys[SDL_SCANCODE_W];
-                in.back   = keys[SDL_SCANCODE_S];
-                in.left   = keys[SDL_SCANCODE_A];
-                in.right  = keys[SDL_SCANCODE_D];
-                // Shared Space key: in.jump triggers a single jump impulse on
-                // rising edge; in.jet activates jet thrust after the
-                // tap-vs-hold window (`jet_tap_seconds`).
-                in.jump   = keys[SDL_SCANCODE_SPACE];
-                in.jet    = keys[SDL_SCANCODE_SPACE];
-                in.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+                if (dts_viewer::edit_mode_active()) {
+                    // Spec 25/07 — edit mode suspends WASD/jet/jump so
+                    // the user can fly the camera freely without the
+                    // player controller fighting them.
+                    in = {};
+                } else {
+                    in.fwd    = keys[SDL_SCANCODE_W];
+                    in.back   = keys[SDL_SCANCODE_S];
+                    in.left   = keys[SDL_SCANCODE_A];
+                    in.right  = keys[SDL_SCANCODE_D];
+                    // Shared Space key: in.jump triggers a single jump impulse on
+                    // rising edge; in.jet activates jet thrust after the
+                    // tap-vs-hold window (`jet_tap_seconds`).
+                    in.jump   = keys[SDL_SCANCODE_SPACE];
+                    in.jet    = keys[SDL_SCANCODE_SPACE];
+                    in.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+                }
 
                 // Yaw/pitch always come from the camera (mouse-look runs
                 // per render-frame, never per fixed step).

@@ -301,6 +301,27 @@ void imgui_begin_frame()
     draw_menu_bar();
     asset_browser_draw(g_asset_browser_visible);
     inspector_draw(g_inspector_visible);
+
+    // Spec 25/07 — EDIT MODE overlay, bottom-right of the viewport.
+    if (edit_mode_active()) {
+        ImGuiViewport* vp = ImGui::GetMainViewport();
+        const float pad = 12.0f;
+        ImGui::SetNextWindowPos(
+            ImVec2(vp->WorkPos.x + vp->WorkSize.x - pad,
+                   vp->WorkPos.y + vp->WorkSize.y - pad),
+            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        ImGui::SetNextWindowBgAlpha(0.55f);
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing;
+        if (ImGui::Begin("##edit_mode_overlay", nullptr, flags)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 70, 70, 255));
+            ImGui::TextUnformatted("EDIT MODE");
+            ImGui::PopStyleColor();
+        }
+        ImGui::End();
+    }
 }
 
 bool& asset_browser_visible_ref() { return g_asset_browser_visible; }
