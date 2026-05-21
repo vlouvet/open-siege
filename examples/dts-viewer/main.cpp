@@ -55,6 +55,7 @@
 #include "audio.hpp"
 #include "mission_sounds.hpp"
 #include "projectile.hpp"
+#include "inv_station.hpp"
 #include <set>
 #include <unistd.h>
 #include <cstdint>
@@ -1658,6 +1659,12 @@ int main(int argc, char** argv)
         dts_viewer::ProjectileTuning proj_tune;
         pstate.inventory = dts_viewer::default_loadout();
 
+        // Inventory stations (spec 12/04).
+        dts_viewer::InvStationSystem inv_sys;
+        if (ter_mission) {
+            inv_sys = dts_viewer::inv_stations_load(ter_mission->scene);
+        }
+
         // Mission ambient sounds (spec 11/05).
         dts_viewer::MissionSoundsState mission_audio;
         if (ter_mission) {
@@ -1925,6 +1932,8 @@ int main(int argc, char** argv)
                         proj_sys, proj_tune, height_sampler, pstate, kFixedStep);
                     dts_viewer::weapons_tick_cooldowns(
                         pstate.inventory, kFixedStep);
+                    dts_viewer::inv_stations_update(
+                        inv_sys, pstate, ptune, kFixedStep);
 
                     if (cam_mode == dts_viewer::CameraMode::Walk) {
                         dts_viewer::player_update(
