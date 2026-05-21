@@ -29,7 +29,8 @@ add_executable(dts-viewer
     terrain_textures.cpp
     hud.cpp
     screenshot.cpp
-    mission_switcher.cpp)
+    mission_switcher.cpp
+    player_controller.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include

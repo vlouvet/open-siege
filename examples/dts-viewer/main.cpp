@@ -51,6 +51,7 @@
 #include "hud.hpp"
 #include "screenshot.hpp"
 #include "mission_switcher.hpp"
+#include "player_controller.hpp"
 #include <set>
 #include <unistd.h>
 #include <cstdint>
@@ -1609,6 +1610,34 @@ int main(int argc, char** argv)
         bool wireframe = false;
         bool running = true;
 
+        // ---- PlayerState bridge (spec 09/01) ----
+        // Mirrors ter_cam each frame; player_update is a stub in spec 01.
+        // Spawn at the nearest DropPointMarker if a scene was loaded.
+        dts_viewer::PlayerTuning ptune;
+        dts_viewer::PlayerState  pstate;
+        if (ter_mission) {
+            std::array<float, 3> here{ ter_cam.position.x,
+                                       ter_cam.position.y,
+                                       ter_cam.position.z };
+            auto dp = dts_viewer::nearest_drop_point(ter_mission->scene, here);
+            if (dp) {
+                pstate.pos = glm::vec3{ (*dp)[0], (*dp)[1], (*dp)[2] };
+            } else {
+                pstate.pos = ter_cam.position
+                           - glm::vec3(0.0f, ptune.eye_height, 0.0f);
+            }
+        } else {
+            pstate.pos = ter_cam.position
+                       - glm::vec3(0.0f, ptune.eye_height, 0.0f);
+        }
+        pstate.yaw   = ter_cam.yaw;
+        pstate.pitch = ter_cam.pitch;
+
+        const float kFixedStep = 1.0f / 60.0f;
+        float       pstep_accumulator = 0.0f;
+        int         pstep_count_window = 0;
+        Uint32      pstep_log_last_ms  = SDL_GetTicks();
+
         Uint64 fps_last = SDL_GetPerformanceCounter();
         const Uint64 perf_freq  = SDL_GetPerformanceFrequency();
         Uint64 fps_window_start = fps_last;
@@ -1776,6 +1805,50 @@ int main(int argc, char** argv)
                 dts_viewer::update_camera_free(ter_cam, dt_ter);
             }
             dts_viewer::update_hud(hud, dt_ter);
+
+            // ---- 60 Hz fixed-step PlayerState update (spec 09/01) ----
+            {
+                const Uint8* keys = SDL_GetKeyboardState(nullptr);
+                dts_viewer::InputState in;
+                in.fwd    = keys[SDL_SCANCODE_W];
+                in.back   = keys[SDL_SCANCODE_S];
+                in.left   = keys[SDL_SCANCODE_A];
+                in.right  = keys[SDL_SCANCODE_D];
+                in.jump   = keys[SDL_SCANCODE_SPACE];
+                in.jet    = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+                in.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+
+                // Mirror camera transform into PlayerState each frame (the
+                // walk camera remains the authority until specs 02-06 plug
+                // in real physics).
+                pstate.yaw   = ter_cam.yaw;
+                pstate.pitch = ter_cam.pitch;
+                pstate.pos   = ter_cam.position
+                             - glm::vec3(0.0f, ptune.eye_height, 0.0f);
+
+                pstep_accumulator += dt_ter;
+                int steps = 0;
+                while (pstep_accumulator >= kFixedStep && steps < 5) {
+                    dts_viewer::player_update(pstate, ptune, in, kFixedStep);
+                    pstep_accumulator -= kFixedStep;
+                    ++steps;
+                    ++pstep_count_window;
+                }
+
+                Uint32 now_ms = SDL_GetTicks();
+                if (now_ms - pstep_log_last_ms >= 1000) {
+                    std::fprintf(stderr,
+                        "player: %d steps/s | pos=(%.1f,%.1f,%.1f) "
+                        "vel=(%.1f,%.1f,%.1f) on_ground=%d fuel=%.0f\n",
+                        pstep_count_window,
+                        pstate.pos.x, pstate.pos.y, pstate.pos.z,
+                        pstate.vel.x, pstate.vel.y, pstate.vel.z,
+                        pstate.on_ground ? 1 : 0,
+                        pstate.jet_fuel);
+                    pstep_count_window = 0;
+                    pstep_log_last_ms  = now_ms;
+                }
+            }
 
             int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
             glViewport(0, 0, w, h);
