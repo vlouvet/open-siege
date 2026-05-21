@@ -1062,9 +1062,20 @@ void main() {
     int mat = int(v_mat_idx);
     vec3 base;
     if (u_terrain_layers > 0) {
-        int layer = clamp(mat, 0, u_terrain_layers - 1);
+        // Spec 05/07 — Tribes terrain stores ONE layer index per
+        // vertex; the rasteriser interpolates v_mat_idx across the
+        // triangle. Truncating to int produced hard topographic
+        // rings where adjacent vertices had different indices. Lerp
+        // between floor and ceil layers by the fractional part to
+        // soften transitions. (Full per-vertex weights are spec 05/08.)
+        float fl = floor(v_mat_idx);
+        float frac = clamp(v_mat_idx - fl, 0.0, 1.0);
+        int layer_a = clamp(int(fl),     0, u_terrain_layers - 1);
+        int layer_b = clamp(int(fl) + 1, 0, u_terrain_layers - 1);
         vec2 uv = fract(v_pos_ws.xz / max(u_terrain_uv_scale, 1.0));
-        base = texture(u_terrain_tex, vec3(uv, float(layer))).rgb;
+        vec3 a = texture(u_terrain_tex, vec3(uv, float(layer_a))).rgb;
+        vec3 b = texture(u_terrain_tex, vec3(uv, float(layer_b))).rgb;
+        base = mix(a, b, frac);
     } else {
         base = palette[mat % 16];
     }
