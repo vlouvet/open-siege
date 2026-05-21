@@ -282,7 +282,8 @@ void tick_turrets(std::vector<TurretState>& turrets,
                   PlayerState& player,
                   std::deque<std::string>& feed,
                   bool team_has_power_flag,
-                  float dt)
+                  float dt,
+                  DamageBearingCallback on_damage)
 {
     for (auto& t : turrets) {
         if (t.destroyed) continue;
@@ -291,15 +292,21 @@ void tick_turrets(std::vector<TurretState>& turrets,
             continue;
         }
         glm::vec3 pos{ t.xf.position[0], t.xf.position[1], t.xf.position[2] };
-        float dist = glm::length(player.pos - pos);
+        glm::vec3 d = pos - player.pos;
+        float dist = glm::length(d);
         t.fire_cooldown = std::max(0.0f, t.fire_cooldown - dt);
         if (dist > t.scan_range) continue;
         if (t.fire_cooldown <= 0.0f) {
-            // Apply 15 HP damage at a flat rate.
             player.health = std::max(0.0f, player.health - 15.0f);
             t.fire_cooldown = 2.5f;
             feed.push_back("turret fire from " + t.data_block_name);
             if (feed.size() > 100) feed.pop_front();
+            if (on_damage) {
+                // Bearing FROM player TO turret, relative to player yaw.
+                float bearing_world = std::atan2(d.x, d.z);
+                float relative = bearing_world - player.yaw;
+                on_damage(relative);
+            }
         }
     }
 }

@@ -71,11 +71,16 @@ std::vector<TurretState> collect_turrets(
 // Track 14 spec 05 / 14 spec 03 — turrets fire only when their team
 // still has power.  Passing `bool team_has_power_team_id` is a tiny
 // callback shape; we just thread a bool here.
+// `on_damage` (optional) is invoked with the bearing (radians) of
+// the attacker relative to the player's facing — feeds the HUD
+// damage reticle (Track 13 spec 05).
+using DamageBearingCallback = void(*)(float bearing_from_player_yaw);
 void tick_turrets(std::vector<TurretState>& turrets,
                   PlayerState& player,
                   std::deque<std::string>& feed,
                   bool team_has_power,
-                  float dt);
+                  float dt,
+                  DamageBearingCallback on_damage = nullptr);
 
 // ---- Moveables (spec 14/04) -----------------------------------------------
 

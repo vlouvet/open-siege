@@ -2113,7 +2113,8 @@ int main(int argc, char** argv)
                         message_feed, kFixedStep);
                     const bool tp = dts_viewer::team_has_power(0, ent_generators);
                     dts_viewer::tick_turrets(ent_turrets, pstate,
-                        message_feed, tp, kFixedStep);
+                        message_feed, tp, kFixedStep,
+                        &dts_viewer::hud2d_report_damage);
                     dts_viewer::tick_moveables(ent_moveables, pstate, kFixedStep);
                     dts_viewer::tick_triggers(ent_triggers, pstate,
                         message_feed, kFixedStep);
