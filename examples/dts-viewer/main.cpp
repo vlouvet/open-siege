@@ -37,6 +37,7 @@
 #include "content/dig/dig.hpp"
 #include "content/dis/dis.hpp"
 #include "content/dml/dml.hpp"
+#include "content/interior/dil.hpp"
 #include "content/terrain/dtf.hpp"
 #include "content/terrain/dtb.hpp"
 #include "mission_loader.hpp"
@@ -47,6 +48,7 @@
 #include "skybox_renderer.hpp"
 #include "lighting.hpp"
 #include "terrain_textures.hpp"
+#include "hud.hpp"
 #include <set>
 #include <cstdint>
 
@@ -1556,6 +1558,10 @@ int main(int argc, char** argv)
         }
         bool show_sky = sky_box.has_value();
 
+        dts_viewer::HudState hud;
+        hud.show_sky = show_sky;
+        std::string hud_mission_name = ted_path.stem().string();
+
         // Terrain texture array: derive world prefix from the DTF's DML name
         // (e.g. "lush.dml" -> "lush"), then load <prefix>.Terrain.dat.
         dts_viewer::TerrainTextureArray terrain_tex;
@@ -1605,8 +1611,34 @@ int main(int argc, char** argv)
                         if (ev.key.keysym.sym == SDLK_ESCAPE)
                             dts_viewer::toggle_mouse_capture(ter_cam);
                         if (ev.key.keysym.sym == SDLK_F1) {
+                            hud.visible = !hud.visible;
+                            dts_viewer::print_hud_snapshot(hud, ter_cam,
+                                cam_mode, hud_mission_name);
+                        }
+                        if (ev.key.keysym.sym == SDLK_BACKQUOTE) {
                             wireframe = !wireframe;
                             std::printf("wireframe: %s\n", wireframe ? "on" : "off");
+                        }
+                        if (ev.key.keysym.sym == SDLK_F4) {
+                            hud.show_terrain = !hud.show_terrain;
+                            std::printf("layer terrain: %s\n",
+                                hud.show_terrain ? "on" : "off");
+                        }
+                        if (ev.key.keysym.sym == SDLK_F5) {
+                            hud.show_interiors = !hud.show_interiors;
+                            std::printf("layer interiors: %s\n",
+                                hud.show_interiors ? "on" : "off");
+                        }
+                        if (ev.key.keysym.sym == SDLK_F6) {
+                            hud.show_markers = !hud.show_markers;
+                            std::printf("layer markers: %s\n",
+                                hud.show_markers ? "on" : "off");
+                        }
+                        if (ev.key.keysym.sym == SDLK_F7) {
+                            hud.show_sky = !hud.show_sky;
+                            show_sky = hud.show_sky;
+                            std::printf("layer sky: %s\n",
+                                hud.show_sky ? "on" : "off");
                         }
                         if (ev.key.keysym.sym == SDLK_F3) {
                             show_bounds_debug = !show_bounds_debug;
@@ -1685,6 +1717,7 @@ int main(int argc, char** argv)
             } else {
                 dts_viewer::update_camera_free(ter_cam, dt_ter);
             }
+            dts_viewer::update_hud(hud, dt_ter);
 
             int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
             glViewport(0, 0, w, h);
@@ -1695,15 +1728,15 @@ int main(int argc, char** argv)
             glm::mat4 P   = dts_viewer::camera_projection(ter_cam, (float)w / (float)h);
             glm::mat4 MVP = P * V;
 
-            if (sky_box && show_sky) {
+            if (sky_box && show_sky && hud.show_sky) {
                 dts_viewer::draw_skybox(*sky_box, V, P);
             }
 
-            glUseProgram(terrain_prog);
-            glUniformMatrix4fv(u_ter_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
-            dts_viewer::apply_scene_lighting(terrain_prog,
-                dts_viewer::masked_lighting(lighting, lighting_mode));
-            {
+            if (hud.show_terrain) {
+                glUseProgram(terrain_prog);
+                glUniformMatrix4fv(u_ter_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
+                dts_viewer::apply_scene_lighting(terrain_prog,
+                    dts_viewer::masked_lighting(lighting, lighting_mode));
                 GLint u_layers   = glGetUniformLocation(terrain_prog, "u_terrain_layers");
                 GLint u_uv_scale = glGetUniformLocation(terrain_prog, "u_terrain_uv_scale");
                 GLint u_tex      = glGetUniformLocation(terrain_prog, "u_terrain_tex");
@@ -1716,15 +1749,34 @@ int main(int argc, char** argv)
                 } else {
                     if (u_layers >= 0)   glUniform1i(u_layers, 0);
                 }
-            }
 
-            if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            dts_viewer::draw_terrain(terrain, u_ter_mvp);
-            if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                dts_viewer::draw_terrain(terrain, u_ter_mvp);
+                if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            }
 
             if (show_bounds_debug) {
                 glUseProgram(flat_prog);
                 dts_viewer::draw_bounds_debug(bounds, u_flat_mvp, u_flat_color, MVP);
+            }
+
+            if (hud.show_markers && ter_mission) {
+                glUseProgram(flat_prog);
+                glDisable(GL_DEPTH_TEST);
+                dts_viewer::draw_markers_debug(
+                    ter_mission->scene, u_flat_mvp, u_flat_color, MVP);
+                glEnable(GL_DEPTH_TEST);
+            }
+
+            // Update window-title HUD once a second.
+            {
+                Uint32 now_ms = SDL_GetTicks();
+                static Uint32 last_title = 0;
+                if (now_ms - last_title >= 500) {
+                    dts_viewer::refresh_hud_window_title(win, hud, ter_cam,
+                        cam_mode, hud_mission_name);
+                    last_title = now_ms;
+                }
             }
 
             SDL_GL_SwapWindow(win);
@@ -1984,6 +2036,42 @@ int main(int argc, char** argv)
             return 1;
         }
 
+        // ---- Spec 06-06: load the stock DIL lightmap, if available. ----
+        // The DIS lists DIL filenames per light state; state 0 is the
+        // baked stock lighting. Mission-specific DILs are handled via the
+        // IndexEntry remap in a later spec — v1 uses the stock DIL only.
+        std::optional<studio::content::interior::dil_file> dil_opt;
+        std::string dil_name = dis.lightmap_file();
+        if (!dil_name.empty()) {
+            std::string dil_lower = dil_name;
+            for (auto& c : dil_lower) c = std::tolower((unsigned char)c);
+            std::vector<char> dil_bytes;
+            std::string dil_found;
+            for (const auto& v : int_vols) {
+                if (read_named_file_from_vol(v, dil_lower, ".dil", dil_bytes, dil_found)) break;
+            }
+            if (!dil_bytes.empty()) {
+                std::stringstream dil_ss(std::string(dil_bytes.begin(), dil_bytes.end()));
+                dil_opt = studio::content::interior::parse_dil(dil_ss);
+                if (dil_opt) {
+                    std::printf("interior: DIL '%s' — %zu surfaces, %zu states, "
+                                "%zu lights, %zu mapData bytes, light_scale_shift=%d\n",
+                        dil_found.c_str(),
+                        dil_opt->surfaces.size(), dil_opt->states.size(),
+                        dil_opt->lights.size(), dil_opt->map_data.size(),
+                        dil_opt->light_scale_shift);
+                } else {
+                    std::fprintf(stderr,
+                        "interior: failed to parse DIL '%s' — rendering without lightmap\n",
+                        dil_found.c_str());
+                }
+            } else {
+                std::fprintf(stderr,
+                    "interior: DIL '%s' not found — rendering without lightmap\n",
+                    dil_name.c_str());
+            }
+        }
+
         // MaterialResolver.
         dts_viewer::MaterialResolver int_resolver;
         for (const auto& v : int_vols) int_resolver.add_vol(v);
@@ -2031,9 +2119,10 @@ int main(int argc, char** argv)
         for (const char* wp : world_ppls) { if (try_int_ppl(wp, ".ppl")) break; }
         auto int_pal_map = by_index(int_pals);
 
-        // Build mesh.
+        // Build mesh (with lightmap atlas if DIL parsed).
         dts_viewer::InteriorMesh int_mesh = dts_viewer::build_interior_mesh(
-            *dig_opt, *dml_opt, int_resolver, int_pal_map);
+            *dig_opt, *dml_opt, int_resolver, int_pal_map,
+            dil_opt ? &(*dil_opt) : nullptr);
         if (!int_mesh.valid()) {
             std::fprintf(stderr, "interior: no renderable geometry\n");
             SDL_GL_DeleteContext(ctx_i);
@@ -2044,13 +2133,62 @@ int main(int argc, char** argv)
         std::printf("interior: %d indices, %zu ranges\n",
             int_mesh.index_count, int_mesh.ranges.size());
 
+        // Spec 06-06 two-sampler interior shader. Vertex layout:
+        //   loc 0 = position    (vec3)
+        //   loc 1 = normal      (vec3) — unused; kept for VAO completeness
+        //   loc 2 = diffuse UV  (vec2)
+        //   loc 3 = lightmap UV (vec2)
+        //
+        // Fragment combine:
+        //   final = diffuse * lightmap * 2.0
+        // The *2.0 compensates for the 4-bit precision of the DIL pixel
+        // channels (per spec note). With no lightmap bound the sample is
+        // forced to (0.5,0.5,0.5) so the multiplier reproduces an unlit
+        // baseline.
+        static const char* INT_VS_SRC = R"(
+#version 410 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+layout(location = 3) in vec2 a_uv_lm;
+uniform mat4 u_mvp;
+out vec2 v_uv;
+out vec2 v_uv_lm;
+void main() {
+    v_uv    = a_uv;
+    v_uv_lm = a_uv_lm;
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+)";
+        static const char* INT_FS_SRC = R"(
+#version 410 core
+in vec2 v_uv;
+in vec2 v_uv_lm;
+uniform sampler2D u_tex0;
+uniform sampler2D u_lightmap;
+uniform bool u_has_texture;
+uniform bool u_has_lightmap;
+out vec4 frag;
+void main() {
+    vec4 diffuse = u_has_texture
+        ? texture(u_tex0, v_uv)
+        : vec4(0.75, 0.78, 0.82, 1.0);
+    vec3 lm = u_has_lightmap
+        ? texture(u_lightmap, v_uv_lm).rgb
+        : vec3(0.5, 0.5, 0.5);
+    vec3 lit = diffuse.rgb * lm * 2.0;
+    frag = vec4(lit, diffuse.a);
+}
+)";
+
         GLuint int_prog = link_program(
-            compile_shader(GL_VERTEX_SHADER,   VS_SRC),
-            compile_shader(GL_FRAGMENT_SHADER, FS_SRC));
-        GLint int_u_mvp         = glGetUniformLocation(int_prog, "u_mvp");
-        GLint int_u_normal_mat  = glGetUniformLocation(int_prog, "u_normal_mat");
-        GLint int_u_has_texture = glGetUniformLocation(int_prog, "u_has_texture");
-        GLint int_u_tex0        = glGetUniformLocation(int_prog, "u_tex0");
+            compile_shader(GL_VERTEX_SHADER,   INT_VS_SRC),
+            compile_shader(GL_FRAGMENT_SHADER, INT_FS_SRC));
+        GLint int_u_mvp          = glGetUniformLocation(int_prog, "u_mvp");
+        GLint int_u_has_texture  = glGetUniformLocation(int_prog, "u_has_texture");
+        GLint int_u_tex0         = glGetUniformLocation(int_prog, "u_tex0");
+        GLint int_u_lightmap     = glGetUniformLocation(int_prog, "u_lightmap");
+        GLint int_u_has_lightmap = glGetUniformLocation(int_prog, "u_has_lightmap");
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_MULTISAMPLE);
@@ -2117,13 +2255,12 @@ int main(int argc, char** argv)
             glm::mat4 P_i = glm::perspective(glm::radians(60.0f),
                 (float)wi / (float)hi, ir * 0.001f, ir * 20.0f);
             glm::mat4 MVP_i = P_i * V_i;
-            glm::mat3 nm_i  = glm::mat3(glm::transpose(glm::inverse(V_i)));
 
             glUseProgram(int_prog);
-            glUniformMatrix3fv(int_u_normal_mat, 1, GL_FALSE, glm::value_ptr(nm_i));
 
             if (wf_i) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            dts_viewer::draw_interior(int_mesh, int_u_mvp, int_u_has_texture, int_u_tex0, MVP_i);
+            dts_viewer::draw_interior(int_mesh, int_u_mvp, int_u_has_texture, int_u_tex0,
+                int_u_lightmap, int_u_has_lightmap, MVP_i);
             if (wf_i) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
             SDL_GL_SwapWindow(win_i);

@@ -26,7 +26,8 @@ add_executable(dts-viewer
     mission_bounds.cpp
     skybox_renderer.cpp
     lighting.cpp
-    terrain_textures.cpp)
+    terrain_textures.cpp
+    hud.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include
