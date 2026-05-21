@@ -174,7 +174,7 @@ class EnumConsoleBaseType : public ConsoleBaseType
          
    public:
 
-      virtual const char* getData(void *dptr, const EnumTable *tbl, BitSet32 flag)
+      const char* getData(void *dptr, const EnumTable *tbl, BitSet32 flag) override
       {
          S32 dptrVal = *( S32* ) dptr;
          if( !tbl ) tbl = getEnumTable();
@@ -184,7 +184,7 @@ class EnumConsoleBaseType : public ConsoleBaseType
                return ( *tbl )[ i ].mName;
          return "";
       }
-      virtual void setData(void *dptr, S32 argc, const char **argv, const EnumTable *tbl, BitSet32 flag)
+      void setData(void *dptr, S32 argc, const char **argv, const EnumTable *tbl, BitSet32 flag) override
       {
          if( argc != 1 ) return;
          if( !tbl ) tbl = getEnumTable();
@@ -214,17 +214,62 @@ class BitfieldConsoleBaseType : public ConsoleBaseType
          
    public:
 
-      virtual const char* getData( void* dptr, const EnumTable*, BitSet32 )
+      const char* getData(void* dptr, const EnumTable* tbl, BitSet32) override
       {
-         static const U32 bufSize = 256;
-         char* returnBuffer = Con::getReturnBuffer(bufSize);
-         dSprintf(returnBuffer, bufSize, "0x%08x", *((S32 *) dptr) );
-         return returnBuffer;
+         BitSet32 dptrVal = BitSet32(*(U32*)dptr);
+         String returnBuffer;
+         if (!tbl) tbl = getEnumTable();
+
+         const U32 numEnums = tbl->getNumValues();
+         bool first = true;
+
+         if (dptrVal.testStrict(-1)) //test for all
+         {
+            return Con::getReturnBuffer("-1");
+         }
+         else if (!dptrVal.test(-1)) //test for none
+         {
+            return Con::getReturnBuffer("0");
+         }
+
+         for (U32 i = 0; i < numEnums; i++)
+         {
+            if (dptrVal.test(BIT(i)))
+            {
+               if (first)
+               {
+                  returnBuffer = String::ToString("%s",(*tbl)[i].getName());
+               }
+               else
+               {
+                  returnBuffer += String::ToString(" | %s", (*tbl)[i].getName());
+               }
+               first = false;
+            }
+         }
+
+         return Con::getReturnBuffer(returnBuffer);
       }
-      virtual void setData( void* dptr, S32 argc, const char** argv, const EnumTable*, BitSet32 )
+
+      void setData( void* dptr, S32 argc, const char** argv, const EnumTable* tbl, BitSet32 ) override
       {
-         if( argc != 1 ) return; \
-         *((S32 *) dptr) = dAtoui(argv[0],0); \
+         if( argc != 1 ) return;
+         S32 retVal = dAtoui(argv[0]);
+         if (retVal == 0 && retVal != -1) //zero we need to double check. -1 we know is all on
+         {
+            BitSet32 mask;
+            if (!tbl) tbl = getEnumTable();
+            const U32 numEnums = tbl->getNumValues();
+            String inString(argv[0]);
+
+            for (U32 i = 0; i < numEnums; i++)
+            {
+               if (inString.find((*tbl)[i].getName()) != String::NPos)
+                  mask.set(BIT(i));
+            }
+            retVal = mask.getMask();
+         }
+         *((S32*)dptr) = retVal;
       }
 };
 
@@ -274,6 +319,26 @@ const EngineTypeInfo* _MAPTYPE() { return TYPE< T >(); }
          : ConsoleBaseType( sizeof( nativeType ), &type, #type ) \
       { \
          mTypeInfo = _MAPTYPE< nativeType >(); \
+      } \
+      virtual void setData(void *dptr, S32 argc, const char **argv, const EnumTable *tbl, BitSet32 flag); \
+      virtual const char *getData(void *dptr, const EnumTable *tbl, BitSet32 flag ); \
+      virtual const char *getTypeClassName() { return #typeName ; } \
+      virtual void       *getNativeVariable() { T* var = new T; return (void*)var; } \
+      virtual void        deleteNativeVariable(void* var) { T* nativeVar = reinterpret_cast<T*>(var); delete nativeVar; } \
+      virtual StringTableEntry getTypePrefix( void ) const { return StringTable->insert( typePrefix ); } \
+   }; \
+   ConsoleType ## type gConsoleType ## type ## Instance;
+
+#define ConsoleMappedType( typeName, type, consoleType, nativeType, typePrefix ) \
+   S32 type; \
+   class ConsoleType##type : public ConsoleBaseType \
+   { \
+   public: \
+      typedef nativeType T; \
+      ConsoleType##type() \
+         : ConsoleBaseType( sizeof( nativeType ), &type, #type ) \
+      { \
+         mTypeInfo = _MAPTYPE< consoleType >(); \
       } \
       virtual void setData(void *dptr, S32 argc, const char **argv, const EnumTable *tbl, BitSet32 flag); \
       virtual const char *getData(void *dptr, const EnumTable *tbl, BitSet32 flag ); \

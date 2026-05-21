@@ -153,7 +153,7 @@ struct ProfilerData
    U32 mHash;
    U32 mSubDepth;
    U32 mInvokeCount;
-   U32 mStartTime[2];
+   U64 mStartTime;
    F64 mTotalTime;
    F64 mSubTime;
 #ifdef TORQUE_ENABLE_PROFILE_PATH
@@ -169,6 +169,12 @@ if(gProfiler) gProfiler->hashPush(& pdata##name##obj )
 #define PROFILE_END() if(gProfiler) gProfiler->hashPop()
 
 #define PROFILE_END_NAMED(name) if(gProfiler) gProfiler->hashPop(& pdata##name##obj)
+
+#define PROFILE_START_IF(act, val,fmt) \
+   if (val.equal(#fmt, String::NoCase)) { \
+      static ProfilerRootData pdata##act##_##fmt##obj(#act#fmt); \
+      if (gProfiler) gProfiler->hashPush(&pdata##act##_##fmt##obj); \
+   }
 
 class ScopedProfiler {
 public:

@@ -54,6 +54,7 @@ FileDialogData::FileDialogData()
    mTitle = StringTable->EmptyString();
 
    mStyle = 0;
+   mOpaqueData = NULL;
 
 }
 FileDialogData::~FileDialogData()
@@ -123,6 +124,7 @@ FileDialog::FileDialog() : mData()
    mData.mStyle = FileDialogData::FDS_OPEN | FileDialogData::FDS_MUSTEXIST;
    mChangePath = false;
    mForceRelativePath = true;
+   mBoolTranslator = false;
 }
 
 FileDialog::~FileDialog()
@@ -131,6 +133,7 @@ FileDialog::~FileDialog()
 
 void FileDialog::initPersistFields()
 {
+   docsURL;
    addProtectedField("defaultPath", TypeString, Offset(mData.mDefaultPath, FileDialog), &setDefaultPath, &defaultProtectedGetFn,
       "The default directory path when the dialog is shown.");
 
@@ -196,7 +199,7 @@ bool FileDialog::Execute()
       //The first of each pair is the name, which we'll skip because NFD doesn't support named filters atm
       String filter = StringUnit::getUnit(mData.mFilters, i, "|");
 
-      if (!dStrcmp(filter.c_str(), "*.*"))
+      if (!String::compare(filter.c_str(), "*.*"))
          continue;
 
       U32 subFilterCount = StringUnit::getUnitCount(filter, ";");
@@ -292,7 +295,7 @@ bool FileDialog::Execute()
    else if (mData.mStyle & FileDialogData::FDS_MULTIPLEFILES)
    {
       //check if we have multiple files actually selected or not
-      U32 fileCount = NFD_PathSet_GetCount(&pathSet);
+      U32 fileCount = (U32)NFD_PathSet_GetCount(&pathSet);
       if (fileCount > 1)
       {
          //yep, so parse through them and prep our return
@@ -579,6 +582,7 @@ IMPLEMENT_CONOBJECT(OpenFileDialog);
 //-----------------------------------------------------------------------------
 void OpenFileDialog::initPersistFields()
 {
+   docsURL;
    addProtectedField("MustExist", TypeBool, Offset(mMustExist, OpenFileDialog), &setMustExist, &getMustExist, "True/False whether the file returned must exist or not");
    addProtectedField("MultipleFiles", TypeBool, Offset(mMultipleFiles, OpenFileDialog), &setMultipleFiles, &getMultipleFiles, "True/False whether multiple files may be selected and returned or not");
 
@@ -701,6 +705,7 @@ IMPLEMENT_CONOBJECT(SaveFileDialog);
 //-----------------------------------------------------------------------------
 void SaveFileDialog::initPersistFields()
 {
+   docsURL;
    addProtectedField("OverwritePrompt", TypeBool, Offset(mOverwritePrompt, SaveFileDialog), &setOverwritePrompt, &getOverwritePrompt, "True/False whether the dialog should prompt before accepting an existing file name");
 
    Parent::initPersistFields();
@@ -759,6 +764,7 @@ ConsoleDocClass(OpenFolderDialog,
 
 void OpenFolderDialog::initPersistFields()
 {
+   docsURL;
    addField("fileMustExist", TypeFilename, Offset(mMustExistInDir, OpenFolderDialog), "File that must be in selected folder for it to be valid");
 
    Parent::initPersistFields();

@@ -65,6 +65,21 @@ struct CompoundKey3
    bool operator==(const CompoundKey3 & compound) const { return key1==compound.key1 && key2==compound.key2 && key3==compound.key3; }
 };
 
+template<class A, class B, class C, class D>
+struct CompoundKey4
+{
+   A key1;
+   B key2;
+   C key3;
+   D key4;
+
+   CompoundKey4() {};
+   CompoundKey4(const A& a, const B& b, const C& c, const D& d) { key1 = a; key2 = b; key3 = c; key4 = d;};
+
+   bool operator==(const CompoundKey4& compound) const { return key1 == compound.key1 && key2 == compound.key2 && key3 == compound.key3 && key4 == compound.key4; }
+};
+
+
 
 namespace DictHash
 {
@@ -110,6 +125,11 @@ namespace DictHash
       return hash(compound.key1) + hash(compound.key2) + hash(compound.key3);
    }
 
+   template<class A, class B, class C, class D>
+   inline U32 hash(const CompoundKey4<A, B, C, D>& compound)
+   {
+      return hash(compound.key1) + hash(compound.key2) + hash(compound.key3) + hash(compound.key4);
+   }
    U32 nextPrime(U32);
 };
 
@@ -142,7 +162,7 @@ namespace KeyCmp
    template<>
    inline bool equals<>( const char * const &keya, const char * const &keyb )
    {
-      return ( dStrcmp( keya, keyb ) == 0 );
+      return ( String::compare( keya, keyb ) == 0 );
    }
 };
 
@@ -159,8 +179,8 @@ class HashTable
 public:
    struct Pair
    {
-      Key  key;
-      Value value;
+      Key  key{};
+      Value value{};
       Pair() {}
       Pair(Key k,Value v)
          :  key(k),
@@ -173,7 +193,7 @@ private:
    {
       Node* mNext;
       Pair mPair;
-      Node(): mNext(0) {}
+      Node(): mNext(NULL) {}
       Node(Pair p,Node* n)
          :  mNext(n),
             mPair(p)
@@ -206,8 +226,8 @@ public:
 
       _Iterator()
       {
-         mHashTable = 0;
-         mLink = 0;
+         mHashTable = NULL;
+         mLink = NULL;
       }
 
       _Iterator(M* table,E* ptr)
@@ -300,7 +320,7 @@ public:
 template<typename Key, typename Value> HashTable<Key,Value>::HashTable() : mNodeAllocator(512)
 {
    mTableSize = 0;
-   mTable = 0;
+   mTable = NULL;
    mSize = 0;
 }
 
@@ -308,7 +328,7 @@ template<typename Key, typename Value> HashTable<Key,Value>::HashTable(const Has
 {
    mSize = 0;
    mTableSize = 0;
-   mTable = 0;
+   mTable = NULL;
    *this = p;
 }
 
@@ -337,7 +357,7 @@ typename HashTable<Key,Value>::Node* HashTable<Key,Value>::_next(U32 index) cons
    for (; index < mTableSize; index++)
       if (Node* node = mTable[index])
          return node;
-   return 0;
+   return NULL;
 }
 
 template<typename Key, typename Value>
@@ -489,7 +509,7 @@ typename HashTable<Key,Value>::Iterator HashTable<Key,Value>::insertEqual(const 
 template<typename Key, typename Value>
 void HashTable<Key,Value>::erase(const Key& key)
 {
-   if (mTable==NULL)
+   if (mTable == NULL)
       return;
    Node** prev = &mTable[_index(key)];
    for (Node* itr = *prev; itr; prev = &itr->mNext, itr = itr->mNext)
@@ -509,7 +529,7 @@ void HashTable<Key,Value>::erase(const Key& key)
 template<typename Key, typename Value>
 void HashTable<Key,Value>::erase(Iterator node)
 {
-   if (mTable==NULL)
+   if (mTable == NULL)
       return;
    Node** prev = &mTable[_index(node->key)];
    for (Node* itr = *prev; itr; prev = &itr->mNext, itr = itr->mNext)
@@ -527,7 +547,7 @@ void HashTable<Key,Value>::erase(Iterator node)
 template<typename Key, typename Value>
 void HashTable<Key,Value>::erase(const Key & key, const Value & value)
 {
-   if (mTable==NULL)
+   if (mTable == NULL)
       return;
    Node** prev = &mTable[_index(key)];
    for (Node* itr = *prev; itr; prev = &itr->mNext, itr = itr->mNext)
@@ -571,7 +591,7 @@ typename HashTable<Key,Value>::Iterator HashTable<Key,Value>::find(const Key& ke
       for (Node* itr = mTable[_index(key)]; itr; itr = itr->mNext)
          if ( KeyCmp::equals<Key>( itr->mPair.key, key ) )
             return Iterator(this,itr);
-   return Iterator(this,0);
+   return Iterator(this, NULL);
 }
 
 template<typename Key, typename Value>
@@ -585,7 +605,7 @@ typename HashTable<Key,Value>::ConstIterator HashTable<Key,Value>::find(const Ke
             return ConstIterator(this,itr);
       }
    }
-   return ConstIterator(this,0);
+   return ConstIterator(this, NULL);
 }
 
 template<typename Key, typename Value>
@@ -639,13 +659,13 @@ inline typename HashTable<Key,Value>::ConstIterator HashTable<Key,Value>::begin(
 template<typename Key, typename Value>
 inline typename HashTable<Key,Value>::Iterator HashTable<Key,Value>::end()
 {
-   return Iterator(this,0);
+   return Iterator(this, NULL);
 }
 
 template<typename Key, typename Value>
 inline typename HashTable<Key,Value>::ConstIterator HashTable<Key,Value>::end() const
 {
-   return ConstIterator(this,0);
+   return ConstIterator(this, NULL);
 }
 
 

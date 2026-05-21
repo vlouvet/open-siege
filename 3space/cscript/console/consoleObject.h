@@ -52,7 +52,11 @@
    #include "console/simObjectRef.h"
 #endif
 #ifndef TINYXML_INCLUDED
-   #include "tinyxml.h"
+   #include "tinyxml2.h"
+#endif
+
+#ifndef _CONSOLFUNCTIONS_H_
+#include "console/consoleFunctions.h"
 #endif
 
 /// @file
@@ -208,7 +212,7 @@ public:
    typedef ConsoleBaseType Parent;
 
    /// Allows the writing of a custom TAML schema.
-   typedef void(*WriteCustomTamlSchema)(const AbstractClassRep* pClassRep, TiXmlElement* pParentElement);
+   typedef void(*WriteCustomTamlSchema)(const AbstractClassRep* pClassRep, tinyxml2::XMLElement* pParentElement);
 
    /// @name 'Tructors
    /// @{
@@ -220,7 +224,21 @@ public:
       : Parent( sizeof( void* ), conIdPtr, typeName )
    {
       VECTOR_SET_ASSOCIATION( mFieldList );
-
+      mCategory = StringTable->EmptyString();
+      mClassGroupMask = 0;
+      std::fill_n(mClassId, NetClassGroupsCount, -1);
+      mClassName = StringTable->EmptyString();
+      mClassSizeof = 0;
+      mClassType = 0;
+      mDescription = StringTable->EmptyString();
+#ifdef TORQUE_NET_STATS
+      dMemset(mDirtyMaskFrequency, 0, sizeof(mDirtyMaskFrequency));
+      dMemset(mDirtyMaskTotal, 0, sizeof(mDirtyMaskTotal));
+#endif
+      mDynamicGroupExpand = false;
+      mNamespace = NULL;
+      mNetEventDir = 0;
+      nextClass = NULL;
       parentClass  = NULL;
       mIsRenderEnabled = true;
       mIsSelectionEnabled = true;
@@ -480,6 +498,8 @@ public:
       FIELD_ComponentInspectors = BIT(1),       ///< Custom fields used by components. They are likely to be non-standard size/configuration, so 
                                                 ///< They are handled specially
       FIELD_CustomInspectors = BIT(2),          ///< Display as a button in inspectors.
+      FIELD_SpecialtyArrayField = BIT(3),
+      FIELD_DontWriteToFile = BIT(4),
    };
 
    struct Field
@@ -496,6 +516,7 @@ public:
             validator( NULL ),
             setDataFn( NULL ),
             getDataFn( NULL ),
+            writeDataFn(NULL),
             networkMask(0)
       {
          doNotSubstitute = keepClearSubsOnly = false;
@@ -535,8 +556,8 @@ public:
    /// @name Console Type Interface
    /// @{
 
-   virtual void* getNativeVariable() { return new ( AbstractClassRep* ); } // Any pointer-sized allocation will do.
-   virtual void deleteNativeVariable( void* var ) { delete reinterpret_cast< AbstractClassRep** >( var ); }
+   void* getNativeVariable() override { return new ( AbstractClassRep* ); } // Any pointer-sized allocation will do.
+   void deleteNativeVariable( void* var ) override { delete reinterpret_cast< AbstractClassRep** >( var ); }
 
    /// @}
 
@@ -584,7 +605,7 @@ class ConcreteAbstractClassRep : public AbstractClassRep
 {
 public:
 
-   virtual AbstractClassRep* getContainerChildClass(const bool recurse)
+   AbstractClassRep* getContainerChildClass(const bool recurse) override
    {
       // Fetch container children type.
       AbstractClassRep* pChildren = T::getContainerChildStaticClassRep();
@@ -600,7 +621,7 @@ public:
       return pParent->getContainerChildClass(recurse);
    }
 
-   virtual WriteCustomTamlSchema getCustomTamlSchema(void)
+   WriteCustomTamlSchema getCustomTamlSchema(void) override
    {
       return T::getStaticWriteCustomTamlSchema();
    }
@@ -644,12 +665,12 @@ public:
    };
  
    /// Wrap constructor.
-   ConsoleObject* create() const { return NULL; }
+   ConsoleObject* create() const override { return NULL; }
 
    /// Perform class specific initialization tasks.
    ///
    /// Link namespaces, call initPersistFields() and consoleInit().
-   void init()
+   void init() override
    {
       // Get handle to our parent class, if any, and ourselves (we are our parent's child).
       AbstractClassRep *parent = T::getParentStaticClassRep();
@@ -663,7 +684,7 @@ public:
       T::initPersistFields();
       T::consoleInit();
 
-      EnginePropertyTable::Property* props = new EnginePropertyTable::Property[sg_tempFieldList.size()];
+      EnginePropertyTable::Property* props = new EnginePropertyTable::Property[sg_tempFieldList.size() + 1];
 
       for (int i = 0; i < sg_tempFieldList.size(); ++i)
       {
@@ -685,7 +706,9 @@ public:
       smPropertyTable = _smPropertyTable;
 
       const_cast<EngineTypeInfo*>(mTypeInfo)->mPropertyTable = &_smPropertyTable;
- 
+
+      // After we hand it off, immediately delete if safe:
+      delete[] props;
       // Let the base finish up.
       AbstractClassRep::init();
    }
@@ -693,7 +716,7 @@ public:
    /// @name Console Type Interface
    /// @{
  
-   virtual void setData(void* dptr, S32 argc, const char** argv, const EnumTable* tbl, BitSet32 flag)
+   void setData(void* dptr, S32 argc, const char** argv, const EnumTable* tbl, BitSet32 flag) override
    {
       if (argc == 1)
       {
@@ -704,14 +727,14 @@ public:
           Con::errorf("Cannot set multiple args to a single ConsoleObject*.");
    }
  
-   virtual const char* getData(void* dptr, const EnumTable* tbl, BitSet32 flag)
+   const char* getData(void* dptr, const EnumTable* tbl, BitSet32 flag) override
    {
        T** obj = (T**)dptr;
        return Con::getReturnBuffer(T::__getObjectId(*obj));
    }
  
-   virtual const char* getTypeClassName() { return mClassName; }
-   virtual const bool isDatablock() { return T::__smIsDatablock; };
+   const char* getTypeClassName() override { return mClassName; }
+   const bool isDatablock() override { return T::__smIsDatablock; };
 
    /// @}
  };
@@ -733,7 +756,7 @@ public:
     }
  
    /// Wrap constructor.
-   ConsoleObject* create() const { return new T; }
+   ConsoleObject* create() const override { return new T; }
 };
 
 template< typename T > EnginePropertyTable ConcreteAbstractClassRep< T >::_smPropertyTable(0, NULL);
@@ -806,11 +829,14 @@ class ConsoleObject : public EngineObject
 protected:
 
    /// @deprecated This is disallowed.
-   ConsoleObject(const ConsoleObject&);
+   ConsoleObject(const ConsoleObject&) { mDocsClick = false; };
 
 public:
-
-   ConsoleObject() {}
+   /// <summary>
+   /// Only used for interfacing with the editor's inspector docsURL button
+   /// </summary>
+   bool mDocsClick;
+   ConsoleObject() { mDocsClick = false; }
 
    /// Get a reference to a field by name.
    const AbstractClassRep::Field *findField(StringTableEntry fieldName) const;
@@ -841,7 +867,7 @@ public:
 public:
 
    /// Get the classname from a class tag.
-   static const char* lookupClassName(const U32 in_classTag);
+   static const char* lookupClassName(const U32 in_classTag) { return ""; };
 
    /// @name Fields
    /// @{
@@ -922,6 +948,13 @@ public:
       TypeValidator *v,
       const char *   in_pFieldDocs = NULL);
 
+   static void addFieldV(const char* in_pFieldname,
+      const U32      in_fieldType,
+      const dsize_t  in_fieldOffset,
+      TypeValidator* v,
+      const U32     in_elementCount,
+      const char* in_pFieldDocs = NULL);
+
    /// Register a complex protected field.
    ///
    /// @param  in_pFieldname     Name of the field.
@@ -972,6 +1005,37 @@ public:
       const dsize_t in_fieldOffset,
       AbstractClassRep::SetDataNotify in_setDataFn,
       AbstractClassRep::GetDataNotify in_getDataFn = &defaultProtectedGetFn,
+      const char* in_pFieldDocs = NULL,
+      U32 flags = 0);
+
+
+   static void addProtectedFieldV(const char* in_pFieldname,
+      const U32     in_fieldType,
+      const dsize_t in_fieldOffset,
+      AbstractClassRep::SetDataNotify in_setDataFn,
+      AbstractClassRep::GetDataNotify in_getDataFn = &defaultProtectedGetFn,
+      AbstractClassRep::WriteDataNotify in_writeDataFn = &defaultProtectedWriteFn,
+      TypeValidator* v  = NULL,
+      const U32     in_elementCount = 1,
+      const char* in_pFieldDocs = NULL,
+      U32 flags = 0);
+
+   static void addProtectedFieldV(const char* in_pFieldname,
+      const U32     in_fieldType,
+      const dsize_t in_fieldOffset,
+      AbstractClassRep::SetDataNotify in_setDataFn,
+      AbstractClassRep::GetDataNotify in_getDataFn = &defaultProtectedGetFn,
+      TypeValidator* v = NULL,
+      const U32     in_elementCount = 1,
+      const char* in_pFieldDocs = NULL,
+      U32 flags = 0);
+
+   static void addProtectedFieldV(const char* in_pFieldname,
+      const U32     in_fieldType,
+      const dsize_t in_fieldOffset,
+      AbstractClassRep::SetDataNotify in_setDataFn,
+      AbstractClassRep::GetDataNotify in_getDataFn = &defaultProtectedGetFn,
+      TypeValidator* v = NULL,
       const char* in_pFieldDocs = NULL,
       U32 flags = 0);
 
@@ -1183,7 +1247,7 @@ inline bool& ConsoleObject::getDynamicGroupExpand()
    static SimObjectRefConsoleBaseType< className > ptrRefType;         \
    static AbstractClassRep::WriteCustomTamlSchema getStaticWriteCustomTamlSchema();         \
    static AbstractClassRep* getContainerChildStaticClassRep();         \
-   virtual AbstractClassRep* getClassRep() const
+   AbstractClassRep* getClassRep() const override
 
 #define DECLARE_CATEGORY( string )                      \
    static const char* __category() { return string; }

@@ -1,24 +1,30 @@
 # Torque 3D — fork provenance
 
 The code under this directory (`open-siege/3space/cscript/`) is a verbatim
-copy of three subtrees from the Torque 3D engine, distributed under the MIT
-license by GarageGames, LLC.
+copy of three subtrees from the **TorqueGameEngines/Torque3D** community
+continuation of the original GarageGames Torque 3D engine. Distributed under
+the MIT license, with GarageGames retaining the original copyright notice.
 
 ## Source
 
-- **Repository:** https://github.com/GarageGames/Torque3D
+- **Repository:** https://github.com/TorqueGameEngines/Torque3D
 - **Branch:** `development`
-- **Pinned commit:** `c669fd4005890d68557103940883da555b295e97`
-- **Commit date:** 2022-04-03
-- **Forked on:** 2026-05-20 (Track 15 spec 01)
+- **Pinned commit:** `3661499b33c32c04d14a43bd3724deba05673df8`
+- **Commit date:** 2026-05-20
+- **Forked on:** 2026-05-21 (Track 15 spec 01)
+
+The TorqueGameEngines fork is the actively maintained continuation; the
+original GarageGames/Torque3D repository has not received updates since 2022.
+A previous attempt at this spec pulled from GarageGames; the swap was made
+once the community fork was identified as the canonical upstream.
 
 ## Subtrees imported (verbatim, no modifications in this spec)
 
-| Source path (upstream)          | Destination path (this repo)              | Files | Bytes |
-|---------------------------------|-------------------------------------------|-------|-------|
-| `Engine/source/console/`        | `open-siege/3space/cscript/console/`      | 115   | 2.1 M |
-| `Engine/source/core/`           | `open-siege/3space/cscript/core/`         | 173   | 1.7 M |
-| `Engine/source/platform/`       | `open-siege/3space/cscript/platform/`     | 127   | 1.2 M |
+| Source path (upstream)          | Destination path (this repo)              | Files |
+|---------------------------------|-------------------------------------------|-------|
+| `Engine/source/console/`        | `open-siege/3space/cscript/console/`      | 122   |
+| `Engine/source/core/`           | `open-siege/3space/cscript/core/`         | 175   |
+| `Engine/source/platform/`       | `open-siege/3space/cscript/platform/`     | 112   |
 
 The full upstream `LICENSE.md` is preserved alongside this file as
 `LICENSE-upstream-Torque3D.md`.

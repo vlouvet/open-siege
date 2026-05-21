@@ -17,17 +17,18 @@ in so that Tribes 1's 167 shipped `.cs` files can execute under Open Siege.
 
 ## Provenance
 
+Forked from the actively maintained TorqueGameEngines community continuation.
 See `LICENSE-Torque3D.md` for the upstream source, pinned commit SHA, and
 verbatim MIT license text. The contents of `console/`, `core/`, and
 `platform/` are unmodified copies from upstream; `git diff` against a fresh
-checkout of Torque 3D at the pinned SHA should be empty.
+checkout of TorqueGameEngines/Torque3D at the pinned SHA should be empty.
 
 ## Modifications policy
 
 Modify in place; do **not** rewrite from scratch. The spec-by-spec adaptation
 path (rename namespaces, prune unused files, port the Tribes-1 syntax delta)
 keeps the diff against upstream legible and lets us re-sync against future
-Torque 3D security fixes.
+upstream fixes.
 
 When a file is modified locally, mark it with a header comment of the form:
 

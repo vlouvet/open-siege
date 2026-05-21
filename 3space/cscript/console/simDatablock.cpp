@@ -27,6 +27,7 @@
 #include "platform/platform.h"
 #include "console/simDatablock.h"
 
+#include "script.h"
 #include "console/console.h"
 #include "console/consoleInternal.h"
 #include "console/engineAPI.h"
@@ -34,7 +35,6 @@
 #include "T3D/gameBase/gameConnection.h"
 
 #include "core/stream/bitStream.h"
-#include "console/compiler.h"
 
 IMPLEMENT_CO_DATABLOCK_V1(SimDataBlock);
 SimObjectId SimDataBlock::sNextObjectId = DataBlockObjectIdFirst;
@@ -55,6 +55,7 @@ ConsoleDocClass( SimDataBlock,
 
 SimDataBlock::SimDataBlock()
 {
+   modifiedKey = 0;
    setModDynamicFields(true);
    setModStaticFields(true);
 }
@@ -251,17 +252,14 @@ void SimDataBlock::performSubstitutions(SimDataBlock* dblock, const SimObject* o
 
          b[0] = '\0';
 
-         // perform the statement evaluation
-         Compiler::gSyntaxError = false;
-         //Con::errorf("EVAL [%s]", avar("return %s;", buffer));
-         const char *result = Con::evaluate(avar("return %s;", buffer), false, 0);
-         if (Compiler::gSyntaxError)
+         Con::EvalResult evalResult = Con::evaluate(avar("return %s;", buffer), false, 0);
+         if (!evalResult.valid)
          {
             Con::errorf("Field Substitution Failed: field=\"%s\" substitution=\"%s\" -- syntax error", 
                substitutions[i]->mSlot, substitutions[i]->mValue);
-            Compiler::gSyntaxError = false;
             return;
          }
+         const char* result = evalResult.value;
 
          // output a runtime console error when a substitution produces and empty result.
          if (result == 0 || result[0] == '\0')
@@ -427,39 +425,42 @@ void SimDataBlock::write(Stream &stream, U32 tabStop, U32 flags)
 // MARK: ---- API ----
 
 //-----------------------------------------------------------------------------
-
-DefineEngineMethod( SimDataBlock, reloadOnLocalClient, void, (),,
-   "Reload the datablock.  This can only be used with a local client configuration." )
+void SimDataBlock::reloadOnLocalClient()
 {
    // Make sure we're running a local client.
 
    GameConnection* localClient = GameConnection::getLocalClientConnection();
-   if( !localClient )
+   if (!localClient)
       return;
 
    // Do an in-place pack/unpack/preload.
 
-   if( !object->preload( true, NetConnection::getErrorBuffer() ) )
+   if (!preload(true, NetConnection::getErrorBuffer()))
    {
-      Con::errorf( NetConnection::getErrorBuffer() );
+      Con::errorf(NetConnection::getErrorBuffer());
       return;
    }
 
-   U8 buffer[ 16384 ];
-   BitStream stream( buffer, 16384 );
+   U8 buffer[16384];
+   BitStream stream(buffer, 16384);
 
-   object->packData( &stream );
+   packData(&stream);
    stream.setPosition(0);
-   object->unpackData( &stream );
+   unpackData(&stream);
 
-   if( !object->preload( false, NetConnection::getErrorBuffer() ) )
+   if (!preload(false, NetConnection::getErrorBuffer()))
    {
-      Con::errorf( NetConnection::getErrorBuffer() );
+      Con::errorf(NetConnection::getErrorBuffer());
       return;
    }
 
    // Trigger a post-apply so that change notifications respond.
-   object->inspectPostApply();
+   inspectPostApply();
+}
+DefineEngineMethod( SimDataBlock, reloadOnLocalClient, void, (),,
+   "Reload the datablock.  This can only be used with a local client configuration." )
+{
+   object->reloadOnLocalClient();
 }
 
 //-----------------------------------------------------------------------------

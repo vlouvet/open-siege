@@ -68,30 +68,14 @@
 #include <ctype.h>
 
 #include "core/util/md5.h"
-
-#if defined (TORQUE_OS_MAC) && defined(TORQUE_CPU_X64)
-typedef unsigned int    unsigned32;
-#else
-typedef unsigned long   unsigned32;
-#endif
-typedef unsigned short  unsigned16;
-typedef unsigned char   unsigned8;
+#include "core/util/uuid.h"
+#include "console/enginePrimitives.h"
 
 typedef struct {
     char nodeID[6];
 } uuid_node_t;
 
 #undef xuuid_t
-
-typedef struct _uuid_t
-{
-    unsigned32	time_low;
-    unsigned16	time_mid;
-    unsigned16	time_hi_and_version;
-    unsigned8	clock_seq_hi_and_reserved;
-    unsigned8	clock_seq_low;
-    unsigned8	node[6];
-} xuuid_t;
 
 /* data type for UUID generator persistent state */
 	
@@ -154,19 +138,6 @@ static void create_uuid_state(uuid_state *st)
 {
     st->cs = true_random();
     get_pseudo_node_identifier(&st->node);
-}
-
-/*
- * dav_format_opaquelocktoken - generates a text representation
- *    of an opaquelocktoken
- */
-static void format_token(char *target, const xuuid_t *u)
-{
-  sprintf(target, "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-	  u->time_low, u->time_mid, u->time_hi_and_version,
-	  u->clock_seq_hi_and_reserved, u->clock_seq_low,
-	  u->node[0], u->node[1], u->node[2],
-	  u->node[3], u->node[4], u->node[5]);
 }
 
 /* convert a pair of hex digits to an integer value [0,255] */
@@ -430,9 +401,16 @@ namespace Torque
    
    String UUID::toString() const
    {
-      char buffer[ 1024 ];
-      format_token( buffer, ( xuuid_t* ) this );
-      return buffer;
+      const xuuid_t* u = (xuuid_t*)this;
+      StringBuilder str;
+
+      str.format("%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+         u->time_low, u->time_mid, u->time_hi_and_version,
+         u->clock_seq_hi_and_reserved, u->clock_seq_low,
+         u->node[0], u->node[1], u->node[2],
+         u->node[3], u->node[4], u->node[5]);
+
+      return str.end();
    }
    
    bool UUID::fromString( const char* str )
@@ -451,3 +429,42 @@ namespace Torque
       return ( a + b + c + d + e + f[ 0 ] + f[ 1 ] + f[ 2 ] + f[ 3 ] + f[ 4 ] + f[ 5 ] );
    }
 }
+
+EngineFieldTable::Field Torque::UUIDEngineExport::getAField()
+{
+   typedef UUID ThisType;
+   return _FIELD(a, a, 1, "");
+}
+
+EngineFieldTable::Field Torque::UUIDEngineExport::getBField()
+{
+   typedef UUID ThisType;
+   return _FIELD(b, b, 1, "");
+}
+
+EngineFieldTable::Field Torque::UUIDEngineExport::getCField()
+{
+   typedef UUID ThisType;
+   return _FIELD(c, c, 1, "");
+}
+
+EngineFieldTable::Field Torque::UUIDEngineExport::getDField()
+{
+   typedef UUID ThisType;
+   return _FIELD(d, d, 1, "");
+}
+
+EngineFieldTable::Field Torque::UUIDEngineExport::getEField()
+{
+   typedef UUID ThisType;
+   return _FIELD(e, e, 1, "");
+}
+
+EngineFieldTable::Field Torque::UUIDEngineExport::getFField()
+{
+   typedef UUID ThisType;
+   return _FIELD_AS(U8, f, f, 6, "");
+}
+
+
+

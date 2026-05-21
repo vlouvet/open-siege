@@ -31,6 +31,8 @@ SimNameDictionary::SimNameDictionary()
 {
 #ifndef USE_NEW_SIMDICTIONARY
    hashTable = NULL;
+   hashTableSize = DefaultTableSize;
+   hashEntryCount = 0;
 #endif
    mutex = Mutex::createMutex();
 }
@@ -51,7 +53,7 @@ void SimNameDictionary::insert(SimObject* obj)
    SimObject* checkForDup = find(obj->getName());
 
    if (checkForDup)
-      Con::warnf("Warning! You have a duplicate datablock name of %s. This can cause problems. You should rename one of them.", obj->getName());
+      Con::warnf("Warning! You have a duplicate object name of %s. This can cause problems. You should rename one of them.", obj->getName());
 
    Mutex::lockMutex(mutex);
 #ifndef USE_NEW_SIMDICTIONARY
@@ -150,7 +152,7 @@ void SimNameDictionary::remove(SimObject* obj)
       if (*walk == obj)
       {
          *walk = obj->nextNameObject;
-         obj->nextNameObject = nullptr;
+         obj->nextNameObject = NULL;
          hashEntryCount--;
 
          Mutex::unlockMutex(mutex);
@@ -279,7 +281,7 @@ void SimManagerNameDictionary::remove(SimObject* obj)
       if (*walk == obj)
       {
          *walk = obj->nextManagerNameObject;
-         obj->nextManagerNameObject = nullptr;
+         obj->nextManagerNameObject = NULL;
          hashEntryCount--;
 
          Mutex::unlockMutex(mutex);

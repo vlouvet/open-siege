@@ -206,7 +206,7 @@ struct ThreadPool::WorkerThread : public Thread
    WorkerThread( ThreadPool* pool, U32 index );
 
    WorkerThread*     getNext();
-   virtual void      run( void* arg = 0 );
+   void      run( void* arg = 0 ) override;
 
 private:
    U32               mIndex;
@@ -322,10 +322,9 @@ ThreadPool::ThreadPool( const char* name, U32 numThreads )
       // Platform::SystemInfo will not yet have been initialized.
       
       U32 numLogical = 0;
-      U32 numPhysical = 0;
       U32 numCores = 0;
 
-      CPUInfo::CPUCount( numLogical, numCores, numPhysical );
+      CPUInfo::CPUCount( numLogical, numCores );
       
       const U32 baseCount = getMax( numLogical, numCores );
       mNumThreads = (baseCount > 0) ? baseCount : 2;

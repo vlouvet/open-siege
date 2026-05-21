@@ -37,7 +37,7 @@
 #include "math/mMathFn.h"
 
 
-IMPLEMENT_CONOBJECT( SimSet );
+IMPLEMENT_CONOBJECT_CHILDREN( SimSet );
 IMPLEMENT_CONOBJECT( SimGroup );
 
 ConsoleDocClass( SimSet,
@@ -229,30 +229,29 @@ void SimSet::scriptSort( const String &scriptCallbackFn )
 
 //-----------------------------------------------------------------------------
 
-void SimSet::callOnChildren( const String &method, S32 argc, ConsoleValueRef argv[], bool executeOnChildGroups )
+void SimSet::callOnChildren( const String &method, S32 argc, ConsoleValue argv[], bool executeOnChildGroups )
 {
-   // Prep the arguments for the console exec...
-   // Make sure and leave args[1] empty.
-   ConsoleValueRef args[21] = { };
-   ConsoleValue name_method;
-   name_method.setStackStringValue(method.c_str());
-   args[0] = ConsoleValueRef::fromValue(&name_method);
-
-   for (S32 i = 0; i < argc; i++)
-      args[i + 2] = argv[i];
+   S32 targc = argc;
 
    for( iterator i = begin(); i != end(); i++ )
    {
       SimObject *childObj = static_cast<SimObject*>(*i);
 
+      // Prep the arguments for the console exec...
+      // // Make sure and leave args[1] empty.
+      ConsoleValue args[21] = { };
+      args[0].setStringTableEntry(method.c_str());
+      for (S32 arg = 0; arg < targc; arg++)
+         args[arg + 2].setString(argv[arg].getString());
+
       if( childObj->isMethod( method.c_str() ) )
-         Con::execute(childObj, argc + 2, args);
+         Con::execute(childObj, targc + 2, args);
 
       if( executeOnChildGroups )
       {
          SimSet* childSet = dynamic_cast<SimSet*>(*i);
          if ( childSet )
-            childSet->callOnChildren( method, argc, argv, executeOnChildGroups );
+            childSet->callOnChildren( method, targc, argv, executeOnChildGroups );
       }
    }
 }
@@ -838,11 +837,22 @@ SimGroup* SimGroup::deepClone()
 
 //-----------------------------------------------------------------------------
 
-bool SimGroup::processArguments(S32, ConsoleValueRef *argv)
+bool SimGroup::processArguments(S32, ConsoleValue *argv)
 {
    return true;
 }
 
+
+SimObject* SimGroup::getObject(const S32& index)
+{
+   if (index < 0 || index >= size())
+   {
+      Con::errorf("Set::getObject - index out of range.");
+      return NULL;
+   }
+
+   return (*this)[index];
+}
 //-----------------------------------------------------------------------------
 
 SimObject* SimGroupIterator::operator++()
@@ -881,6 +891,7 @@ DefineEngineMethod( SimSet, listObjects, void, (),,
    for(itr = object->begin(); itr != object->end(); itr++)
    {
       SimObject *obj = *itr;
+      if (obj == NULL) continue;
       bool isSet = dynamic_cast<SimSet *>(obj) != 0;
       const char *name = obj->getName();
       if(name)
@@ -905,7 +916,7 @@ DefineEngineStringlyVariadicMethod( SimSet, add, void, 3, 0,
       if(obj)
          object->addObject( obj );
       else
-         Con::printf("Set::add: Object \"%s\" doesn't exist", (const char*)argv[ i ] );
+         Con::printf("Set::add: Object \"%s\" doesn't exist to add to %s", (const char*)argv[ i ], object->getName() );
    }
 }
 
@@ -922,7 +933,7 @@ DefineEngineStringlyVariadicMethod( SimSet, remove, void, 3, 0,
       if(obj && object->find(object->begin(),object->end(),obj) != object->end())
          object->removeObject(obj);
       else
-         Con::printf("Set::remove: Object \"%s\" does not exist in set", (const char*)argv[i]);
+         Con::printf("Set::remove: Object \"%s\" does not exist in set %s", (const char*)argv[i], object->getName());
       object->unlock();
    }
 }

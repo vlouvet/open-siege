@@ -36,7 +36,7 @@ class FileObject : public SimObject
    U8 *mFileBuffer;
    U32 mBufferSize;
    U32 mCurPos;
-   FileStream *stream;
+   FileStream *mStream;
 public:
    FileObject();
    ~FileObject();
@@ -46,10 +46,12 @@ public:
    bool readMemory(const char *fileName);
    const U8 *buffer() { return mFileBuffer; }
    const U8 *readLine();
-   void peekLine(U8 *line, S32 length);
+   void peekLine(S32 peekLineOffset, U8 *line, S32 length);
    bool isEOF();
    void writeLine(const U8 *line);
    void close();
+
+   bool writeObject(Stream* stream) override { Con::errorf("FileObject:Can Not write a file interface object to a file"); return false; }; //Don't allow writing FileObject *to* files
    void writeObject( SimObject* object, const U8* objectPrepend = NULL );
 
    DECLARE_CONOBJECT(FileObject);

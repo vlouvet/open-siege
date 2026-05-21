@@ -29,6 +29,7 @@
 #include "platform/types.h"
 #endif
 
+#include <string.h>
 
 template< class T > class Vector;
 
@@ -102,6 +103,8 @@ public:
    */
    S32 compare(const StringChar *str, SizeType len = 0, U32 mode = Case|Left) const;
    S32 compare(const String &str, SizeType len = 0, U32 mode = Case|Left) const; ///< @see compare(const StringChar *, SizeType, U32) const
+   static S32 compare(const char *str1, const char *str2);
+   static S32 compare(const UTF16 *str1, const UTF16 *str2);
 
    /**
       Compare two strings for equality.
@@ -183,8 +186,8 @@ public:
    static inline String ToString( U32 v ) { return ToString( "%u", v ); }
    static inline String ToString( S32 v ) { return ToString( "%d", v ); }
    static inline String ToString( F32 v ) { return ToString( "%g", v ); }
-   static inline String ToString( F64 v ) { return ToString( "%Lg", v ); }
-
+   static inline String ToString( F64 v ) { return ToString( "%g", v ); }
+   inline operator const char* () { return c_str(); }
    static String SpanToString(const char* start, const char* end);
 
    static String ToLower(const String &string);
@@ -244,7 +247,7 @@ public:
             _dynamicSize( 0 ),
             _len( 0 )
       {
-         _fixedBuffer[0] = '\0';
+         strncpy(_fixedBuffer, "", 2048);
       }
 
       StrFormat(const char *formatStr, va_list args)
@@ -269,7 +272,7 @@ public:
       void reset()
       {
          _len = 0;
-         _fixedBuffer[0] = '\0';
+         strncpy(_fixedBuffer, "", 2048);
       }
 
       /// Copy the formatted string into the output buffer which must be at least size() characters.
@@ -358,7 +361,9 @@ class StringBuilder
       {
          va_list args;
          va_start(args, fmt);
-         return mFormat.formatAppend(fmt, args);
+         const S32 result = mFormat.formatAppend(fmt, args);
+         va_end(args);
+         return result;
       }
 };
 

@@ -85,18 +85,18 @@ FileObject::FileObject()
    mFileBuffer = NULL;
    mBufferSize = 0;
    mCurPos = 0;
-   stream = NULL;
+   mStream = NULL;
 }
 
 FileObject::~FileObject()
 {
    SAFE_DELETE_ARRAY(mFileBuffer);
-   SAFE_DELETE(stream);
+   SAFE_DELETE(mStream);
 }
 
 void FileObject::close()
 {
-   SAFE_DELETE(stream);
+   SAFE_DELETE(mStream);
    SAFE_DELETE_ARRAY(mFileBuffer);
    mFileBuffer = NULL;
    mBufferSize = mCurPos = 0;
@@ -112,10 +112,10 @@ bool FileObject::openForWrite(const char *fileName, const bool append)
    if( !buffer[ 0 ] )
       return false;
 
-   if((stream = FileStream::createAndOpen( fileName, append ? Torque::FS::File::WriteAppend : Torque::FS::File::Write )) == NULL)
+   if((mStream = FileStream::createAndOpen( fileName, append ? Torque::FS::File::WriteAppend : Torque::FS::File::Write )) == NULL)
       return false;
 
-   stream->setPosition( stream->getStreamSize() );
+   mStream->setPosition(mStream->getStreamSize() );
    return( true );
 }
 
@@ -177,7 +177,7 @@ const U8 *FileObject::readLine()
    return mFileBuffer + tokPos;
 }
 
-void FileObject::peekLine( U8* line, S32 length )
+void FileObject::peekLine( S32 peekLineOffset, U8* line, S32 length )
 {
    if(!mFileBuffer)
    {
@@ -189,6 +189,31 @@ void FileObject::peekLine( U8* line, S32 length )
    // we can't modify the file buffer.
    S32 i = 0;
    U32 tokPos = mCurPos;
+   S32 lineOffset = 0;
+
+   //Lets push our tokPos up until we've offset the requested number of lines
+   while (lineOffset < peekLineOffset && tokPos <= mBufferSize)
+   {
+      if (mFileBuffer[tokPos] == '\r')
+      {
+         tokPos++;
+         if (mFileBuffer[tokPos] == '\n')
+            tokPos++;
+         lineOffset++;
+         continue;
+      }
+
+      if (mFileBuffer[tokPos] == '\n')
+      {
+         tokPos++;
+         lineOffset++;
+         continue;
+      }
+
+      tokPos++;
+   }
+
+   //now peek that line, then return the results
    while( ( tokPos != mBufferSize ) && ( mFileBuffer[tokPos] != '\r' ) && ( mFileBuffer[tokPos] != '\n' ) && ( i < ( length - 1 ) ) )
       line[i++] = mFileBuffer[tokPos++];
 
@@ -200,17 +225,17 @@ void FileObject::peekLine( U8* line, S32 length )
 
 void FileObject::writeLine(const U8 *line)
 {
-   stream->write(dStrlen((const char *) line), line);
-   stream->write(2, "\r\n");
+   mStream->write(dStrlen((const char *) line), line);
+   mStream->write(2, "\r\n");
 }
 
 void FileObject::writeObject( SimObject* object, const U8* objectPrepend )
 {
    if( objectPrepend == NULL )
-      stream->write(2, "\r\n");
+      mStream->write(2, "\r\n");
    else
-      stream->write(dStrlen((const char *) objectPrepend), objectPrepend );
-   object->write( *stream, 0 );
+      mStream->write(dStrlen((const char *) objectPrepend), objectPrepend );
+   object->write( *mStream, 0 );
 }
 
 DefineEngineMethod( FileObject, openForRead, bool, ( const char* filename ),,
@@ -317,7 +342,7 @@ DefineEngineMethod( FileObject, readLine, const char*, (),,
 	return (const char *) object->readLine();
 }
 
-DefineEngineMethod( FileObject, peekLine, const char*, (),,
+DefineEngineMethod( FileObject, peekLine, const char*, (S32 peekOffset), (0),
    "@brief Read a line from the file without moving the stream position.\n\n"
    
    "Emphasis on *line*, as in you cannot parse individual characters or chunks of data.  "
@@ -345,7 +370,7 @@ DefineEngineMethod( FileObject, peekLine, const char*, (),,
 {
 	static const U32 bufSize = 512;
 	char *line = Con::getReturnBuffer( bufSize );
-	object->peekLine( (U8*)line, bufSize );
+	object->peekLine(peekOffset, (U8*)line, bufSize );
 	return line;
 }
 
@@ -493,7 +518,7 @@ DefineEngineMethod( FileObject, writeObject, void,  (const char * simName, const
       Con::printf("FileObject::writeObject - Invalid Object!");
       return;
    }
-	if (!dStrcmp(objName,""))
+	if (!String::compare(objName,""))
        objName = NULL;
 
    object->writeObject( obj, (const U8*)objName );

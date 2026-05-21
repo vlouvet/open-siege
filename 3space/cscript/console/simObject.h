@@ -41,11 +41,15 @@
 #include "persistence/taml/tamlCallbacks.h"
 #endif
 
+#ifndef _OBJECTTYPES_H_
+#include "T3D/objectTypes.h"
+#endif
+
 class Stream;
 class LightManager;
 class SimFieldDictionary;
 class SimPersistID;
-
+class GuiInspector;
 
 /// Base class for objects involved in the simulation.
 ///
@@ -299,6 +303,8 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       SimObject*       nextManagerNameObject;
       SimObject*       nextIdObject;
 
+      StringTableEntry mInheritFrom;
+      bool    mPrototype;
       /// SimGroup we're contained in, if any.
       SimGroup*   mGroup;
       
@@ -380,19 +386,22 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       // Object name protected set method
       static bool setProtectedName(void *object, const char *index, const char *data);
 
+      // Sets object to inherit default values from
+      static bool setInheritFrom(void* object, const char* index, const char* data);
+
    public:
       inline void setProgenitorFile(const char* pFile) { mProgenitorFile = StringTable->insert(pFile); }
       inline StringTableEntry getProgenitorFile(void) const { return mProgenitorFile; }
-
+      static bool _doPrototype(void* object, const char* index, const char* data);
    protected:
       /// Taml callbacks.
-      virtual void onTamlPreWrite(void) {}
-      virtual void onTamlPostWrite(void) {}
-      virtual void onTamlPreRead(void) {}
-      virtual void onTamlPostRead(const TamlCustomNodes& customNodes) {}
-      virtual void onTamlAddParent(SimObject* pParentObject) {}
-      virtual void onTamlCustomWrite(TamlCustomNodes& customNodes) {}
-      virtual void onTamlCustomRead(const TamlCustomNodes& customNodes);
+      void onTamlPreWrite(void) override {}
+      void onTamlPostWrite(void) override {}
+      void onTamlPreRead(void) override {}
+      void onTamlPostRead(const TamlCustomNodes& customNodes) override {}
+      void onTamlAddParent(SimObject* pParentObject) override {}
+      void onTamlCustomWrite(TamlCustomNodes& customNodes) override {}
+      void onTamlCustomRead(const TamlCustomNodes& customNodes) override;
    
       /// Id number for this object.
       SimObjectId mId;
@@ -449,7 +458,7 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       virtual void _onUnselected() {}
    
       /// We can provide more detail, like object name and id.
-      virtual String _getLogMessage(const char* fmt, va_list args) const;
+      String _getLogMessage(const char* fmt, va_list args) const override;
    
       DEFINE_CREATE_METHOD
       {
@@ -460,7 +469,7 @@ class SimObject: public ConsoleObject, public TamlCallbacks
 
       
       // EngineObject.
-      virtual void _destroySelf();
+      void _destroySelf() override;
 
    public:
       
@@ -524,6 +533,9 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       void setDataFieldType(const U32 fieldTypeId, StringTableEntry slotName, const char *array);
       void setDataFieldType(const char *typeName, StringTableEntry slotName, const char *array);
 
+      virtual U32 getSpecialFieldSize(StringTableEntry fieldName) { return 0; }
+      virtual const char* getSpecialFieldOut(StringTableEntry fieldName, const U32& index) { return NULL; }
+
       /// Get reference to the dictionary containing dynamic fields.
       ///
       /// See @ref simobject_console "here" for a detailed discussion of what this
@@ -543,6 +555,9 @@ class SimObject: public ConsoleObject, public TamlCallbacks
 
       /// Get the internal name of this control
       StringTableEntry getInternalName() const { return mInternalName; }
+
+      /// type-specified slot for returning hints for the main difference between object instances
+      virtual StringTableEntry getTypeHint() const { return StringTable->EmptyString(); }
 
       /// Set the original name of this control
       void setOriginalName(const char* originalName);
@@ -570,6 +585,7 @@ class SimObject: public ConsoleObject, public TamlCallbacks
 
       /// Save object as a TorqueScript File.
       virtual bool save( const char* pcFilePath, bool bOnlySelected = false, const char *preappend = NULL );
+      virtual bool saveAppend(const char* pcFilePath, bool bOnlySelected = false, const char* preappend = NULL);
 
       /// Check if a method exists in the objects current namespace.
       virtual bool isMethod( const char* methodName );
@@ -587,12 +603,13 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       
       virtual ~SimObject();
 
-      virtual bool processArguments(S32 argc, ConsoleValueRef *argv);  ///< Process constructor options. (ie, new SimObject(1,2,3))
+      virtual bool processArguments(S32 argc, ConsoleValue *argv);  ///< Process constructor options. (ie, new SimObject(1,2,3))
 
       /// @}
 
       /// @name Events
       /// @{
+      //virtual void onPrepare();
       
       /// Called when the object is added to the sim.
       virtual bool onAdd();
@@ -646,6 +663,9 @@ class SimObject: public ConsoleObject, public TamlCallbacks
 
       /// Called when the editor is deactivated.
       virtual void onEditorDisable(){};
+
+      /// Called when the object is inspected via a GuiInspector control
+      virtual void onInspect(GuiInspector*);
 
       /// @}
 
@@ -722,6 +742,12 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       /// @param   name  Name to assign to the object.
       bool registerObject(const char *name);
 
+      /// Register the object, assigning the name.
+      ///
+      /// @see registerObject()
+      /// @param   name  Name to assign to the object.
+      bool registerObject(const String& name);
+
       /// Register the object, assigning a name and ID.
       ///
       /// @see registerObject()
@@ -747,6 +773,9 @@ class SimObject: public ConsoleObject, public TamlCallbacks
 
       /// Performs a safe delayed delete of the object using a sim event.
       void safeDeleteObject();
+
+      /// Special-case deletion behaviors, largely intended for cleanup in particular cases where it wouldn't happen automatically(like cleanup of associated files)
+      virtual void handleDeleteAction() {}
 
       /// @}
 
@@ -932,7 +961,7 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       /// @{
 
       /// Return a textual description of the object.
-      virtual String describeSelf() const;
+      String describeSelf() const override;
 
       /// Dump the contents of this object to the console.  Use the Torque Script dump() and dumpF() functions to 
       /// call this.  
@@ -959,6 +988,9 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       virtual void getConsoleMethodData(const char * fname, S32 routingId, S32 * type, S32 * minArgs, S32 * maxArgs, void ** callback, const char ** usage) {}
       
       DECLARE_CONOBJECT( SimObject );
+      DECLARE_CALLBACK(void, onInspectPostApply, (SimObject* obj));
+      DECLARE_CALLBACK(void, onSelected, (SimObject* obj));
+      DECLARE_CALLBACK(void, onUnselected, (SimObject* obj));
       
       static SimObject* __findObject( const char* id ) { return Sim::findObject( id ); }
       static const char* __getObjectId( ConsoleObject* object )
@@ -972,7 +1004,7 @@ class SimObject: public ConsoleObject, public TamlCallbacks
       }
 
       // EngineObject.
-      virtual void destroySelf();
+      void destroySelf() override;
 protected:
    bool   is_temp_clone;
 public:
@@ -988,6 +1020,8 @@ public:
    virtual void reloadReset() { }
 };
 
+typedef SceneObjectTypes GameTypeMasksType;
+DefineBitfieldType(GameTypeMasksType);
 
 /// Smart SimObject pointer.
 ///
@@ -1015,56 +1049,47 @@ public:
 template< typename T >
 class SimObjectPtr : public WeakRefPtr< T >
 {
-   public:
+public:
    
-      typedef WeakRefPtr< T > Parent;
+   typedef WeakRefPtr< T > Parent;
    
-      SimObjectPtr() {}
-      SimObjectPtr(T *ptr) { this->mReference = NULL; set(ptr); }
-      SimObjectPtr( const SimObjectPtr& ref ) { this->mReference = NULL; set(ref.mReference); }
+   SimObjectPtr() = default;
+   SimObjectPtr(T* ptr) { set(ptr); }
+   SimObjectPtr(const SimObjectPtr&) = default;
+   SimObjectPtr& operator=(const SimObjectPtr&) = default;
+   SimObjectPtr& operator=(T* ptr)
+   {
+      set(ptr);
+      return *this;
+   }
 
-      T* getObject() const { return Parent::getPointer(); }
+   T* getObject() const { return Parent::getPointer(); }
 
-      ~SimObjectPtr() { set((WeakRefBase::WeakReference*)NULL); }
+protected:
+   void set(T* obj)
+   {
+      // Nothing to do if same object
+      if (obj && this->mWeak.lock() == obj->getWeakControl().lock())
+         return;
 
-      SimObjectPtr<T>& operator=(const SimObjectPtr ref)
+      // Before overwriting, check old object for auto-delete
+      if (auto old_ctrl = this->mWeak.lock())
       {
-         set(ref.mReference);
-         return *this;
-      }
-      SimObjectPtr<T>& operator=(T *ptr)
-      {
-         set(ptr);
-         return *this;
-      }
-
-   protected:
-      void set(WeakRefBase::WeakReference * ref)
-      {
-         if( ref == this->mReference )
-            return;
-
-         if( this->mReference )
+         T* old_obj = getObject();
+         if (this->mWeak.use_count() == 1 && old_obj && old_obj->isAutoDeleted())
          {
-            // Auto-delete
-            T* obj = this->getPointer();
-            if ( this->mReference->getRefCount() == 2 && obj && obj->isAutoDeleted() )
-               obj->deleteObject();
-
-            this->mReference->decRefCount();
-         }
-         this->mReference = NULL;
-         if( ref )
-         {
-            this->mReference = ref;
-            this->mReference->incRefCount();
+            old_obj->destroySelf();
          }
       }
 
-      void set(T * obj)
+      // Assign new weak reference
+      this->mWeak.reset();
+      if (obj)
       {
-         set(obj ? obj->getWeakReference() : (WeakRefBase::WeakReference *)NULL);
+         auto obj_ctrl = obj->getWeakControl().lock();
+         this->mWeak = obj_ctrl;
       }
+   }
 };
 
 #endif // _SIMOBJECT_H_

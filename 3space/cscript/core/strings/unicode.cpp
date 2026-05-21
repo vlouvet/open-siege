@@ -236,8 +236,8 @@ U32 convertUTF16toUTF8DoubleNULL( const UTF16 *unistring, UTF8  *outbuffer, U32 
    }
 
    nCodeunits = getMin(nCodeunits,len - 1);
-   outbuffer[nCodeunits] = NULL;
-   outbuffer[nCodeunits+1] = NULL;
+   outbuffer[nCodeunits] = '\0';
+   outbuffer[nCodeunits+1] = '\0';
 
    PROFILE_END();
    return nCodeunits;
@@ -287,6 +287,11 @@ UTF8*  createUTF8string( const UTF16* unistring)
    dMemcpy(ret, buf, nCodeunits * sizeof(UTF8));
 
    return ret;
+}
+
+void UTF16ClearCache()
+{
+   sgUTF16Cache.clear();
 }
 
 //-----------------------------------------------------------------------------

@@ -48,9 +48,9 @@ class OggTheoraFrame : public RawData
    
       typedef RawData Parent;
       
-      OggTheoraFrame() {}
+      OggTheoraFrame() :mFrameNumber(0), mFrameTime(0), mFrameDuration(0) {}
       OggTheoraFrame( S8* data, U32 size, bool ownMemory = false )
-         : Parent( data, size, ownMemory ) {}
+         : Parent( data, size, ownMemory ), mFrameNumber(0), mFrameTime(0), mFrameDuration(0) {}
          
       /// Serial number of this frame in the stream.
       U32 mFrameNumber;
@@ -177,9 +177,9 @@ class OggTheoraDecoder : public OggDecoder,
       void _transcode420toRGBA_SSE2( th_ycbcr_buffer ycbcr, U8* buffer, U32 width, U32 height, U32 pitch );
 #endif
       // OggDecoder.
-      virtual bool _detect( ogg_page* startPage );
-      virtual bool _init();
-      virtual bool _packetin( ogg_packet* packet );
+      bool _detect( ogg_page* startPage ) override;
+      bool _init() override;
+      bool _packetin( ogg_packet* packet ) override;
 
       ///
       U32 _getPixelOffset( th_ycbcr_buffer buffer, U32 plane, U32 x, U32 y ) const
@@ -258,10 +258,10 @@ class OggTheoraDecoder : public OggDecoder,
       void reusePacket( OggTheoraFrame* packet ) { mFreePackets.pushBack( packet ); }
          
       // OggDecoder.
-      virtual const char* getName() const { return "Theora"; }
+      const char* getName() const override { return "Theora"; }
       
       // IInputStream.
-      virtual U32 read( OggTheoraFrame** buffer, U32 num );
+      U32 read( OggTheoraFrame** buffer, U32 num ) override;
 };
 
 #endif // !_OGGTHEORADECODER_H_
