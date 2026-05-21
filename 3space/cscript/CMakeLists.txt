@@ -169,3 +169,12 @@ add_executable(cscript_vm_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/vm.test.cpp)
 set_property(TARGET cscript_vm_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_vm_test PRIVATE cscript_core)
+
+# Spec 16/01 — SimObject binding test. Defines a ScriptedEntity subclass
+# IN THE TEST TU (so IMPLEMENT_CONOBJECT registration is in the binary,
+# not lazy-loaded from libcscript_core.a) and exercises field reflection,
+# C++ method call from script, and object lifetime.
+add_executable(cscript_binding_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/binding.test.cpp)
+set_property(TARGET cscript_binding_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_binding_test PRIVATE cscript_core)
