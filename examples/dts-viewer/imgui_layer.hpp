@@ -50,6 +50,8 @@ struct MenuActions
     std::function<bool()> is_fps;           std::function<void()> toggle_fps;
     std::function<bool()> is_free_camera;   std::function<void()> set_free_camera;
     std::function<bool()> is_walk_camera;   std::function<void()> set_walk_camera;
+    std::function<bool()> is_asset_browser; std::function<void()> toggle_asset_browser;
+    std::function<bool()> is_inspector;     std::function<void()> toggle_inspector;
 
     // Help
     std::function<void()> help_user_guide;
@@ -61,6 +63,10 @@ struct MenuActions
 };
 
 void set_menu_actions(const MenuActions& a);
+
+// Internal flag for the Asset Browser panel; the host wires the View
+// menu toggle to this ref.
+bool& asset_browser_visible_ref();
 
 // Dispatch a Cmd/Ctrl-modified key as if its menu item had been clicked.
 // Called by the host's SDL key handler before the host acts on the

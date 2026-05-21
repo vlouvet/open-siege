@@ -4,6 +4,7 @@
 
 #include "imgui_layer.hpp"
 #include "viewer_state.hpp"
+#include "asset_browser.hpp"
 
 #include "third_party/imgui/imgui.h"
 #include "third_party/imgui/backends/imgui_impl_sdl2.h"
@@ -193,6 +194,15 @@ void draw_menu_bar()
         if (ImGui::MenuItem("Show FPS", nullptr, query(g_actions.is_fps),
                             has_fps))
             call_or_log(g_actions.toggle_fps, "View > Show FPS");
+        ImGui::Separator();
+        const bool has_ab = (bool)g_actions.toggle_asset_browser;
+        if (ImGui::MenuItem("Asset Browser", nullptr,
+                            query(g_actions.is_asset_browser), has_ab))
+            call_or_log(g_actions.toggle_asset_browser, "View > Asset Browser");
+        const bool has_ins = (bool)g_actions.toggle_inspector;
+        if (ImGui::MenuItem("Inspector", nullptr,
+                            query(g_actions.is_inspector), has_ins))
+            call_or_log(g_actions.toggle_inspector, "View > Inspector");
         ImGui::EndMenu();
     }
 
@@ -275,6 +285,10 @@ bool imgui_process_event(const SDL_Event& ev)
     }
 }
 
+namespace {
+bool g_asset_browser_visible = true;  // default-on (track 25 entry UX)
+} // namespace
+
 void imgui_begin_frame()
 {
     if (ImGui::GetCurrentContext() == nullptr) return;
@@ -283,7 +297,11 @@ void imgui_begin_frame()
     ImGui::NewFrame();
 
     draw_menu_bar();
+    asset_browser_draw(g_asset_browser_visible);
 }
+
+// Internal accessor used by host-side menu wiring to flip the panel.
+bool& asset_browser_visible_ref() { return g_asset_browser_visible; }
 
 void imgui_end_frame()
 {

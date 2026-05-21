@@ -59,6 +59,7 @@ add_executable(dts-viewer
     hud_bindings.cpp
     imgui_layer.cpp
     viewer_state.cpp
+    asset_browser.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

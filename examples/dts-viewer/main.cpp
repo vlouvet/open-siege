@@ -62,6 +62,7 @@
 #include "hud_bindings.hpp"
 #include "imgui_layer.hpp"
 #include "viewer_state.hpp"
+#include "asset_browser.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1495,6 +1496,30 @@ int main(int argc, char** argv)
         dts_viewer::load_config();
         dts_viewer::set_mission_catalogue(mission_reg.short_names);
 
+        // Spec 25/05 — index every VOL adjacent to the mission's base
+        // dir so the Asset Browser sees Entities.vol + Shell.vol +
+        // <world>World.vol + Missions.vol + voice/* etc.
+        {
+            std::vector<dts_viewer::MountedVol> mounts;
+            const fs::path base_dir = ted_path.parent_path().parent_path();
+            if (!base_dir.empty() && fs::exists(base_dir)) {
+                for (const auto& ent : fs::recursive_directory_iterator(base_dir)) {
+                    if (!ent.is_regular_file()) continue;
+                    auto p = ent.path();
+                    auto ext = p.extension().string();
+                    for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+                    if (ext != ".vol") continue;
+                    dts_viewer::MountedVol m;
+                    m.path = p;
+                    m.short_name = p.filename().string();
+                    for (auto& c : m.short_name)
+                        c = (char)std::tolower((unsigned char)c);
+                    mounts.push_back(std::move(m));
+                }
+            }
+            dts_viewer::asset_browser_init(mounts);
+        }
+
 
         std::string screenshot_path_ter;
         for (int i = 3; i < argc; ++i) {
@@ -1953,6 +1978,11 @@ int main(int argc, char** argv)
             a.is_walk_camera  = [&]{ return cam_mode == dts_viewer::CameraMode::Walk; };
             a.set_free_camera = [&]{ cam_mode = dts_viewer::CameraMode::Free; };
             a.set_walk_camera = [&]{ cam_mode = dts_viewer::CameraMode::Walk; };
+            a.is_asset_browser     = []{ return dts_viewer::asset_browser_visible_ref(); };
+            a.toggle_asset_browser = []{
+                bool& v = dts_viewer::asset_browser_visible_ref();
+                v = !v;
+            };
             dts_viewer::set_menu_actions(a);
         }
 
@@ -3360,6 +3390,20 @@ void main() {
     dts_viewer::load_config();
     dts_viewer::set_shape_catalogue(list_dts_in_vol(vol_path));
 
+    // Spec 25/05 — index every adjacent VOL for the Asset Browser.
+    {
+        std::vector<dts_viewer::MountedVol> mounts;
+        for (const auto& v : sibling_vols) {
+            dts_viewer::MountedVol m;
+            m.path = v;
+            m.short_name = v.filename().string();
+            for (auto& c : m.short_name)
+                c = (char)std::tolower((unsigned char)c);
+            mounts.push_back(std::move(m));
+        }
+        dts_viewer::asset_browser_init(mounts);
+    }
+
     // ---- spec 06: texture cache + upload ---------------------------------
     //
     // Two-tier cache (per the spec's Outputs section):
@@ -3906,11 +3950,16 @@ void main() {
     std::string self_arg0_shape = argv[0];
 
     // Spec 25/04 — shape mode has no wireframe/HUD/bbox/cam toggles
-    // to wire (those are mission-mode concepts). Just bind Quit; the
-    // View menu items stay disabled since their callbacks are unset.
+    // to wire (those are mission-mode concepts). Just bind Quit + the
+    // asset browser; the rest stay disabled with unset callbacks.
     {
         dts_viewer::MenuActions a;
         a.quit = [&]{ running = false; };
+        a.is_asset_browser     = []{ return dts_viewer::asset_browser_visible_ref(); };
+        a.toggle_asset_browser = []{
+            bool& v = dts_viewer::asset_browser_visible_ref();
+            v = !v;
+        };
         dts_viewer::set_menu_actions(a);
     }
 
