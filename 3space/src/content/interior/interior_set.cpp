@@ -324,16 +324,69 @@ namespace studio::content::interior
     // back for surfaces the mission didn't remap. Best-effort.
     if (out.dil.is_mission_lighting)
     {
-      auto stock_hit = find_in_world_vols(vols_, dil_name);
+      // Mission DILs are named `<shape>-NNN-<state>.dil`; the stock DIL
+      // is the same name with the trailing `-<state>` chunk dropped, e.g.
+      //   mission citadels.vol/float2-000-0.dil  ->  stock human1DML.vol/float2-000.dil
+      // Fall back to the exact name if the stripped form isn't present
+      // (single-state interiors might share the same name).
+      auto stock_lookup_name = [&]() -> std::string {
+        std::filesystem::path p(dil_name);
+        std::string stem = p.stem().string();      // float2-000-0
+        std::string ext  = p.extension().string(); // .dil
+        auto last_dash = stem.find_last_of('-');
+        if (last_dash != std::string::npos && last_dash + 1 < stem.size()) {
+          bool all_digits = true;
+          for (std::size_t i = last_dash + 1; i < stem.size(); ++i) {
+            if (!std::isdigit(static_cast<unsigned char>(stem[i]))) {
+              all_digits = false; break;
+            }
+          }
+          if (all_digits) {
+            return stem.substr(0, last_dash) + ext;
+          }
+        }
+        return dil_name;
+      }();
+
+      auto stock_hit = find_in_world_vols(vols_, stock_lookup_name);
+      if (!stock_hit && stock_lookup_name != dil_name) {
+        stock_hit = find_in_world_vols(vols_, dil_name);
+      }
       if (stock_hit && stock_hit->vol != dil_hit->vol)
       {
         auto bytes = extract_to_string(*stock_hit->vol, *stock_hit->info);
         std::stringstream ss(bytes, std::ios::in | std::ios::out | std::ios::binary);
         if (auto parsed = parse_dil(ss))
         {
+          std::fprintf(stderr,
+            "interior_resolver: %s — mission DIL from %s, stock DIL from %s "
+            "(remap=%zu, mission-surf=%zu, stock-surf=%zu)\n",
+            dil_name.c_str(),
+            dil_hit->vol->path.filename().string().c_str(),
+            stock_hit->vol->path.filename().string().c_str(),
+            out.dil.index_remap.size(),
+            out.dil.surfaces.size(),
+            parsed->surfaces.size());
           out.stock_dil_for_fallback = std::move(*parsed);
         }
       }
+      else
+      {
+        std::fprintf(stderr,
+          "interior_resolver: %s — mission DIL with no stock fallback "
+          "(stock_hit=%s, same_vol=%d)\n",
+          dil_name.c_str(),
+          stock_hit ? "found" : "not found",
+          stock_hit ? (stock_hit->vol == dil_hit->vol) : 0);
+      }
+    }
+    else
+    {
+      std::fprintf(stderr,
+        "interior_resolver: %s — stock DIL only (source=%s, surf=%zu)\n",
+        dil_name.c_str(),
+        dil_hit->vol->path.filename().string().c_str(),
+        out.dil.surfaces.size());
     }
 
     // ---- DML: shared material list, always per-world. ----------------

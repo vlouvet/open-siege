@@ -78,12 +78,21 @@ struct InteriorMesh
 // adds per-vertex lightmap UVs alongside the diffuse UVs. Pass nullptr
 // to fall back to diffuse-only rendering (vertex shader receives zero
 // lightmap UV, fragment shader treats lightmap sample as white).
+//
+// `stock_dil` (optional, only meaningful when `dil` is itself an
+// ITRMissionLighting delta) is the parent stock ITRLighting loaded from
+// the per-world VOL. Mission DILs are sparse overrides: for surfaces
+// listed in the mission's IndexEntry table, the lightmap is sourced
+// from `stock_dil->surfaces[dest_index]`; for surfaces the mission
+// didn't bake anew it falls back to `stock_dil->surfaces[N]`. See
+// docs/clean-room-specs/DIL-INNER.md §7.3.
 InteriorMesh build_interior_mesh(
     const studio::content::dig::dig_file& geom,
     const studio::content::dts::darkstar::material_list_variant& dml,
     const MaterialResolver& resolver,
     const std::map<std::uint32_t, const Palette*>& palette_map,
-    const studio::content::interior::dil_file* dil = nullptr);
+    const studio::content::interior::dil_file* dil = nullptr,
+    const studio::content::interior::dil_file* stock_dil = nullptr);
 
 // Draw the interior using a two-sampler shader program. `u_tex0` is the
 // diffuse PBMP sampler (texture unit 0), `u_lightmap` is the per-

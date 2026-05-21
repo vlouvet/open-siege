@@ -1922,7 +1922,10 @@ int main(int argc, char** argv)
                         pi.xf = p.xf;
                         pi.mesh = dts_viewer::build_interior_mesh(
                             opt->dig, opt->material, ter_resolver, pal_map_int,
-                            &opt->dil);
+                            &opt->dil,
+                            opt->stock_dil_for_fallback
+                                ? &(*opt->stock_dil_for_fallback)
+                                : nullptr);
                         if (pi.mesh.valid()) {
                             placed_interiors.push_back(std::move(pi));
                         }

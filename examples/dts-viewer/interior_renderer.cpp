@@ -7,6 +7,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -293,20 +294,136 @@ inline void irgb4444_to_rgba8(std::uint16_t px,
     out[3] = 255;
 }
 
+// Decode one surface from one DIL into the destination tile's rgba
+// buffer. Returns true on success, false on Huffman EOF / malformed
+// tree. The rgba buffer is filled regardless (caller may overwrite on
+// fallback). `pixel_count` must equal w * h of the source surface.
+bool decode_one_surface(
+    const studio::content::interior::dil_file& src,
+    std::size_t src_idx,
+    int shift,
+    std::vector<std::uint8_t>& rgba_out)
+{
+    if (src_idx >= src.surfaces.size()) return false;
+    const auto& s = src.surfaces[src_idx];
+    const int w = s.map_size_x;
+    const int h = s.map_size_y;
+    if (w <= 0 || h <= 0) return false;
+    const std::size_t pixel_count = static_cast<std::size_t>(w) * h;
+
+    const std::uint32_t enc = s.map_index_or_color;
+    if (enc == 0xFFFFFFFFu) {
+        // Sentinel for "no baked lightmap" — pure white so the diffuse
+        // texture passes through unmodulated.
+        for (std::size_t p = 0; p < pixel_count; ++p) {
+            rgba_out[p * 4 + 0] = 255;
+            rgba_out[p * 4 + 1] = 255;
+            rgba_out[p * 4 + 2] = 255;
+            rgba_out[p * 4 + 3] = 255;
+        }
+        return true;
+    }
+    if ((enc & 0x40000000u) != 0) {
+        const std::size_t off = enc & 0x3FFFFFFFu;
+        if (off >= src.map_data.size()) return false;
+        auto pixels = decode_huffman_pixels(src, off, pixel_count);
+        if (pixels.size() != pixel_count) return false;
+        for (std::size_t p = 0; p < pixel_count; ++p) {
+            irgb4444_to_rgba8(pixels[p], shift, &rgba_out[p * 4]);
+        }
+        return true;
+    }
+    // Flat-colour: low 16 bits are the IRGB pixel.
+    const std::uint16_t px = static_cast<std::uint16_t>(enc & 0xFFFFu);
+    std::uint8_t rgba[4];
+    irgb4444_to_rgba8(px, shift, rgba);
+    for (std::size_t p = 0; p < pixel_count; ++p) {
+        rgba_out[p * 4 + 0] = rgba[0];
+        rgba_out[p * 4 + 1] = rgba[1];
+        rgba_out[p * 4 + 2] = rgba[2];
+        rgba_out[p * 4 + 3] = rgba[3];
+    }
+    return true;
+}
+
 // Unpack every surface's lightmap rectangle into an UnpackedTile.
-// Surfaces with size 0 in either dimension are skipped (no usable
-// rectangle to sample).
+// Surfaces with size 0 in either dimension are skipped.
+//
+// When `stock` is non-null (the parent ITRLighting), `mission`'s
+// IndexEntry table routes each surface as per DIL-INNER §7.3:
+//   1. If mission has IndexEntry with src_index == N -> stock[dest_index]
+//   2. Else if mission[N] decodes successfully -> mission[N]
+//   3. Else fall back to stock[N]
+//   4. Else mid-grey
 std::vector<UnpackedTile> unpack_dil_surfaces(
-    const studio::content::interior::dil_file& dil)
+    const studio::content::interior::dil_file& mission,
+    const studio::content::interior::dil_file* stock = nullptr)
 {
     std::vector<UnpackedTile> tiles;
-    tiles.reserve(dil.surfaces.size());
+    tiles.reserve(mission.surfaces.size());
 
-    const int shift = std::clamp(dil.light_scale_shift, 0, 7);
+    const int mshift = std::clamp(mission.light_scale_shift, 0, 7);
+    const int sshift = stock ? std::clamp(stock->light_scale_shift, 0, 7) : 0;
+
+    // Mission's IndexEntry table -> sparse src_index -> dest_index map.
+    std::unordered_map<std::int32_t, std::int32_t> remap;
+    remap.reserve(mission.index_remap.size());
+    for (const auto& e : mission.index_remap) {
+        remap.emplace(e.src_index, e.dest_index);
+    }
+    if (const char* tr = std::getenv("DIL_TRACE_ALL"); tr && *tr == '1') {
+        std::int32_t max_src = -1, max_dest = -1;
+        std::size_t in_mission_range = 0;
+        for (const auto& e : mission.index_remap) {
+            if (e.src_index > max_src) max_src = e.src_index;
+            if (e.dest_index > max_dest) max_dest = e.dest_index;
+            if (e.src_index >= 0
+                && static_cast<std::size_t>(e.src_index) < mission.surfaces.size()) {
+                ++in_mission_range;
+            }
+        }
+        std::fprintf(stderr,
+            "    dil-remap: %zu IndexEntry records — max_src=%d max_dest=%d "
+            "src-in-mission-range=%zu\n",
+            mission.index_remap.size(), max_src, max_dest, in_mission_range);
+    }
 
     std::size_t fail_count = 0;
-    for (std::size_t si = 0; si < dil.surfaces.size(); ++si) {
-        const auto& s = dil.surfaces[si];
+    std::size_t remap_count = 0;
+    std::size_t stock_fallback_count = 0;
+    for (std::size_t si = 0; si < mission.surfaces.size(); ++si) {
+
+        // Pick (source DIL, source surface index) per the spec routing.
+        const studio::content::interior::dil_file* src = nullptr;
+        std::size_t src_idx = 0;
+        int          src_shift = mshift;
+        bool         via_remap = false;
+
+        auto it = remap.find(static_cast<std::int32_t>(si));
+        if (it != remap.end() && stock
+            && it->second >= 0
+            && static_cast<std::size_t>(it->second) < stock->surfaces.size()) {
+            src       = stock;
+            src_idx   = static_cast<std::size_t>(it->second);
+            src_shift = sshift;
+            via_remap = true;
+            ++remap_count;
+        } else {
+            // No remap entry — start with the mission's own surface.
+            const auto& ms = mission.surfaces[si];
+            if (ms.map_size_x > 0 && ms.map_size_y > 0) {
+                src     = &mission;
+                src_idx = si;
+            } else if (stock && si < stock->surfaces.size()) {
+                src       = stock;
+                src_idx   = si;
+                src_shift = sshift;
+                ++stock_fallback_count;
+            }
+        }
+
+        if (!src) continue;
+        const auto& s = src->surfaces[src_idx];
         const int w = s.map_size_x;
         const int h = s.map_size_y;
         if (w <= 0 || h <= 0) continue;
@@ -314,74 +431,49 @@ std::vector<UnpackedTile> unpack_dil_surfaces(
         UnpackedTile t;
         t.surface_index = static_cast<std::uint32_t>(si);
         t.w = w; t.h = h;
-        t.rgba.assign(static_cast<std::size_t>(w * h) * 4, 0);
-
-        const std::uint32_t enc = s.map_index_or_color;
         const std::size_t pixel_count = static_cast<std::size_t>(w) * h;
+        t.rgba.assign(pixel_count * 4, 0);
 
-        if ((enc & 0x40000000u) != 0) {
-            // Huffman-encoded: decode from byte offset.
-            const std::size_t off = enc & 0x3FFFFFFFu;
-            if (const char* tr = std::getenv("DIL_TRACE_ALL"); tr && *tr == '1') {
+        if (const char* tr = std::getenv("DIL_TRACE_ALL"); tr && *tr == '1') {
+            std::fprintf(stderr,
+                "    dil-all: mission-surface %zu -> %s[%zu] enc=0x%08x wh=%dx%d%s\n",
+                si, via_remap ? "stock" : (src == stock ? "stock-fallback" : "mission"),
+                src_idx, s.map_index_or_color, w, h,
+                via_remap ? " (remap)" : "");
+        }
+
+        bool ok = decode_one_surface(*src, src_idx, src_shift, t.rgba);
+        if (!ok && src == &mission && stock && si < stock->surfaces.size()) {
+            // Mission decode failed — last-ditch stock fallback.
+            const auto& ss = stock->surfaces[si];
+            if (ss.map_size_x > 0 && ss.map_size_y > 0) {
+                t.w = ss.map_size_x;
+                t.h = ss.map_size_y;
+                t.rgba.assign(static_cast<std::size_t>(t.w) * t.h * 4, 0);
+                ok = decode_one_surface(*stock, si, sshift, t.rgba);
+                if (ok) ++stock_fallback_count;
+            }
+        }
+        if (!ok) {
+            ++fail_count;
+            if (const char* tr = std::getenv("DIL_TRACE_EOF"); tr && *tr == '1') {
                 std::fprintf(stderr,
-                    "    dil-all: surface %zu enc=0x%08x off=0x%zx wh=%dx%d\n",
-                    si, enc, off, w, h);
+                    "    dil-trace: surface %zu unrecoverable "
+                    "(via_remap=%d src=%s src_idx=%zu)\n",
+                    si, via_remap ? 1 : 0,
+                    src == stock ? "stock" : "mission", src_idx);
             }
-            auto pixels = decode_huffman_pixels(dil, off, pixel_count);
-            if (pixels.size() != pixel_count) {
-                ++fail_count;
-                if (const char* tr = std::getenv("DIL_TRACE_EOF"); tr && *tr == '1') {
-                    std::fprintf(stderr,
-                        "    dil-trace: surface %zu enc=0x%08x wh=%dx%d "
-                        "off=0x%zx avail=%zu wanted=%zu got=%zu "
-                        "nodes=%zu leaves=%zu\n",
-                        si, enc, w, h, off,
-                        dil.map_data.size() > off
-                            ? dil.map_data.size() - off : 0,
-                        pixel_count, pixels.size(),
-                        dil.huffman_nodes.size(),
-                        dil.huffman_leaves.size());
-                }
-                // Spec 06/08 — when a mission-DIL surface fails to
-                // decode it's almost certainly because the surface is
-                // supposed to be resolved against the STOCK DIL via
-                // the IndexEntry remap (see clean-room spec §7.3).
-                // We don't yet load the stock DIL; fall back to a
-                // neutral mid-grey so the surface is visible-but-flat
-                // rather than pitch-black until proper remap lands.
-                for (std::size_t p = 0; p < pixel_count; ++p) {
-                    t.rgba[p * 4 + 0] = 128;
-                    t.rgba[p * 4 + 1] = 128;
-                    t.rgba[p * 4 + 2] = 128;
-                    t.rgba[p * 4 + 3] = 255;
-                }
-            } else {
-                for (std::size_t p = 0; p < pixel_count; ++p) {
-                    irgb4444_to_rgba8(pixels[p], shift,
-                                      &t.rgba[p * 4]);
-                }
-            }
-        } else {
-            // Unlit flat-colour surface: low 16 bits ARE the IRGB pixel.
-            const std::uint16_t px = static_cast<std::uint16_t>(enc & 0xFFFFu);
-            std::uint8_t rgba[4];
-            irgb4444_to_rgba8(px, shift, rgba);
             for (std::size_t p = 0; p < pixel_count; ++p) {
-                t.rgba[p * 4 + 0] = rgba[0];
-                t.rgba[p * 4 + 1] = rgba[1];
-                t.rgba[p * 4 + 2] = rgba[2];
-                t.rgba[p * 4 + 3] = rgba[3];
+                t.rgba[p * 4 + 0] = 128;
+                t.rgba[p * 4 + 1] = 128;
+                t.rgba[p * 4 + 2] = 128;
+                t.rgba[p * 4 + 3] = 255;
             }
         }
 
         tiles.push_back(std::move(t));
     }
 
-    // Sanity stat: mean luminance of all unpacked tiles, logged so the
-    // operator can verify the lightmap is plausible (acceptance criterion
-    // 06-06 #3). Sane range is roughly 0.05..0.9 of full white; 0 means
-    // the entire DIL is the static "lights-off" frame (e.g. animated-only
-    // interiors before the state machine runs).
     double sum = 0.0;
     std::size_t total_px = 0;
     for (const auto& t : tiles) {
@@ -396,9 +488,10 @@ std::vector<UnpackedTile> unpack_dil_surfaces(
         : 0.0;
     std::fprintf(stderr,
         "interior: lightmap unpacked — %zu surfaces, %zu pixels, "
-        "mean luminance %.3f%s\n",
+        "mean luminance %.3f (remapped %zu, stock-fallback %zu%s)\n",
         tiles.size(), total_px, mean,
-        fail_count > 0 ? " (mid-grey fallback applied to surfaces needing stock-DIL remap)" : "");
+        remap_count, stock_fallback_count,
+        fail_count > 0 ? ", mid-grey fallback applied" : "");
 
     return tiles;
 }
@@ -490,7 +583,8 @@ InteriorMesh build_interior_mesh(
     const studio::content::dts::darkstar::material_list_variant& dml,
     const MaterialResolver& resolver,
     const std::map<std::uint32_t, const Palette*>& palette_map,
-    const studio::content::interior::dil_file* dil)
+    const studio::content::interior::dil_file* dil,
+    const studio::content::interior::dil_file* stock_dil)
 {
     using namespace studio::content::dig;
 
@@ -523,7 +617,7 @@ InteriorMesh build_interior_mesh(
     std::vector<AtlasRect> surf_to_atlas(geom.surfaces.size());
 
     if (dil != nullptr && !dil->surfaces.empty()) {
-        auto tiles = unpack_dil_surfaces(*dil);
+        auto tiles = unpack_dil_surfaces(*dil, stock_dil);
         auto [aw, ah] = pack_atlas_shelves(tiles);
         atlas_w = aw;
         atlas_h = ah;
