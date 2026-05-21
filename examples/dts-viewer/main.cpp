@@ -63,6 +63,7 @@
 #include "imgui_layer.hpp"
 #include "viewer_state.hpp"
 #include "asset_browser.hpp"
+#include "inspector.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1983,6 +1984,11 @@ int main(int argc, char** argv)
                 bool& v = dts_viewer::asset_browser_visible_ref();
                 v = !v;
             };
+            a.is_inspector     = []{ return dts_viewer::inspector_visible_ref(); };
+            a.toggle_inspector = []{
+                bool& v = dts_viewer::inspector_visible_ref();
+                v = !v;
+            };
             dts_viewer::set_menu_actions(a);
         }
 
@@ -3404,6 +3410,18 @@ void main() {
         dts_viewer::asset_browser_init(mounts);
     }
 
+    // Smoke-test hook (env DTS_TEST_INSPECT=<entry>) — preselect an
+    // asset and open the Inspector at startup. Used by spec-acceptance
+    // screenshots only.
+    if (const char* iv = std::getenv("DTS_TEST_INSPECT"); iv && *iv) {
+        dts_viewer::Selection sel;
+        sel.kind = dts_viewer::SelectionKind::AssetEntry;
+        sel.vol_path = vol_path;
+        sel.entry_name = iv;
+        dts_viewer::inspector_set_selection(sel);
+        dts_viewer::inspector_visible_ref() = true;
+    }
+
     // ---- spec 06: texture cache + upload ---------------------------------
     //
     // Two-tier cache (per the spec's Outputs section):
@@ -3958,6 +3976,11 @@ void main() {
         a.is_asset_browser     = []{ return dts_viewer::asset_browser_visible_ref(); };
         a.toggle_asset_browser = []{
             bool& v = dts_viewer::asset_browser_visible_ref();
+            v = !v;
+        };
+        a.is_inspector     = []{ return dts_viewer::inspector_visible_ref(); };
+        a.toggle_inspector = []{
+            bool& v = dts_viewer::inspector_visible_ref();
             v = !v;
         };
         dts_viewer::set_menu_actions(a);

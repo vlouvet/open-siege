@@ -64,9 +64,10 @@ struct MenuActions
 
 void set_menu_actions(const MenuActions& a);
 
-// Internal flag for the Asset Browser panel; the host wires the View
-// menu toggle to this ref.
+// Internal flags for panels; the host wires View menu toggles
+// against these refs.
 bool& asset_browser_visible_ref();
+bool& inspector_visible_ref();
 
 // Dispatch a Cmd/Ctrl-modified key as if its menu item had been clicked.
 // Called by the host's SDL key handler before the host acts on the

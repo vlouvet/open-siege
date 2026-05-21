@@ -60,6 +60,7 @@ add_executable(dts-viewer
     imgui_layer.cpp
     viewer_state.cpp
     asset_browser.cpp
+    inspector.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

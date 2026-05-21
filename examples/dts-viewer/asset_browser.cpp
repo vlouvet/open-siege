@@ -3,6 +3,8 @@
 
 #include "asset_browser.hpp"
 #include "viewer_state.hpp"
+#include "inspector.hpp"
+#include "imgui_layer.hpp"
 
 #include "third_party/imgui/imgui.h"
 
@@ -210,6 +212,15 @@ void asset_browser_draw(bool& visible)
                 on_double_click(e);
             }
             if (ImGui::BeginPopupContextItem("##ctx")) {
+                if (ImGui::MenuItem("Show Info")) {
+                    Selection sel;
+                    sel.kind       = SelectionKind::AssetEntry;
+                    sel.vol_path   = vt.path;
+                    sel.entry_name = e.name;
+                    sel.size       = e.size;
+                    inspector_set_selection(std::move(sel));
+                    inspector_visible_ref() = true;
+                }
                 if (ImGui::MenuItem("Extract to ./extracted/"))
                     extract_to_disk(vt, e);
                 if (ImGui::MenuItem("Hex dump (first 256 B)"))

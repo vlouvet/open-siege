@@ -5,6 +5,7 @@
 #include "imgui_layer.hpp"
 #include "viewer_state.hpp"
 #include "asset_browser.hpp"
+#include "inspector.hpp"
 
 #include "third_party/imgui/imgui.h"
 #include "third_party/imgui/backends/imgui_impl_sdl2.h"
@@ -286,7 +287,8 @@ bool imgui_process_event(const SDL_Event& ev)
 }
 
 namespace {
-bool g_asset_browser_visible = true;  // default-on (track 25 entry UX)
+bool g_asset_browser_visible = true;
+bool g_inspector_visible     = false;
 } // namespace
 
 void imgui_begin_frame()
@@ -298,10 +300,11 @@ void imgui_begin_frame()
 
     draw_menu_bar();
     asset_browser_draw(g_asset_browser_visible);
+    inspector_draw(g_inspector_visible);
 }
 
-// Internal accessor used by host-side menu wiring to flip the panel.
 bool& asset_browser_visible_ref() { return g_asset_browser_visible; }
+bool& inspector_visible_ref()     { return g_inspector_visible; }
 
 void imgui_end_frame()
 {
