@@ -64,6 +64,8 @@
 #include "viewer_state.hpp"
 #include "asset_browser.hpp"
 #include "inspector.hpp"
+#include "open_url.hpp"
+#include "help_menu.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1996,6 +1998,13 @@ int main(int argc, char** argv)
                 bool& v = dts_viewer::inspector_visible_ref();
                 v = !v;
             };
+            // Spec 25/08 — Help menu wires browser-launch via open_url.
+            a.help_user_guide   = []{ dts_viewer::open_url(dts_viewer::docs_url_for("index.html")); };
+            a.help_controls     = []{ dts_viewer::open_url(dts_viewer::docs_url_for("controls.html")); };
+            a.help_scripting    = []{ dts_viewer::open_url(dts_viewer::docs_url_for("scripting.html")); };
+            a.help_online_docs  = []{ dts_viewer::open_url(dts_viewer::kOnlineDocsUrl); };
+            a.help_report_issue = []{ dts_viewer::open_url(dts_viewer::kReportIssueUrl); };
+            a.help_about        = []{ dts_viewer::about_modal_open(); };
             dts_viewer::set_menu_actions(a);
         }
 
@@ -3429,6 +3438,15 @@ void main() {
         dts_viewer::asset_browser_init(mounts);
     }
 
+    // Smoke-test hook (env DTS_TEST_HELP=1) — invoke the docs URL
+    // resolver and print what would launch. Skips the actual browser.
+    if (const char* th = std::getenv("DTS_TEST_HELP"); th && *th == '1') {
+        std::printf("[help-test] index -> %s\n",
+            dts_viewer::docs_url_for("index.html").c_str());
+        std::printf("[help-test] controls -> %s\n",
+            dts_viewer::docs_url_for("controls.html").c_str());
+    }
+
     // Smoke-test hook (env DTS_TEST_INSPECT=<entry>) — preselect an
     // asset and open the Inspector at startup. Used by spec-acceptance
     // screenshots only.
@@ -4002,6 +4020,12 @@ void main() {
             bool& v = dts_viewer::inspector_visible_ref();
             v = !v;
         };
+        a.help_user_guide   = []{ dts_viewer::open_url(dts_viewer::docs_url_for("index.html")); };
+        a.help_controls     = []{ dts_viewer::open_url(dts_viewer::docs_url_for("controls.html")); };
+        a.help_scripting    = []{ dts_viewer::open_url(dts_viewer::docs_url_for("scripting.html")); };
+        a.help_online_docs  = []{ dts_viewer::open_url(dts_viewer::kOnlineDocsUrl); };
+        a.help_report_issue = []{ dts_viewer::open_url(dts_viewer::kReportIssueUrl); };
+        a.help_about        = []{ dts_viewer::about_modal_open(); };
         dts_viewer::set_menu_actions(a);
     }
 

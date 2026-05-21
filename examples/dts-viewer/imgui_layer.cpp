@@ -6,6 +6,7 @@
 #include "viewer_state.hpp"
 #include "asset_browser.hpp"
 #include "inspector.hpp"
+#include "help_menu.hpp"
 
 #include "third_party/imgui/imgui.h"
 #include "third_party/imgui/backends/imgui_impl_sdl2.h"
@@ -240,6 +241,7 @@ void draw_menu_bar()
     }
     draw_picker_modal("Open Mission", mission_catalogue(), &on_pick_mission);
     draw_picker_modal("Open Shape",   shape_catalogue(),   &on_pick_shape);
+    about_modal_draw();
 }
 
 } // namespace
