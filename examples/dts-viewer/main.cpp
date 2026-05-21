@@ -1011,14 +1011,20 @@ static const char* TERRAIN_VS_SRC = R"(
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in float a_mat_idx;
 layout(location = 2) in vec3 a_normal;
+layout(location = 3) in vec4 a_layer_w;
+layout(location = 4) in vec4 a_layer_i;
 uniform mat4 u_mvp;
 out vec3 v_normal_ws;
 out vec3 v_pos_ws;
 out float v_mat_idx;
+out vec4 v_layer_w;
+out vec4 v_layer_i;
 void main() {
     v_normal_ws = a_normal;
     v_pos_ws    = a_pos;
     v_mat_idx   = a_mat_idx;
+    v_layer_w   = a_layer_w;
+    v_layer_i   = a_layer_i;
     gl_Position = u_mvp * vec4(a_pos, 1.0);
 }
 )";
@@ -1028,6 +1034,8 @@ static const char* TERRAIN_FS_SRC = R"(
 in vec3 v_normal_ws;
 in vec3 v_pos_ws;
 in float v_mat_idx;
+in vec4 v_layer_w;
+in vec4 v_layer_i;
 out vec4 frag;
 uniform vec3  u_ambient_color;
 uniform vec3  u_sun_dir;
@@ -1062,20 +1070,36 @@ void main() {
     int mat = int(v_mat_idx);
     vec3 base;
     if (u_terrain_layers > 0) {
-        // Spec 05/07 — Tribes terrain stores ONE layer index per
-        // vertex; the rasteriser interpolates v_mat_idx across the
-        // triangle. Truncating to int produced hard topographic
-        // rings where adjacent vertices had different indices. Lerp
-        // between floor and ceil layers by the fractional part to
-        // soften transitions. (Full per-vertex weights are spec 05/08.)
-        float fl = floor(v_mat_idx);
-        float frac = clamp(v_mat_idx - fl, 0.0, 1.0);
-        int layer_a = clamp(int(fl),     0, u_terrain_layers - 1);
-        int layer_b = clamp(int(fl) + 1, 0, u_terrain_layers - 1);
+        // Spec 05/08 — Tribes splatting: every vertex carries up to 4
+        // contributing layer indices + weights derived from its grid
+        // neighbours. After rasterisation the weights are bilinearly
+        // interpolated. Renormalise to remove drift from interpolation,
+        // sample each of the four layers, and blend by weight.
         vec2 uv = fract(v_pos_ws.xz / max(u_terrain_uv_scale, 1.0));
-        vec3 a = texture(u_terrain_tex, vec3(uv, float(layer_a))).rgb;
-        vec3 b = texture(u_terrain_tex, vec3(uv, float(layer_b))).rgb;
-        base = mix(a, b, frac);
+        vec4 w = max(v_layer_w, 0.0);
+        float wsum = w.x + w.y + w.z + w.w;
+        if (wsum < 1e-4) {
+            // Total weight collapsed (very rare interpolation edge case);
+            // fall back to the floor/ceil 05/07 path.
+            float fl = floor(v_mat_idx);
+            float frac = clamp(v_mat_idx - fl, 0.0, 1.0);
+            int la = clamp(int(fl),     0, u_terrain_layers - 1);
+            int lb = clamp(int(fl) + 1, 0, u_terrain_layers - 1);
+            vec3 ca = texture(u_terrain_tex, vec3(uv, float(la))).rgb;
+            vec3 cb = texture(u_terrain_tex, vec3(uv, float(lb))).rgb;
+            base = mix(ca, cb, frac);
+        } else {
+            w /= wsum;
+            int i0 = clamp(int(v_layer_i.x), 0, u_terrain_layers - 1);
+            int i1 = clamp(int(v_layer_i.y), 0, u_terrain_layers - 1);
+            int i2 = clamp(int(v_layer_i.z), 0, u_terrain_layers - 1);
+            int i3 = clamp(int(v_layer_i.w), 0, u_terrain_layers - 1);
+            vec3 c0 = texture(u_terrain_tex, vec3(uv, float(i0))).rgb;
+            vec3 c1 = texture(u_terrain_tex, vec3(uv, float(i1))).rgb;
+            vec3 c2 = texture(u_terrain_tex, vec3(uv, float(i2))).rgb;
+            vec3 c3 = texture(u_terrain_tex, vec3(uv, float(i3))).rgb;
+            base = c0 * w.x + c1 * w.y + c2 * w.z + c3 * w.w;
+        }
     } else {
         base = palette[mat % 16];
     }

@@ -45,6 +45,7 @@ struct TerrainMesh
 {
     GLuint vao         = 0;
     GLuint vbo         = 0;   // interleaved: pos(3) + mat_idx(1) + normal(3)
+    GLuint vbo_blend   = 0;   // interleaved: layer_w(vec4) + layer_idx(vec4)
     GLuint ibo         = 0;   // u32 index buffer
     GLsizei index_count = 0;
 
@@ -79,7 +80,9 @@ void draw_terrain(
 // Kept here (header-only) so no separate .cpp is needed in CMakeLists.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <utility>
 
 namespace dts_viewer
 {
@@ -101,10 +104,62 @@ inline TerrainMesh build_terrain_mesh(
         return block.heights[static_cast<std::size_t>(y) * vx + x];
     };
 
+    // Material lookup with bounds clamp; returns -1 if no materials.
+    auto M = [&](int x, int y) -> int {
+        if (block.materials.empty()) return -1;
+        x = std::max(0, std::min(x, vx - 1));
+        y = std::max(0, std::min(y, vy - 1));
+        return static_cast<int>(block.materials[
+            static_cast<std::size_t>(y) * vx + x].index);
+    };
+
+    // 05/08 — derive 4-layer blended weights at every vertex by sampling
+    // the per-vertex authored layer + its 4 grid neighbours, counting
+    // occurrences, and keeping the top 4 contributors. Pads with zero
+    // weights when fewer than 4 distinct layers are present.
+    auto compute_blend = [&](int x, int y,
+                             float w_out[4], float i_out[4])
+    {
+        const int samples[5] = {
+            M(x, y), M(x - 1, y), M(x + 1, y), M(x, y - 1), M(x, y + 1)
+        };
+        std::array<std::pair<int, int>, 5> counts{};
+        int n = 0;
+        for (int s : samples) {
+            if (s < 0) continue;
+            bool found = false;
+            for (int k = 0; k < n; ++k) {
+                if (counts[k].first == s) {
+                    ++counts[k].second;
+                    found = true; break;
+                }
+            }
+            if (!found && n < 5) { counts[n++] = {s, 1}; }
+        }
+        std::sort(counts.begin(), counts.begin() + n,
+            [](const auto& a, const auto& b) {
+                return a.second > b.second;
+            });
+        const int top = std::min(n, 4);
+        int total = 0;
+        for (int k = 0; k < top; ++k) total += counts[k].second;
+        for (int k = 0; k < 4; ++k) { w_out[k] = 0.0f; i_out[k] = 0.0f; }
+        if (total > 0) {
+            for (int k = 0; k < top; ++k) {
+                i_out[k] = static_cast<float>(counts[k].first);
+                w_out[k] = static_cast<float>(counts[k].second) /
+                           static_cast<float>(total);
+            }
+        }
+    };
+
     const std::size_t vertex_count = static_cast<std::size_t>(vx) * vy;
     // 7 floats per vertex: pos.xyz, mat_idx, normal.xyz
     std::vector<float> vdata;
     vdata.reserve(vertex_count * 7);
+    // 8 floats per vertex for the blend buffer: weights.xyzw + indices.xyzw
+    std::vector<float> bdata;
+    bdata.reserve(vertex_count * 8);
 
     TerrainMesh mesh;
 
@@ -144,6 +199,13 @@ inline TerrainMesh build_terrain_mesh(
             vdata.push_back(n.x);
             vdata.push_back(n.y);
             vdata.push_back(n.z);
+
+            float bw[4], bi[4];
+            compute_blend(x, y, bw, bi);
+            bdata.push_back(bw[0]); bdata.push_back(bw[1]);
+            bdata.push_back(bw[2]); bdata.push_back(bw[3]);
+            bdata.push_back(bi[0]); bdata.push_back(bi[1]);
+            bdata.push_back(bi[2]); bdata.push_back(bi[3]);
         }
     }
 
@@ -192,6 +254,22 @@ inline TerrainMesh build_terrain_mesh(
     // location 2: normal (vec3)
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride,
+                          reinterpret_cast<const void*>(4 * sizeof(float)));
+
+    // Blend buffer (05/08): 4 weights + 4 layer indices per vertex.
+    glGenBuffers(1, &mesh.vbo_blend);
+    glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo_blend);
+    glBufferData(GL_ARRAY_BUFFER,
+                 bdata.size() * sizeof(float),
+                 bdata.data(), GL_STATIC_DRAW);
+    constexpr GLsizei blend_stride = 8 * sizeof(float);
+    // location 3: layer weights (vec4)
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, blend_stride,
+                          reinterpret_cast<const void*>(0));
+    // location 4: layer indices (vec4, kept as float so 4.1 core path works)
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, blend_stride,
                           reinterpret_cast<const void*>(4 * sizeof(float)));
 
     glGenBuffers(1, &mesh.ibo);
