@@ -4,6 +4,17 @@ cmake_minimum_required(VERSION 3.17)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Match cscript_core's build type. Release defines NDEBUG which in turn
+# suppresses TORQUE_DEBUG; engineObject.h adds two pointer fields when
+# TORQUE_DEBUG is set, shifting SimObject's TamlCallbacks base by 16
+# bytes and producing an ODR / vtable-thunk mismatch when SimObject
+# subclasses (e.g. Player from spec 16/05) are defined here. See
+# discussion in spec 16/05 — caught at link time as missing
+# "non-virtual thunk to SimObject::onTamlCustomRead".
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
 
@@ -39,7 +50,8 @@ add_executable(dts-viewer
     weapons.cpp
     inv_station.cpp
     entity_renderer.cpp
-    cscript_host.cpp)
+    cscript_host.cpp
+    player_simobject.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include

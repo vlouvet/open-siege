@@ -207,3 +207,11 @@ add_executable(cscript_binding_macros_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/binding_macros.test.cpp)
 set_property(TARGET cscript_binding_macros_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_binding_macros_test PRIVATE cscript_core)
+
+# Spec 16/05 Player binding — exercises the same DECLARE_CONOBJECT +
+# addField + DefineEngineMethod contract that dts-viewer's shipping
+# Player class uses, via a structurally equivalent PlayerTest subclass.
+add_executable(cscript_player_binding_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/player_binding.test.cpp)
+set_property(TARGET cscript_player_binding_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_player_binding_test PRIVATE cscript_core)
