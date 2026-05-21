@@ -197,6 +197,25 @@ void player_update(PlayerState&        ps,
     ps.skiing = ps.on_ground && in.jump &&
                 ps.slope_deg >= t.ski_min_slope;
 
+    // Skiing: project velocity onto slope tangent and preserve speed
+    // (track 10 spec 02 — energy preservation).  Without this, the
+    // gravity-into-ground velocity component gets clamped to zero by
+    // the ground snap above, dissipating energy each step.  With it,
+    // that energy becomes ground-tangential momentum and the player
+    // accelerates downhill at gravity * sin(slope).
+    if (ps.skiing && ps.slope_deg > 0.1f) {
+        glm::vec3 N{ normal[0], normal[1], normal[2] };
+        const float speed_pre = glm::length(ps.vel);
+        glm::vec3 tangent = ps.vel - glm::dot(ps.vel, N) * N;
+        const float boost = t.gravity * std::sin(slope_rad) * dt;
+        const float target = std::min(t.ski_max_speed, speed_pre + boost);
+        const float tlen = glm::length(tangent);
+        if (tlen > 1e-4f) {
+            ps.vel = tangent * (target / tlen);
+        }
+        ps.pos.y = terrain_y;   // re-clamp; tangent projection may lift
+    }
+
     // Slope walk-clamp: too-steep, grounded, not jetting, not skiing →
     // can't climb; instead, project velocity onto slope tangent and add
     // downhill gravity component.
