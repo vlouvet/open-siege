@@ -94,9 +94,17 @@ public:
             if (!f) continue;
             std::string lower = f->filename.string();
             for (auto& c : lower) c = (char)std::tolower((unsigned char)c);
-            // Last write wins on duplicate filenames (rare; not observed in
-            // any Tribes VOL). Don't error out — assets sometimes ship with
-            // unintended dupes and the first one is usually the right one.
+            // Spec 06/07 — symmetric normalisation: queries strip a
+            // leading `base.` prefix (see `normalize`), so VOL entries
+            // must too. Without this, `base.emblem2.bmp` in
+            // human1DML.vol is keyed as-is, the query `emblem2.bmp`
+            // misses, and the material resolves to magenta.
+            const std::string normalized = normalize(lower);
+            // Insert both keys when they differ so DTS references that
+            // happen to NOT carry the prefix still hit.
+            if (normalized != lower) {
+                handle.by_lower_name.emplace(normalized, *f);
+            }
             handle.by_lower_name.emplace(std::move(lower), *f);
         }
         vols_.push_back(std::move(handle));
