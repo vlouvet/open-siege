@@ -57,16 +57,13 @@ inline void update_camera_walk(
     if (keys[SDL_SCANCODE_MINUS] || keys[SDL_SCANCODE_KP_MINUS])
         c.fov_deg = glm::clamp(c.fov_deg - 30.0f * dt, 40.0f, 110.0f);
 
-    // Clamp horizontally to mission bounds (XZ only; Y is recomputed below).
+    // Clamp horizontally to mission bounds (XZ only).  Y is owned by the
+    // PlayerState physics integrator once Track 09 spec 02 lands; this
+    // function intentionally no longer snaps Y.
     std::array<float, 3> p{ c.position.x, c.position.y, c.position.z };
     p = clamp_to_bounds(p, bounds);
     c.position.x = p[0];
     c.position.z = p[2];
-
-    // Snap Y to terrain + eye height.
-    if (terrain.valid()) {
-        c.position.y = terrain.sample(c.position.x, c.position.z) + kEyeHeight;
-    }
 }
 
 // Linear scan over scene_graph for nearest Marker with dataBlock "DropPointMarker".

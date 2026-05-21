@@ -14,6 +14,8 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 
+#include "height_sampler.hpp"
+
 namespace dts_viewer
 {
 
@@ -32,7 +34,9 @@ struct PlayerTuning
     float jet_fuel_regen  = 25.0f;     // units/s while not jetting
     float jet_fuel_burn   = 40.0f;     // units/s while jetting
     float eye_height      = 1.75f;     // metres above feet
-    float jump_impulse    = 9.0f;      // m/s applied upward on jump press
+    float jump_speed      = 7.5f;      // m/s applied upward on jump rising edge
+    float ground_slop     = 0.05f;     // metres; on-ground if feet within this of terrain
+    float coyote_seconds  = 0.10f;     // grace window after walking off a ledge
 };
 
 struct PlayerState
@@ -51,6 +55,12 @@ struct PlayerState
     // Spec 09/02 flips this true while a jump impulse is being applied;
     // it's a one-step latch.
     bool      jump_latch = false;
+    // Spec 09/02: edge-detect of the jump button (true while held since
+    // the last rising edge); cleared by the controller, not by the caller.
+    bool      prev_jump  = false;
+    // Spec 09/02: counts down each step from `coyote_seconds` after
+    // on_ground becomes false; lets a slightly-late jump still fire.
+    float     coyote_timer = 0.0f;
 };
 
 struct InputState
@@ -66,12 +76,14 @@ struct InputState
     float mouse_dy = 0.0f;
 };
 
-// Stub for spec 01: applies no physics.  Subsequent specs add gravity,
-// walking, jetpack, and collision in this order.  Implementations should
-// be deterministic for fixed `dt`.
-void player_update(PlayerState&   ps,
+// Step the player one fixed dt.  Currently applies gravity + ground
+// detection + jump impulse (spec 09/02).  Subsequent specs add walking
+// (03), jetpack (04), interior collision (06).  The HeightSampler is
+// borrowed; pass an empty/default sampler when no terrain is loaded.
+void player_update(PlayerState&        ps,
                    const PlayerTuning& t,
                    const InputState&   in,
+                   const HeightSampler& terrain,
                    float               dt);
 
 // Compute the camera eye position (feet + eye_height in world Y).

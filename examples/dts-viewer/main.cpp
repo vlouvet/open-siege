@@ -1753,9 +1753,19 @@ int main(int argc, char** argv)
                                 p = dts_viewer::clamp_to_bounds(p, bounds);
                                 ter_cam.position.x = p[0];
                                 ter_cam.position.z = p[2];
-                                dts_viewer::snap_camera_to_terrain(
-                                    ter_cam, height_sampler);
-                                std::printf("camera: walk mode\n");
+                                // Seed PlayerState at terrain height so
+                                // physics doesn't have to fall through
+                                // the whole sky to reach the ground.
+                                pstate.pos.x = ter_cam.position.x;
+                                pstate.pos.z = ter_cam.position.z;
+                                pstate.pos.y = height_sampler.valid()
+                                    ? height_sampler.sample(pstate.pos.x, pstate.pos.z)
+                                    : 0.0f;
+                                pstate.vel = glm::vec3(0.0f);
+                                pstate.on_ground = true;
+                                pstate.prev_jump = false;
+                                ter_cam.position.y = pstate.pos.y + ptune.eye_height;
+                                std::printf("camera: walk mode (physics-driven)\n");
                             } else {
                                 std::printf("camera: free mode\n");
                             }
@@ -1771,8 +1781,14 @@ int main(int argc, char** argv)
                                 ter_cam.position.x = (*dp)[0];
                                 ter_cam.position.z = (*dp)[2];
                                 if (cam_mode == dts_viewer::CameraMode::Walk) {
-                                    dts_viewer::snap_camera_to_terrain(
-                                        ter_cam, height_sampler);
+                                    pstate.pos.x = ter_cam.position.x;
+                                    pstate.pos.z = ter_cam.position.z;
+                                    pstate.pos.y = height_sampler.valid()
+                                        ? height_sampler.sample(pstate.pos.x, pstate.pos.z)
+                                        : (*dp)[1];
+                                    pstate.vel = glm::vec3(0.0f);
+                                    pstate.on_ground = true;
+                                    ter_cam.position.y = pstate.pos.y + ptune.eye_height;
                                 } else {
                                     ter_cam.position.y = (*dp)[1] + 1.8f;
                                 }
@@ -1806,7 +1822,7 @@ int main(int argc, char** argv)
             }
             dts_viewer::update_hud(hud, dt_ter);
 
-            // ---- 60 Hz fixed-step PlayerState update (spec 09/01) ----
+            // ---- 60 Hz fixed-step PlayerState update (spec 09/02) ----
             {
                 const Uint8* keys = SDL_GetKeyboardState(nullptr);
                 dts_viewer::InputState in;
@@ -1818,32 +1834,52 @@ int main(int argc, char** argv)
                 in.jet    = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
                 in.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
 
-                // Mirror camera transform into PlayerState each frame (the
-                // walk camera remains the authority until specs 02-06 plug
-                // in real physics).
+                // Yaw/pitch always come from the camera (mouse-look).
                 pstate.yaw   = ter_cam.yaw;
                 pstate.pitch = ter_cam.pitch;
-                pstate.pos   = ter_cam.position
-                             - glm::vec3(0.0f, ptune.eye_height, 0.0f);
+
+                // Walk mode: the camera's XZ is now the source of truth
+                // (driven by update_camera_walk above); pstate.pos.xz
+                // mirrors.  pstate.pos.y is owned by physics.
+                // Free mode: the camera owns all three axes; pstate
+                // mirrors entirely so debug stats still make sense.
+                if (cam_mode == dts_viewer::CameraMode::Walk) {
+                    pstate.pos.x = ter_cam.position.x;
+                    pstate.pos.z = ter_cam.position.z;
+                } else {
+                    pstate.pos = ter_cam.position
+                               - glm::vec3(0.0f, ptune.eye_height, 0.0f);
+                    pstate.vel = glm::vec3(0.0f);   // physics not active
+                    pstate.on_ground = false;
+                }
 
                 pstep_accumulator += dt_ter;
                 int steps = 0;
                 while (pstep_accumulator >= kFixedStep && steps < 5) {
-                    dts_viewer::player_update(pstate, ptune, in, kFixedStep);
+                    if (cam_mode == dts_viewer::CameraMode::Walk) {
+                        dts_viewer::player_update(
+                            pstate, ptune, in, height_sampler, kFixedStep);
+                    }
                     pstep_accumulator -= kFixedStep;
                     ++steps;
                     ++pstep_count_window;
+                }
+
+                // Push physics Y back into the camera in walk mode.
+                if (cam_mode == dts_viewer::CameraMode::Walk) {
+                    ter_cam.position.y = pstate.pos.y + ptune.eye_height;
                 }
 
                 Uint32 now_ms = SDL_GetTicks();
                 if (now_ms - pstep_log_last_ms >= 1000) {
                     std::fprintf(stderr,
                         "player: %d steps/s | pos=(%.1f,%.1f,%.1f) "
-                        "vel=(%.1f,%.1f,%.1f) on_ground=%d fuel=%.0f\n",
+                        "vel=(%.1f,%.1f,%.1f) on_ground=%d coyote=%.2f fuel=%.0f\n",
                         pstep_count_window,
                         pstate.pos.x, pstate.pos.y, pstate.pos.z,
                         pstate.vel.x, pstate.vel.y, pstate.vel.z,
                         pstate.on_ground ? 1 : 0,
+                        pstate.coyote_timer,
                         pstate.jet_fuel);
                     pstep_count_window = 0;
                     pstep_log_last_ms  = now_ms;
