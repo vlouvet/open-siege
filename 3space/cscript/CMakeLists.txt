@@ -186,3 +186,17 @@ add_executable(cscript_simgroup_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/simgroup.test.cpp)
 set_property(TARGET cscript_simgroup_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_simgroup_test PRIVATE cscript_core)
+
+# Spec 16/03 datablock probe — confirms `datablock` keyword + addField
+# (typed field reflection) round-trip values.
+add_executable(cscript_datablock_probe EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/datablock_probe.cpp)
+set_property(TARGET cscript_datablock_probe PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_datablock_probe PRIVATE cscript_core)
+
+# Spec 16/03 datablock end-to-end — typed datablock subclasses, dialect-A
+# transform, and real-corpus baseProjData.cs load.
+add_executable(cscript_datablock_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/datablock.test.cpp)
+set_property(TARGET cscript_datablock_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_datablock_test PRIVATE cscript_core)

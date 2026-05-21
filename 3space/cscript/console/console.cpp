@@ -40,6 +40,7 @@
 #include "returnBuffer.h"
 #include "platform/threads/mutex.h"
 #include "core/util/journal/journal.h"
+#include "core/frameAllocator.h"
 #include "console/consoleValueStack.h"
 
 extern StringStack STR;
@@ -360,6 +361,13 @@ void init()
    logFileName                   = NULL;
    newLogFile                    = true;
    gWarnUndefinedScriptVariables = false;
+
+   // FrameAllocator is a per-thread scratch arena used by SimObject::setDataField
+   // (via FrameTemp<char>) and other transient buffers. Upstream Torque drives
+   // this from app/mainLoop.h; cscript_core is a library, so we initialise the
+   // arena here once per Con::init() — typed-field writes crash without it.
+   if (FrameAllocator::getHighWaterMark() == 0)
+      FrameAllocator::init(1024 * 1024 * 12);
 
    // Initialize subsystems.
    Namespace::init();
