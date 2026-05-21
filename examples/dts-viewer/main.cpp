@@ -49,7 +49,10 @@
 #include "lighting.hpp"
 #include "terrain_textures.hpp"
 #include "hud.hpp"
+#include "screenshot.hpp"
+#include "mission_switcher.hpp"
 #include <set>
+#include <unistd.h>
 #include <cstdint>
 
 namespace fs = std::filesystem;
@@ -1382,6 +1385,22 @@ int main(int argc, char** argv)
     // ---- --mission <path> mode: terrain heightmap renderer ----
     if (argc >= 3 && std::string(argv[1]) == "--mission") {
         fs::path ted_path = argv[2];
+        std::string self_arg0 = argv[0];
+
+        dts_viewer::MissionRegistry mission_reg =
+            dts_viewer::scan_missions(ted_path.parent_path());
+        for (std::size_t i = 0; i < mission_reg.short_names.size(); ++i) {
+            if (mission_reg.ted_paths[i] == ted_path ||
+                mission_reg.short_names[i] == ted_path.stem().string()) {
+                mission_reg.current_index = i;
+                break;
+            }
+        }
+        std::printf("missions: %zu registered, current=%s\n",
+            mission_reg.short_names.size(),
+            mission_reg.short_names.empty()
+                ? "(none)"
+                : mission_reg.short_names[mission_reg.current_index].c_str());
 
         std::string screenshot_path_ter;
         for (int i = 3; i < argc; ++i) {
@@ -1614,6 +1633,45 @@ int main(int argc, char** argv)
                             hud.visible = !hud.visible;
                             dts_viewer::print_hud_snapshot(hud, ter_cam,
                                 cam_mode, hud_mission_name);
+                        }
+                        if (ev.key.keysym.sym == SDLK_F12) {
+                            int sw, sh; SDL_GL_GetDrawableSize(win, &sw, &sh);
+                            // Render once without HUD (no extra pass needed —
+                            // HUD only modifies title-bar; the screenshot
+                            // captures the back buffer as-is.)
+                            dts_viewer::capture_screenshot(sw, sh, {},
+                                hud_mission_name);
+                        }
+                        if (ev.key.keysym.sym == SDLK_m) {
+                            dts_viewer::print_mission_list(mission_reg);
+                        }
+                        if (ev.key.keysym.sym == SDLK_LEFTBRACKET ||
+                            ev.key.keysym.sym == SDLK_RIGHTBRACKET) {
+                            const int d = (ev.key.keysym.sym == SDLK_LEFTBRACKET) ? -1 : 1;
+                            if (!mission_reg.short_names.empty()) {
+                                long long idx = static_cast<long long>(mission_reg.current_index) + d;
+                                long long n = static_cast<long long>(mission_reg.short_names.size());
+                                while (idx < 0)  idx += n;
+                                while (idx >= n) idx -= n;
+                                fs::path next_ted = mission_reg.ted_paths[idx];
+                                std::printf("mission-switch: -> %s\n",
+                                    mission_reg.short_names[idx].c_str());
+                                std::fflush(stdout);
+                                SDL_GL_DeleteContext(ctx);
+                                SDL_DestroyWindow(win);
+                                SDL_Quit();
+                                std::string ted_str = next_ted.string();
+                                char* args[] = {
+                                    const_cast<char*>(self_arg0.c_str()),
+                                    const_cast<char*>("--mission"),
+                                    const_cast<char*>(ted_str.c_str()),
+                                    nullptr
+                                };
+                                execv(self_arg0.c_str(), args);
+                                std::fprintf(stderr,
+                                    "mission-switch: execv failed\n");
+                                std::exit(1);
+                            }
                         }
                         if (ev.key.keysym.sym == SDLK_BACKQUOTE) {
                             wireframe = !wireframe;
