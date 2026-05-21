@@ -1,5 +1,6 @@
 #include "player_controller.hpp"
 #include "mission_bounds.hpp"
+#include "physics_capsule.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -113,10 +114,42 @@ void player_update(PlayerState&        ps,
         }
     }
 
-    // ---- Integrate ----
-    ps.pos.x += ps.vel.x * dt;
-    ps.pos.y += ps.vel.y * dt;
-    ps.pos.z += ps.vel.z * dt;
+    // ---- Integrate with capsule slide (spec 09/06) ----
+    // Capsule centre = feet position + half_h on Y.  Sweep the centre
+    // along the velocity vector; on contact, project remaining motion
+    // onto the contact plane and retry up to `max_slide_iters` times.
+    {
+        glm::vec3 remaining_vel = ps.vel;
+        glm::vec3 capsule_from{ ps.pos.x, ps.pos.y + t.capsule_half_h, ps.pos.z };
+        glm::vec3 displacement = remaining_vel * dt;
+        int iters = 0;
+        while (iters < t.max_slide_iters &&
+               glm::dot(displacement, displacement) > 1e-10f)
+        {
+            glm::vec3 capsule_to = capsule_from + displacement;
+            CapsuleHitInfo hit;
+            capsule_sweep_interior(capsule_from, capsule_to,
+                t.capsule_radius, t.capsule_half_h, hit);
+            // Advance up to the contact point (or full move if no hit).
+            float advance_t = hit.hit ? std::max(0.0f, hit.time - 0.001f) : 1.0f;
+            capsule_from += displacement * advance_t;
+            if (!hit.hit) break;
+            // Project remaining motion onto the contact plane.
+            glm::vec3 leftover = displacement * (1.0f - advance_t);
+            float into = glm::dot(leftover, hit.contact_normal);
+            leftover -= hit.contact_normal * into;
+            // Also kill velocity into the surface so subsequent steps
+            // don't re-accumulate.
+            float vinto = glm::dot(remaining_vel, hit.contact_normal);
+            if (vinto < 0.0f) remaining_vel -= hit.contact_normal * vinto;
+            displacement = leftover;
+            ++iters;
+        }
+        ps.pos.x = capsule_from.x;
+        ps.pos.y = capsule_from.y - t.capsule_half_h;
+        ps.pos.z = capsule_from.z;
+        ps.vel = remaining_vel;
+    }
 
     // ---- Bounds clamp (XZ only; Y is owned by terrain contact) ----
     if (bounds) {

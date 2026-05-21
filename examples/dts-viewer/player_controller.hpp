@@ -54,6 +54,12 @@ struct PlayerTuning
     // Terrain collision (spec 09/05)
     float max_walk_slope  = 45.0f;     // degrees; steeper -> can't walk up, slides down
     float slide_friction  = 0.4f;      // damps slide momentum on too-steep slopes
+
+    // Capsule collision (spec 09/06)
+    float capsule_radius  = 0.4f;      // metres
+    float capsule_half_h  = 0.9f;      // metres from centre to hemisphere centre
+    float step_height     = 0.4f;      // max ledge height the capsule auto-mounts
+    int   max_slide_iters = 3;         // Quake-style slide iteration cap
 };
 
 struct PlayerState

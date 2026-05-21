@@ -30,7 +30,8 @@ add_executable(dts-viewer
     hud.cpp
     screenshot.cpp
     mission_switcher.cpp
-    player_controller.cpp)
+    player_controller.cpp
+    physics_capsule.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include
