@@ -30,6 +30,8 @@ enum class ProjType : std::uint8_t
     Disc        = 0,
     Grenade     = 1,
     ChainBullet = 2,
+    Plasma      = 3,
+    Mortar      = 4,
 };
 
 struct ProjectileTuning
@@ -66,6 +68,27 @@ struct ProjectileTuning
     float chain_range         = 250.0f;    // muzzleVelocity 425 * totalTime 1.5 ~= 637 — clamped
     float chain_dmg           = 11.0f;     // damageValue 0.11 * 100
     float chain_fire_interval = 0.10f;
+
+    // Plasma — BulletData PlasmaBolt (treated as a small-splash projectile)
+    float plasma_init_speed    = 55.0f;    // muzzleVelocity
+    float plasma_lifetime      = 2.0f;     // liveTime
+    float plasma_gravity_scale = 0.0f;
+    float plasma_splash_radius = 4.0f;     // explosionRadius
+    float plasma_splash_dmg    = 45.0f;    // damageValue 0.45 * 100
+    float plasma_splash_impulse = 8.0f;
+    float plasma_fire_interval = 0.25f;
+
+    // Mortar — GrenadeData MortarShell
+    float mortar_init_speed    = 35.0f;
+    float mortar_gravity_scale = 1.0f;
+    float mortar_drag          = 0.1f;
+    float mortar_fuse_seconds  = 3.0f;
+    float mortar_bounce_decay  = 0.10f;    // elasticity
+    int   mortar_max_bounces   = 1;
+    float mortar_splash_radius = 20.0f;    // explosionRadius
+    float mortar_splash_dmg    = 100.0f;   // damageValue 1.0 * 100
+    float mortar_splash_impulse = 30.0f;
+    float mortar_fire_interval = 3.0f;
 };
 
 struct Projectile

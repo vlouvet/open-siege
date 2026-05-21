@@ -1718,6 +1718,10 @@ int main(int argc, char** argv)
                             dts_viewer::select_weapon(pstate.inventory, 3);
                             std::fprintf(stderr, "weapon: slot 4\n");
                         }
+                        if (ev.key.keysym.sym == SDLK_5) {
+                            dts_viewer::select_weapon(pstate.inventory, 4);
+                            std::fprintf(stderr, "weapon: slot 5\n");
+                        }
                         if (ev.key.keysym.sym == SDLK_q) {
                             dts_viewer::cycle_weapon(pstate.inventory);
                             std::fprintf(stderr, "weapon: cycle -> %d\n",

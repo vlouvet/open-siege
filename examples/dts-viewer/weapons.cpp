@@ -10,16 +10,19 @@ Inventory default_loadout()
     Inventory inv;
     // Slot 0: Disc (semi-auto)
     inv.weapons[0] = WeaponState{
-        ProjType::Disc, /*ammo*/25, /*max*/25,
-        /*fire*/1.2f, /*full_auto*/false, /*equipped*/true };
+        ProjType::Disc, 25, 25, 1.2f, 0.0f, false, true };
     // Slot 1: Chain (full-auto)
     inv.weapons[1] = WeaponState{
-        ProjType::ChainBullet, 200, 200, 0.10f, true, true };
+        ProjType::ChainBullet, 200, 200, 0.10f, 0.0f, true, true };
     // Slot 2: Grenade
     inv.weapons[2] = WeaponState{
-        ProjType::Grenade, 12, 12, 1.0f, false, true };
-    // Slot 3: empty placeholder for spec 12/06 expansion
-    inv.weapons[3] = WeaponState{};
+        ProjType::Grenade, 12, 12, 1.0f, 0.0f, false, true };
+    // Slot 3: Plasma (spec 12/06)
+    inv.weapons[3] = WeaponState{
+        ProjType::Plasma, 60, 60, 0.25f, 0.0f, true, true };
+    // Slot 4: Mortar (spec 12/06)
+    inv.weapons[4] = WeaponState{
+        ProjType::Mortar, 8, 8, 3.0f, 0.0f, false, true };
     inv.active_slot = 0;
     return inv;
 }

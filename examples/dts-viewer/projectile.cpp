@@ -80,45 +80,46 @@ bool projectile_fire(
         ? glm::normalize(aim_dir)
         : glm::vec3{0.0f, 0.0f, 1.0f};
 
-    switch (type) {
-    case ProjType::Disc: {
-        if (sys.cooldown_disc > 0.0f) return false;
+    auto spawn = [&](ProjType pt, float init_speed, float lifetime,
+                     int bounces, bool toss_arc) {
         Projectile p;
-        p.type = ProjType::Disc;
+        p.type = pt;
         p.pos = origin;
-        p.vel = dir * t.disc_init_speed;
-        p.lifetime_left = t.disc_lifetime;
+        glm::vec3 d = toss_arc
+            ? glm::normalize(dir + glm::vec3{0.0f, 0.17f, 0.0f})
+            : dir;
+        p.vel = d * init_speed;
+        p.lifetime_left = lifetime;
+        p.bounces_left = bounces;
         p.owner_id = owner_id;
         sys.alive.push_back(p);
+    };
+
+    switch (type) {
+    case ProjType::Disc:
+        if (sys.cooldown_disc > 0.0f) return false;
+        spawn(ProjType::Disc, t.disc_init_speed, t.disc_lifetime, 0, false);
         sys.cooldown_disc = t.disc_fire_interval;
         return true;
-    }
-    case ProjType::Grenade: {
+    case ProjType::Grenade:
         if (sys.cooldown_grenade > 0.0f) return false;
-        Projectile p;
-        p.type = ProjType::Grenade;
-        p.pos = origin;
-        // Toss upward bias (~10°) so grenades arc instead of skipping.
-        glm::vec3 tossed = dir + glm::vec3{0.0f, 0.17f, 0.0f};
-        tossed = glm::normalize(tossed);
-        p.vel = tossed * t.gren_init_speed;
-        p.lifetime_left = t.gren_fuse_seconds;
-        p.bounces_left = t.gren_max_bounces;
-        p.owner_id = owner_id;
-        sys.alive.push_back(p);
+        spawn(ProjType::Grenade, t.gren_init_speed,
+              t.gren_fuse_seconds, t.gren_max_bounces, true);
         sys.cooldown_grenade = t.gren_fire_interval;
         return true;
-    }
-    case ProjType::ChainBullet: {
+    case ProjType::Plasma:
+        spawn(ProjType::Plasma, t.plasma_init_speed,
+              t.plasma_lifetime, 0, false);
+        return true;
+    case ProjType::Mortar:
+        spawn(ProjType::Mortar, t.mortar_init_speed,
+              t.mortar_fuse_seconds, t.mortar_max_bounces, true);
+        return true;
+    case ProjType::ChainBullet:
         if (sys.cooldown_chain > 0.0f) return false;
         sys.cooldown_chain = t.chain_fire_interval;
-        // Hitscan — no projectile entity.  We don't have a terrain
-        // sampler in scope here; the caller (main.cpp) does the raycast
-        // via `ray_terrain_hit_external` if it wants visualised tracer
-        // endpoints.  v1: just consume cooldown.
         if (out_hit_pos) *out_hit_pos = origin + dir * t.chain_range;
         return true;
-    }
     }
     return false;
 }
@@ -139,13 +140,19 @@ void projectiles_update(
 
         // Integrate
         glm::vec3 g{0.0f, -20.0f, 0.0f};
-        float g_scale = (p.type == ProjType::Disc)
-            ? t.disc_gravity_scale
-            : t.gren_gravity_scale;
+        float g_scale;
+        switch (p.type) {
+            case ProjType::Disc:    g_scale = t.disc_gravity_scale;    break;
+            case ProjType::Plasma:  g_scale = t.plasma_gravity_scale;  break;
+            case ProjType::Grenade: g_scale = t.gren_gravity_scale;    break;
+            case ProjType::Mortar:  g_scale = t.mortar_gravity_scale;  break;
+            default:                g_scale = 0.0f;                    break;
+        }
         p.vel += g * (g_scale * dt);
         if (p.type == ProjType::Grenade) {
-            // Linear drag
             p.vel *= std::max(0.0f, 1.0f - t.gren_drag * dt);
+        } else if (p.type == ProjType::Mortar) {
+            p.vel *= std::max(0.0f, 1.0f - t.mortar_drag * dt);
         }
         glm::vec3 new_pos = p.pos + p.vel * dt;
 
@@ -161,17 +168,20 @@ void projectiles_update(
         const bool fuse_done = (p.lifetime_left <= 0.0f);
 
         bool detonate = false;
-        if (p.type == ProjType::Disc) {
+        const bool bounces_type =
+            (p.type == ProjType::Grenade) || (p.type == ProjType::Mortar);
+        if (!bounces_type) {
             detonate = ground_hit || fuse_done;
-        } else if (p.type == ProjType::Grenade) {
+        } else {
             if (fuse_done) {
                 detonate = true;
             } else if (ground_hit) {
+                const float decay = (p.type == ProjType::Mortar)
+                    ? t.mortar_bounce_decay : t.gren_bounce_decay;
                 if (p.bounces_left > 0) {
-                    // Reflect Y (assume terrain ~ horizontal) and decay.
-                    p.vel.y = -p.vel.y * t.gren_bounce_decay;
-                    p.vel.x *= t.gren_bounce_decay;
-                    p.vel.z *= t.gren_bounce_decay;
+                    p.vel.y = -p.vel.y * decay;
+                    p.vel.x *= decay;
+                    p.vel.z *= decay;
                     --p.bounces_left;
                 } else {
                     detonate = true;
@@ -180,12 +190,23 @@ void projectiles_update(
         }
 
         if (detonate) {
-            const float r = (p.type == ProjType::Disc)
-                ? t.disc_splash_radius : t.gren_splash_radius;
-            const float dmg = (p.type == ProjType::Disc)
-                ? t.disc_splash_dmg : t.gren_splash_dmg;
-            const float imp = (p.type == ProjType::Disc)
-                ? t.disc_splash_impulse : t.gren_splash_impulse;
+            float r, dmg, imp;
+            switch (p.type) {
+                case ProjType::Disc:
+                    r = t.disc_splash_radius;  dmg = t.disc_splash_dmg;
+                    imp = t.disc_splash_impulse; break;
+                case ProjType::Plasma:
+                    r = t.plasma_splash_radius; dmg = t.plasma_splash_dmg;
+                    imp = t.plasma_splash_impulse; break;
+                case ProjType::Grenade:
+                    r = t.gren_splash_radius;  dmg = t.gren_splash_dmg;
+                    imp = t.gren_splash_impulse; break;
+                case ProjType::Mortar:
+                    r = t.mortar_splash_radius; dmg = t.mortar_splash_dmg;
+                    imp = t.mortar_splash_impulse; break;
+                default:
+                    r = 0.0f; dmg = 0.0f; imp = 0.0f; break;
+            }
             apply_splash(player, p.pos, r, dmg, imp,
                 p.owner_id, t.disc_self_dmg_coef);
             p.alive = false;
