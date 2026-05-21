@@ -58,6 +58,7 @@
 #include "inv_station.hpp"
 #include "entity_renderer.hpp"
 #include "cscript_host.hpp"
+#include "mission.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1723,6 +1724,31 @@ int main(int argc, char** argv)
         std::deque<std::string> message_feed;
         bool show_command_map = false;
 
+        // -----------------------------------------------------------------
+        // Spec 17/02 — script-side mission lifecycle.
+        // Brings up cscript_core, asks MissionContext to build a
+        // SimGroup("MissionGroup") with one SimObject per scene_graph
+        // entity, and runs the trailing exec(<gameplay-rules>) idents
+        // from the MIS trailer. The tick call inside the fixed-step
+        // loop later drains script-side schedule() events.
+        // -----------------------------------------------------------------
+        dts_viewer::cscript::init();
+        {
+            const fs::path scripts_a =
+                ted_path.parent_path().parent_path() / "scripts";
+            if (fs::is_directory(scripts_a))
+                dts_viewer::mission_add_script_search_path(scripts_a);
+            if (fs::is_directory("/tmp/scripts"))
+                dts_viewer::mission_add_script_search_path("/tmp/scripts");
+        }
+        dts_viewer::MissionContext mctx;
+        if (ter_mission) {
+            const fs::path missions_dir = ted_path.parent_path();
+            const fs::path base_dir     = missions_dir.parent_path();
+            dts_viewer::mission_load(
+                mctx, missions_dir, base_dir, ted_path.stem().string());
+        }
+
         // ---- Interior meshes (Track 14 follow-up: render placed bases) ----
         // Uses the cross-VOL resolver (3space/interior_set) to pull each
         // node_interior's DIS+DIG+DIL+DML, then build_interior_mesh + the
@@ -2115,6 +2141,8 @@ int main(int argc, char** argv)
                 pstep_accumulator += dt_ter;
                 int steps = 0;
                 while (pstep_accumulator >= kFixedStep && steps < 5) {
+                    // Spec 17/02 — drain script schedule() queue.
+                    dts_viewer::mission_tick(mctx, kFixedStep);
                     dts_viewer::projectiles_update(
                         proj_sys, proj_tune, height_sampler, pstate, kFixedStep);
                     dts_viewer::weapons_tick_cooldowns(
@@ -2393,6 +2421,7 @@ int main(int argc, char** argv)
             }
         }
 
+        dts_viewer::mission_unload(mctx);
         dts_viewer::mission_sounds_unload(mission_audio);
         dts_viewer::audio_shutdown();
         dts_viewer::hud2d_shutdown();

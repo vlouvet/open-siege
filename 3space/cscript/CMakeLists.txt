@@ -243,3 +243,12 @@ add_executable(cscript_exec_test EXCLUDE_FROM_ALL
         ${CSCRIPT_ROOT}/tests/exec.test.cpp)
 set_property(TARGET cscript_exec_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_exec_test PRIVATE cscript_core)
+
+# Spec 17/02 mission lifecycle — MissionGroup build/teardown, trailing
+# exec(), schedule() callback under tick(), 3-mission sequential cycle.
+# Mirrors the contract exercised by examples/dts-viewer/mission.cpp.
+add_executable(cscript_mission_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/mission.test.cpp)
+set_property(TARGET cscript_mission_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_mission_test PRIVATE cscript_core)
+

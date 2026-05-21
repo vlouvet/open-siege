@@ -76,6 +76,14 @@ void init()
     // the second call would trip an AssertFatal in debug builds because
     // gRuntimes[0] is already set.
     (void)studio::content::cscript::TorqueScript::getRuntime();
+
+    // Tribes corpus has plenty of warnings (use-before-set, etc.) that
+    // the modern Torque compiler treats as Fatal-ISV asserts. The
+    // T1-shipped scripts predate that strictness — flip the flag so
+    // mission gameplay-rules scripts log warnings instead of aborting.
+    Con::evaluate("$Con::scriptWarningsAsAsserts = false;",
+                  false, "cscript_host.init");
+
     g_initialised = true;
     std::printf("[cscript] host initialised — VM ready\n");
 }

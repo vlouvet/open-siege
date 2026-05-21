@@ -52,7 +52,8 @@ add_executable(dts-viewer
     entity_renderer.cpp
     cscript_host.cpp
     player_simobject.cpp
-    entity_bindings.cpp)
+    entity_bindings.cpp
+    mission.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include
