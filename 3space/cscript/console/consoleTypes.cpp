@@ -1012,12 +1012,12 @@ ConsoleSetType( TypeRectUV )
 //-----------------------------------------------------------------------------
 // TypeUUID
 //-----------------------------------------------------------------------------
-ConsoleType(uuid, TypeUUID, Torque::UUID, "")
-ImplementConsoleTypeCasters( TypeUUID, Torque::UUID )
+ConsoleType(uuid, TypeUUID, studio::content::cscript::UUID, "")
+ImplementConsoleTypeCasters( TypeUUID, studio::content::cscript::UUID )
 
 ConsoleGetType( TypeUUID )
 {
-   Torque::UUID* uuid = ( Torque::UUID* ) dptr;
+   studio::content::cscript::UUID* uuid = ( studio::content::cscript::UUID* ) dptr;
    return Con::getReturnBuffer( uuid->toString() );
 }
 
@@ -1025,7 +1025,7 @@ ConsoleSetType( TypeUUID )
 {
    if( argc == 1 )
    {
-      Torque::UUID* uuid = ( Torque::UUID* ) dptr;
+      studio::content::cscript::UUID* uuid = ( studio::content::cscript::UUID* ) dptr;
       if( !uuid->fromString( argv[ 0 ] ) )
          Con::errorf( "Error parsing UUID: '%s'", argv[ 0 ] );
    }
@@ -1058,7 +1058,7 @@ ConsoleSetType( TypePID )
          *pid = NULL;
       else
       {
-         Torque::UUID uuid;
+         studio::content::cscript::UUID uuid;
 
         if( !uuid.fromString( argv[ 0 ] ) )
         {
@@ -1099,7 +1099,7 @@ ConsoleSetType( TypeSimPersistId )
          *pid = NULL;
       else
       {
-         Torque::UUID uuid;
+         studio::content::cscript::UUID uuid;
          if( !uuid.fromString( argv[ 0 ] ) )
          {
             Con::errorf( "Error parsing UUID in PID: '%s'", argv[ 0 ] );

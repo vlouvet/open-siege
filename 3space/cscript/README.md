@@ -8,8 +8,8 @@ in so that Tribes 1's 167 shipped `.cs` files can execute under Open Siege.
 | Spec  | Description                                              | State    |
 |-------|----------------------------------------------------------|----------|
 | 15/01 | Initial verbatim copy                                    | **done** |
-| 15/02 | Build-system integration (`3space/CMakeLists.txt`)       | **done** (this commit) |
-| 15/03 | Namespace rename → `studio::content::cscript`            | pending  |
+| 15/02 | Build-system integration (`3space/CMakeLists.txt`)       | **done** |
+| 15/03 | Namespace rename → `studio::content::cscript`            | **done** (this commit) |
 | 15/04 | Tribes-1 syntax delta (`instant`, dropped keywords)      | pending  |
 | 15/05 | Dialect-B `ConsoleWorld` shell                           | pending  |
 | 15/06 | Hello-world smoke test                                   | pending  |
@@ -61,6 +61,7 @@ doesn't fail on the leaf TUs we attempt to build:
 | `cscript/app/version.h`           | hand-written stub                                               | Returns `1000` / `"1.0"` for `getVersionNumber()` / `getVersionString()`. |
 | `cscript/util/returnType.h`       | verbatim from `Engine/source/util/returnType.h` @ pinned SHA    | ReturnType template helpers (65 lines). |
 | `cscript/math/mathTypes.h`        | verbatim from `Engine/source/math/mathTypes.h` @ pinned SHA     | Math-type forward declarations. Pulls in `console/dynamicTypes.h` but does not pull other math/ headers. |
+| `cscript/torque_compat.hpp`       | hand-written (spec 15/03)                                       | Publishes `studio::content::cscript::{Con,Sim,Compiler,Platform,Memory,Script,FS}` as namespace aliases of the upstream top-level namespaces, so external consumers reach them via the renamed path without wrapping every vendored TU. |
 
 The pinned SHA is `3661499b33c32c04d14a43bd3724deba05673df8`
 (TorqueGameEngines/Torque3D `development`), recorded in

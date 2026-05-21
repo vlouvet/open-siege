@@ -8,7 +8,7 @@
 #include "core/util/timeClass.h"
 
 
-namespace TorqueScript
+namespace studio::content::cscript::TorqueScript
 {
    // Buffer for expanding script filenames.
    static char scriptFilenameBuffer[1024];
@@ -38,7 +38,7 @@ namespace TorqueScript
       if (fileName)
          fileName = StringTable->insert(fileName);
 
-      bool fileExec = Torque::FS::IsFile(fileName);
+      bool fileExec = studio::content::cscript::FS::IsFile(fileName);
 
       CodeBlock* newCodeBlock = new CodeBlock();
       return (newCodeBlock->compileExec(fileName, string, false, fileExec ? -1 : 0));
@@ -225,8 +225,8 @@ namespace TorqueScript
       }
 
       // Ok, we let's try to load and compile the script.
-      Torque::FS::FileNodeRef scriptFile = Torque::FS::GetFileNode(scriptFileName);
-      Torque::FS::FileNodeRef dsoFile;
+      studio::content::cscript::FS::FileNodeRef scriptFile = studio::content::cscript::FS::GetFileNode(scriptFileName);
+      studio::content::cscript::FS::FileNodeRef dsoFile;
 
       //    ResourceObject *rScr = gResourceManager->find(scriptFileName);
       //    ResourceObject *rCom = NULL;
@@ -236,7 +236,7 @@ namespace TorqueScript
       U32 version;
 
       Stream* compiledStream = NULL;
-      Torque::Time scriptModifiedTime, dsoModifiedTime;
+      studio::content::cscript::Time scriptModifiedTime, dsoModifiedTime;
 
       // Check here for .edso
       bool edso = false;
@@ -267,7 +267,7 @@ namespace TorqueScript
          else
             dStrcpyl(nameBuffer, sizeof(nameBuffer), pathAndFilename, ".dso", NULL);
 
-         dsoFile = Torque::FS::GetFileNode(nameBuffer);
+         dsoFile = studio::content::cscript::FS::GetFileNode(nameBuffer);
 
          if (scriptFile != NULL)
             scriptModifiedTime = scriptFile->getModifiedTime();
@@ -292,7 +292,7 @@ namespace TorqueScript
       if (compiled && dsoFile != NULL && (scriptFile == NULL || (dsoModifiedTime >= scriptModifiedTime)))
       {
          //MGT: end
-         compiledStream = FileStream::createAndOpen(nameBuffer, Torque::FS::File::Read);
+         compiledStream = FileStream::createAndOpen(nameBuffer, studio::content::cscript::FS::File::Read);
          if (compiledStream)
          {
             // Check the version!
@@ -317,7 +317,7 @@ namespace TorqueScript
 
          void* data;
          U32 dataSize = 0;
-         Torque::FS::ReadFile(scriptFileName, data, dataSize, true);
+         studio::content::cscript::FS::ReadFile(scriptFileName, data, dataSize, true);
 
          if (journal && Journal::IsRecording())
             Journal::Write(bool(data != NULL));
@@ -358,7 +358,7 @@ namespace TorqueScript
          delete code;
          code = NULL;
 
-         compiledStream = FileStream::createAndOpen(nameBuffer, Torque::FS::File::Read);
+         compiledStream = FileStream::createAndOpen(nameBuffer, studio::content::cscript::FS::File::Read);
          if (compiledStream)
          {
             compiledStream->read(&version);
@@ -465,7 +465,7 @@ namespace TorqueScript
 
       void *data = NULL;
       U32 dataSize = 0;
-      Torque::FS::ReadFile(scriptFilenameBuffer, data, dataSize, true);
+      studio::content::cscript::FS::ReadFile(scriptFilenameBuffer, data, dataSize, true);
       if(data == NULL)
       {
          Con::errorf(ConsoleLogEntry::Script, "compile: invalid script file %s.", scriptFilenameBuffer);

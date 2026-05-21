@@ -50,11 +50,11 @@ public:
    /// @brief Open a file
    /// 
    /// @param filename Name of file to open
-   /// @param mode One of #Torque::FS::File::Read, #Torque::FS::File::Write, #Torque::FS::File::ReadWrite or #Torque::FS::File::WriteAppend
+   /// @param mode One of #studio::content::cscript::FS::File::Read, #studio::content::cscript::FS::File::Write, #studio::content::cscript::FS::File::ReadWrite or #studio::content::cscript::FS::File::WriteAppend
    /// @return true for success, false for failure
    /// @see close()
    //-----------------------------------------------------------------------------
-   bool open(const char *filename, Torque::FS::File::AccessMode mode);
+   bool open(const char *filename, studio::content::cscript::FS::File::AccessMode mode);
 
    //-----------------------------------------------------------------------------
    /// @brief Close the file

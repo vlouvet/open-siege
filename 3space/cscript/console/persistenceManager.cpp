@@ -171,7 +171,7 @@ bool PersistenceManager::readFile(const char* fileName)
    clearFileData();
 
    // Handle an object writing out to a new file
-   if ( !Torque::FS::IsFile( fileName ) )
+   if ( !studio::content::cscript::FS::IsFile( fileName ) )
    {
       // Set our current file
       mCurrentFile = dStrdup(fileName);
@@ -181,7 +181,7 @@ bool PersistenceManager::readFile(const char* fileName)
 
    // Try to open the file
    FileStream  stream;
-   stream.open( fileName, Torque::FS::File::Read );
+   stream.open( fileName, studio::content::cscript::FS::File::Read );
 
    if ( stream.getStatus() != Stream::Ok )
    {
@@ -575,7 +575,7 @@ bool PersistenceManager::parseFile(const char* fileName)
    if (!mParser.openFile(fileName))
    {
       // Handle an object writing out to a new file
-      if ( !Torque::FS::IsFile( fileName ) )
+      if ( !studio::content::cscript::FS::IsFile( fileName ) )
          return true;
 
       return false;
@@ -1833,7 +1833,7 @@ void PersistenceManager::updateObject(SimObject* object, ParsedObject* parentObj
 bool PersistenceManager::saveDirtyFile()
 {
    FileStream  stream;
-   stream.open( mCurrentFile, Torque::FS::File::Write );
+   stream.open( mCurrentFile, studio::content::cscript::FS::File::Write );
 
    if ( stream.getStatus() != Stream::Ok )
    {

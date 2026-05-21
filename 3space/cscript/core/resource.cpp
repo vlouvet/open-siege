@@ -33,7 +33,7 @@ ResourceBase::Header ResourceBase::smBlank;
 
 U32   ResourceBase::Header::getChecksum() const
 {
-   Torque::FS::FileNodeRef fileRef = Torque::FS::GetFileNode( mPath );
+   studio::content::cscript::FS::FileNodeRef fileRef = studio::content::cscript::FS::GetFileNode( mPath );
 
    if ( fileRef == NULL )
    {
@@ -77,7 +77,7 @@ void  ResourceBase::assign(const ResourceBase &inResource, void* resource)
    {
       mResourceHeader->mSignature = getSignature();
 
-      const Torque::Path   path = mResourceHeader->getPath();
+      const studio::content::cscript::Path   path = mResourceHeader->getPath();
 
       if (resource == NULL)
       {

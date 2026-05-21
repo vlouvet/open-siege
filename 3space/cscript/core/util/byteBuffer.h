@@ -27,7 +27,7 @@
 #include "platform/platform.h"
 #endif
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 class PrivateBBData;

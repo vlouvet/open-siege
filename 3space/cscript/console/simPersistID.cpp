@@ -56,7 +56,7 @@ SimPersistID::SimPersistID( SimObject* object )
 
 //-----------------------------------------------------------------------------
 
-SimPersistID::SimPersistID( const Torque::UUID& uuid )
+SimPersistID::SimPersistID( const studio::content::cscript::UUID& uuid )
    : mObject( NULL ),
      mUUID( uuid )
 {
@@ -116,7 +116,7 @@ void SimPersistID::resolve( SimObject* object )
 
 //-----------------------------------------------------------------------------
 
-SimPersistID* SimPersistID::find( const Torque::UUID& uuid )
+SimPersistID* SimPersistID::find( const studio::content::cscript::UUID& uuid )
 {
    AssertFatal( smLookupTable, "SimPersistID::find - system has not been initialized" );
    
@@ -129,7 +129,7 @@ SimPersistID* SimPersistID::find( const Torque::UUID& uuid )
 
 //-----------------------------------------------------------------------------
 
-SimPersistID* SimPersistID::findOrCreate( const Torque::UUID& uuid )
+SimPersistID* SimPersistID::findOrCreate( const studio::content::cscript::UUID& uuid )
 {
    AssertFatal( smLookupTable, "SimPersistID::findOrCreate - system has not been initialized" );
    
@@ -147,7 +147,7 @@ SimPersistID* SimPersistID::findOrCreate( const Torque::UUID& uuid )
    return pid;
 }
 
-DefineNewEngineMethod(SimPersistID, getUUID, Torque::UUID, (), , "")
+DefineNewEngineMethod(SimPersistID, getUUID, studio::content::cscript::UUID, (), , "")
 {
    return object->getUUID();
 }

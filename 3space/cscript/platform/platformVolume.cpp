@@ -32,8 +32,8 @@
 #include "platform/platformVolume.h"
 #include "core/util/zip/zipVolume.h"
 
-using namespace Torque;
-using namespace Torque::FS;
+using namespace studio::content::cscript;
+using namespace studio::content::cscript::FS;
 
 namespace Platform
 {

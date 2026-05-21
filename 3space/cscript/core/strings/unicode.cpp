@@ -157,7 +157,7 @@ U32 convertUTF8toUTF16N(const UTF8 *unistring, UTF16 *outbuffer, U32 len)
 
 #ifdef TORQUE_ENABLE_UTF16_CACHE
    // If we have cached this conversion already, don't do it again
-   U32 hashKey = Torque::hash((const U8 *)unistring, dStrlen(unistring), 0);
+   U32 hashKey = studio::content::cscript::hash((const U8 *)unistring, dStrlen(unistring), 0);
    UTF16CacheTable::Iterator cacheItr = sgUTF16Cache.find(hashKey);
    if(cacheItr != sgUTF16Cache.end())
    {

@@ -498,7 +498,7 @@ bool CodeBlock::compile(const char *codeFileName, StringTableEntry fileName, con
 #endif // !TORQUE_NO_DSO_GENERATION
 
    FileStream st;
-   if (!st.open(codeFileName, Torque::FS::File::Write))
+   if (!st.open(codeFileName, studio::content::cscript::FS::File::Write))
       return false;
    st.write(U32(Con::DSOVersion));
 

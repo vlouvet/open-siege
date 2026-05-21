@@ -23,7 +23,7 @@
 #include "core/util/path.h"
 
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 //-----------------------------------------------------------------------------
@@ -171,7 +171,7 @@ String Path::CompressPath(String path)
    return path;
 }
 
-Torque::Path Path::MakeRelativePath( const Path &makeRelative, const Path &relativeTo, U32 mode )
+studio::content::cscript::Path Path::MakeRelativePath( const Path &makeRelative, const Path &relativeTo, U32 mode )
 {
    // We need to find the part of makeRelative that starts to diverge from
    // relativeTo. We only need to check up to the end of makeRelative or realtiveTo
@@ -296,7 +296,7 @@ const String& Path::getFullPath() const
 
 String Path::getFullPathWithoutRoot() const
 {
-   return Torque::Path::Join(getPath(), '/', getFullFileName());
+   return studio::content::cscript::Path::Join(getPath(), '/', getFullFileName());
 }
 
 String Path::getRootAndPath() const

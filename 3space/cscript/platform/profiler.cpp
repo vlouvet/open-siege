@@ -589,7 +589,7 @@ void Profiler::dump()
    else if (mDumpToFile == true && mDumpFileName[0] != '\0')
    {
       FileStream fws;
-      bool success = fws.open(mDumpFileName, Torque::FS::File::Write);
+      bool success = fws.open(mDumpFileName, studio::content::cscript::FS::File::Write);
       AssertFatal(success, "Cannot write profile dump to specified file!");
          char buffer[1024];
 

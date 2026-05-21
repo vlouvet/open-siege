@@ -60,21 +60,21 @@ class SimPersistID : public EngineObject
 
       /// Construct a persistent ID stub for the given unique identifier.
       /// The stub remains not bound to any object until it is resolved.
-      SimPersistID(const Torque::UUID& uuid);
+      SimPersistID(const studio::content::cscript::UUID& uuid);
 
       ///
       ~SimPersistID();
       
    protected:
    
-      typedef HashTable< Torque::UUID, SimPersistID* > LookupTableType;
+      typedef HashTable< studio::content::cscript::UUID, SimPersistID* > LookupTableType;
    
       /// Reference to the SimObject.  Will be NULL for as long as the
       /// persistent ID is not resolved.
       SimObject* mObject;
    
       /// The UUID assigned to the object.  Never changes.
-      Torque::UUID mUUID;
+      studio::content::cscript::UUID mUUID;
       
       /// Table of persistent object IDs.
       static LookupTableType* smLookupTable;
@@ -97,22 +97,22 @@ class SimPersistID : public EngineObject
       static void shutdown();
       
       /// Look up a persistent ID by its UUID.  Return NULL if no PID is bound to the given UUID.
-      static SimPersistID* find( const Torque::UUID& uuid );
+      static SimPersistID* find( const studio::content::cscript::UUID& uuid );
 
       /// Look up a persistent ID by its UUID.  If no PID is bound to the given UUID yet, create a
       /// new PID and bind it to the UUID.
-      static SimPersistID* findOrCreate( const Torque::UUID& uuid );
+      static SimPersistID* findOrCreate( const studio::content::cscript::UUID& uuid );
       
       /// Find a SimObject by the UUID assigned to its PID.  Return NULL if either no PID is bound
       /// to the given UUID or if the PID bound to it is not yet resolved.
-      static SimObject* findObjectByUUID( const Torque::UUID& uuid );
+      static SimObject* findObjectByUUID( const studio::content::cscript::UUID& uuid );
             
       /// Return the object that is bound to this PID.  If the PID has not yet been resolved,
       /// return NULL.
       SimObject* getObject() const { return mObject; }
       
       /// Return the UUID bound to this PID.
-      const Torque::UUID& getUUID() const { return mUUID; }
+      const studio::content::cscript::UUID& getUUID() const { return mUUID; }
 };
 
 #endif // !_SIMPERSISTID_H_

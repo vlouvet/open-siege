@@ -118,7 +118,7 @@ void Journal::Record(const char * file)
       _Count = 0;
       mFile = new FileStream();
 
-      if( ((FileStream*)mFile)->open(file, Torque::FS::File::Write) )
+      if( ((FileStream*)mFile)->open(file, studio::content::cscript::FS::File::Write) )
       {
          mFile->write(_Count);
          _State = RecordState;
@@ -147,7 +147,7 @@ void Journal::Play(const char * file)
    {
       SAFE_DELETE(mFile);
       mFile = new FileStream();
-      if( ((FileStream*)mFile)->open(file, Torque::FS::File::Read) )
+      if( ((FileStream*)mFile)->open(file, studio::content::cscript::FS::File::Read) )
       {
          mFile->read(&_Count);
          _State = PlayState;

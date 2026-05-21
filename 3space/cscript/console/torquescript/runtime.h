@@ -3,7 +3,7 @@
 #include "ast.h"
 #include "console/runtime.h"
 
-namespace TorqueScript
+namespace studio::content::cscript::TorqueScript
 {
    class TorqueScriptRuntime : public Con::Runtime
    {

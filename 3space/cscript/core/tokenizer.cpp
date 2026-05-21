@@ -56,7 +56,7 @@ bool Tokenizer::openFile(const char* pFileName)
    AssertFatal(mFileName[0] == '\0', "Reuse of Tokenizers not allowed!");
 
    FileStream* pStream = new FileStream;
-   if (pStream->open(pFileName, Torque::FS::File::Read) == false)
+   if (pStream->open(pFileName, studio::content::cscript::FS::File::Read) == false)
    {
       delete pStream;
       return false;

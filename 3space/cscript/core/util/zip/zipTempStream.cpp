@@ -33,7 +33,7 @@ namespace Zip
 //-----------------------------------------------------------------------------
 static S32 tempNum = 0;
 
-bool ZipTempStream::open(String filename, Torque::FS::File::AccessMode mode)
+bool ZipTempStream::open(String filename, studio::content::cscript::FS::File::AccessMode mode)
 {
    if(filename.isEmpty())
    {

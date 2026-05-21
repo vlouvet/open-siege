@@ -26,15 +26,15 @@
 
 TEST(MakeRelativePath, MakeRelativePath)
 {
-   EXPECT_EQ(Torque::Path::MakeRelativePath("art/interiors/burg/file.png", "art/interiors/"), "burg/file.png");
-   EXPECT_EQ(Torque::Path::MakeRelativePath("art/interiors/file.png", "art/interiors/burg/"), "../file.png");
-   EXPECT_EQ(Torque::Path::MakeRelativePath("art/file.png", "art/interiors/burg/"), "../../file.png");
-   EXPECT_EQ(Torque::Path::MakeRelativePath("file.png", "art/interiors/burg/"), "../../../file.png");
-   EXPECT_EQ(Torque::Path::MakeRelativePath("art/interiors/burg/file.png", "art/interiors/burg/"), "file.png");
-   EXPECT_EQ(Torque::Path::MakeRelativePath("art/interiors/camp/file.png", "art/interiors/burg/"), "../camp/file.png");
-   EXPECT_EQ(Torque::Path::MakeRelativePath("art/interiors/burg/file.png", "art/shapes/"), "../interiors/burg/file.png");
-   EXPECT_EQ(Torque::Path::MakeRelativePath("levels/den/file.png", "art/interiors/burg/"), "../../../levels/den/file.png");
-   EXPECT_EQ(Torque::Path::MakeRelativePath("art/interiors/burg/file.png", "art/dts/burg/"), "../../interiors/burg/file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("art/interiors/burg/file.png", "art/interiors/"), "burg/file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("art/interiors/file.png", "art/interiors/burg/"), "../file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("art/file.png", "art/interiors/burg/"), "../../file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("file.png", "art/interiors/burg/"), "../../../file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("art/interiors/burg/file.png", "art/interiors/burg/"), "file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("art/interiors/camp/file.png", "art/interiors/burg/"), "../camp/file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("art/interiors/burg/file.png", "art/shapes/"), "../interiors/burg/file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("levels/den/file.png", "art/interiors/burg/"), "../../../levels/den/file.png");
+   EXPECT_EQ(studio::content::cscript::Path::MakeRelativePath("art/interiors/burg/file.png", "art/dts/burg/"), "../../interiors/burg/file.png");
 };
 
 #endif

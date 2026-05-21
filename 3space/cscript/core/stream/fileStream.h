@@ -47,7 +47,7 @@ public:
    // This function will allocate a new FileStream and open it.
    //  If it fails to allocate or fails to open, it will return NULL.
    //  The caller is responsible for deleting the instance.
-   static FileStream *createAndOpen(const String &inFileName, Torque::FS::File::AccessMode inMode);
+   static FileStream *createAndOpen(const String &inFileName, studio::content::cscript::FS::File::AccessMode inMode);
 
    // mandatory methods from Stream base class...
    bool hasCapability(const Capability i_cap) const override;
@@ -57,7 +57,7 @@ public:
    U32  getStreamSize() override;
 
    // additional methods needed for a file stream...
-   virtual bool open(const String &inFileName, Torque::FS::File::AccessMode inMode);
+   virtual bool open(const String &inFileName, studio::content::cscript::FS::File::AccessMode inMode);
    virtual void close();
 
    bool flush();
@@ -80,7 +80,7 @@ protected:
    U32  mStreamCaps;                   // dependent on access mode
 
 private:
-   Torque::FS::FileRef mFile;          // file being streamed
+   studio::content::cscript::FS::FileRef mFile;          // file being streamed
 
    U8   mBuffer[BUFFER_SIZE];
    U32  mBuffHead;                     // first valid position of buffer (from start-of-file)

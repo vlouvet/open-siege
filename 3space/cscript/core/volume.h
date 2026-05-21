@@ -51,7 +51,7 @@
 #include "core/util/timeClass.h"
 #endif
 
-namespace Torque
+namespace studio::content::cscript
 {
 namespace FS
 {
@@ -138,7 +138,7 @@ protected:
 
 private:
    U32            mChecksum;
-   Torque::Time   mLastChecksum;
+   studio::content::cscript::Time   mLastChecksum;
 };
 
 typedef WeakRefPtr<FileNode> FileNodePtr;

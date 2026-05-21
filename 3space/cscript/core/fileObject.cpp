@@ -112,7 +112,7 @@ bool FileObject::openForWrite(const char *fileName, const bool append)
    if( !buffer[ 0 ] )
       return false;
 
-   if((mStream = FileStream::createAndOpen( fileName, append ? Torque::FS::File::WriteAppend : Torque::FS::File::Write )) == NULL)
+   if((mStream = FileStream::createAndOpen( fileName, append ? studio::content::cscript::FS::File::WriteAppend : studio::content::cscript::FS::File::Write )) == NULL)
       return false;
 
    mStream->setPosition(mStream->getStreamSize() );
@@ -134,7 +134,7 @@ bool FileObject::readMemory(const char *fileName)
 
    void *data = NULL;
    U32 dataSize = 0;
-   Torque::FS::ReadFile(buffer, data, dataSize, true);
+   studio::content::cscript::FS::ReadFile(buffer, data, dataSize, true);
    if(data == NULL)
       return false;
 

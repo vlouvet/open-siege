@@ -274,9 +274,9 @@ public:
    /// Access modes for zip files and files within the zip
    enum AccessMode
    {
-      Read = Torque::FS::File::Read,               //!< Open a zip or file in a zip for reading
-      Write = Torque::FS::File::Write,             //!< Open a zip or file in a zip for writing
-      ReadWrite = Torque::FS::File::ReadWrite      //!< Open a zip file for reading and writing. <b>Note</b>: Not valid for files in zips.
+      Read = studio::content::cscript::FS::File::Read,               //!< Open a zip or file in a zip for reading
+      Write = studio::content::cscript::FS::File::Write,             //!< Open a zip or file in a zip for writing
+      ReadWrite = studio::content::cscript::FS::File::ReadWrite      //!< Open a zip file for reading and writing. <b>Note</b>: Not valid for files in zips.
    };
 
    struct ZipEntry
@@ -337,10 +337,10 @@ protected:
 public:
    ZipEntry* getRoot() { return mRoot; }
    ZipEntry* findZipEntry(const char *filename);
-   static U32 localTimeToDOSTime(const Torque::Time::DateTime &dt);
-   static Torque::Time DOSTimeToTime(U16 time, U16 date);
-   static Torque::Time DOSTimeToTime(U32 datetime);
-   static U32 TimeToDOSTime(const Torque::Time& t);
+   static U32 localTimeToDOSTime(const studio::content::cscript::Time::DateTime &dt);
+   static studio::content::cscript::Time DOSTimeToTime(U16 time, U16 date);
+   static studio::content::cscript::Time DOSTimeToTime(U32 datetime);
+   static U32 TimeToDOSTime(const studio::content::cscript::Time& t);
    static U32 currentTimeToDOSTime();
    void dumpCentralDirectory(ZipEntry* entry = NULL, String* indent = NULL);
 

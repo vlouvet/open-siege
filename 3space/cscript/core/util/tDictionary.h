@@ -105,7 +105,7 @@ namespace DictHash
 
    inline U32 hash(const char *data)
    {
-      return Torque::hash( (const U8 *)data, dStrlen( data ), 0 );
+      return studio::content::cscript::hash( (const U8 *)data, dStrlen( data ), 0 );
    }
 
    inline U32 hash(const void *data)

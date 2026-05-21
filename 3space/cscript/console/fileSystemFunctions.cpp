@@ -54,7 +54,7 @@ static S32 buildFileList(const char* pattern, bool recurse, bool multiMatch)
 
    sgFindFilesResults.clear();
 
-   String sPattern(Torque::Path::CleanSeparators(pattern));
+   String sPattern(studio::content::cscript::Path::CleanSeparators(pattern));
    if(sPattern.isEmpty())
    {
       Con::errorf("findFirstFile() requires a search pattern");
@@ -76,7 +76,7 @@ static S32 buildFileList(const char* pattern, bool recurse, bool multiMatch)
 //    }
 
    // Build the initial search path
-   Torque::Path givenPath(Torque::Path::CompressPath(sPattern));
+   studio::content::cscript::Path givenPath(studio::content::cscript::Path::CompressPath(sPattern));
    givenPath.setFileName("*");
    givenPath.setExtension("*");
 
@@ -92,17 +92,17 @@ static S32 buildFileList(const char* pattern, bool recurse, bool multiMatch)
       givenPath.setPath(suspectPath.substr(0, newLen));
    }
 
-   Torque::FS::FileSystemRef fs = Torque::FS::GetFileSystem(givenPath);
-   //Torque::Path path = fs->mapTo(givenPath);
-   Torque::Path path = givenPath;
+   studio::content::cscript::FS::FileSystemRef fs = studio::content::cscript::FS::GetFileSystem(givenPath);
+   //studio::content::cscript::Path path = fs->mapTo(givenPath);
+   studio::content::cscript::Path path = givenPath;
 
    // Make sure that we have a root so the correct file system can be determined when using zips
    if(givenPath.isRelative())
-      path = Torque::Path::Join(Torque::FS::GetCwd(), '/', givenPath);
+      path = studio::content::cscript::Path::Join(studio::content::cscript::FS::GetCwd(), '/', givenPath);
 
    path.setFileName(String::EmptyString);
    path.setExtension(String::EmptyString);
-   if(!Torque::FS::IsDirectory(path))
+   if(!studio::content::cscript::FS::IsDirectory(path))
    {
       Con::errorf("findFirstFile() invalid initial search directory: '%s'", path.getFullPath().c_str());
       return -1;
@@ -116,12 +116,12 @@ static S32 buildFileList(const char* pattern, bool recurse, bool multiMatch)
       return -1;
    }
 
-   S32 results = Torque::FS::FindByPattern(path, expression, recurse, sgFindFilesResults, multiMatch );
+   S32 results = studio::content::cscript::FS::FindByPattern(path, expression, recurse, sgFindFilesResults, multiMatch );
    if(givenPath.isRelative() && results > 0)
    {
       // Strip the CWD out of the returned paths
       // MakeRelativePath() returns incorrect results (it adds a leading ..) so doing this the dirty way
-      const String cwd = Torque::FS::GetCwd().getFullPath();
+      const String cwd = studio::content::cscript::FS::GetCwd().getFullPath();
       for(S32 i = 0;i < sgFindFilesResults.size();++i)
       {
          String str = sgFindFilesResults[i];
@@ -366,7 +366,7 @@ DefineEngineFunction(getFileCRC, S32, ( const char* fileName ),,
 
    "@ingroup FileSystem")
 {
-   Torque::FS::FileNodeRef fileRef = Torque::FS::GetFileNode( fileName );
+   studio::content::cscript::FS::FileNodeRef fileRef = studio::content::cscript::FS::GetFileNode( fileName );
 
    if ( fileRef == NULL )
    {
@@ -385,10 +385,10 @@ DefineEngineFunction(isFile, bool, ( const char* fileName ),,
 
    "@ingroup FileSystem")
 {
-   String cleanfilename(Torque::Path::CleanSeparators(fileName));
+   String cleanfilename(studio::content::cscript::Path::CleanSeparators(fileName));
    Con::expandScriptFilename(sgScriptFilenameBuffer, sizeof(sgScriptFilenameBuffer), cleanfilename.c_str());
 
-   Torque::Path givenPath(Torque::Path::CompressPath(sgScriptFilenameBuffer));
+   studio::content::cscript::Path givenPath(studio::content::cscript::Path::CompressPath(sgScriptFilenameBuffer));
 
    if (givenPath.getFileName().isEmpty() && givenPath.getExtension().isNotEmpty())
    {
@@ -397,17 +397,17 @@ DefineEngineFunction(isFile, bool, ( const char* fileName ),,
       givenPath.setFileName(String(".") + givenPath.getExtension());
       givenPath.setExtension("");
    }
-   if (Torque::FS::IsFile(givenPath)) return true;
+   if (studio::content::cscript::FS::IsFile(givenPath)) return true;
 
    //try with script file extension
-   if (!Torque::FS::IsFile(givenPath) && givenPath.getExtension().isEmpty())
+   if (!studio::content::cscript::FS::IsFile(givenPath) && givenPath.getExtension().isEmpty())
       givenPath.setExtension(TORQUE_SCRIPT_EXTENSION);
-   if (Torque::FS::IsFile(givenPath)) return true;
+   if (studio::content::cscript::FS::IsFile(givenPath)) return true;
 
    //finally, try with compiled script file extension
-   if (!Torque::FS::IsFile(givenPath))
+   if (!studio::content::cscript::FS::IsFile(givenPath))
       givenPath.setExtension(String(TORQUE_SCRIPT_EXTENSION)+String(".dso"));
-   return Torque::FS::IsFile(givenPath);
+   return studio::content::cscript::FS::IsFile(givenPath);
 }
 
 DefineEngineFunction(isScriptFile, bool, (const char* fileName), ,
@@ -431,7 +431,7 @@ DefineEngineFunction( IsDirectory, bool, ( const char* directory ),,
 
    "@ingroup FileSystem")
 {
-   return Torque::FS::IsDirectory( directory );
+   return studio::content::cscript::FS::IsDirectory( directory );
 }
 
 DefineEngineFunction(isWriteableFileName, bool, ( const char* fileName ),,
@@ -442,7 +442,7 @@ DefineEngineFunction(isWriteableFileName, bool, ( const char* fileName ),,
 
    "@ingroup FileSystem")
 {
-   return !Torque::FS::IsReadOnly(fileName);
+   return !studio::content::cscript::FS::IsReadOnly(fileName);
 }
 
 DefineEngineFunction(startFileChangeNotifications, void, (),,
@@ -451,7 +451,7 @@ DefineEngineFunction(startFileChangeNotifications, void, (),,
    "@see stopFileChangeNotifications()\n"
    "@ingroup FileSystem")
 {
-   Torque::FS::StartFileChangeNotifications();
+   studio::content::cscript::FS::StartFileChangeNotifications();
 }
 
 DefineEngineFunction(stopFileChangeNotifications, void, (),,
@@ -460,7 +460,7 @@ DefineEngineFunction(stopFileChangeNotifications, void, (),,
    "@see startFileChangeNotifications()\n"
    "@ingroup FileSystem")
 {
-   Torque::FS::StopFileChangeNotifications();
+   studio::content::cscript::FS::StopFileChangeNotifications();
 }
 
 
@@ -492,7 +492,7 @@ DefineEngineFunction(getDirectoryList, String, ( const char* path, S32 depth ), 
 
    // Dump the directories.
    Vector<StringTableEntry> directories;
-   Torque::FS::DumpDirectories(fullpath, directories, depth, true);
+   studio::content::cscript::FS::DumpDirectories(fullpath, directories, depth, true);
 
    if( directories.empty() )
       return "";
@@ -530,7 +530,7 @@ DefineEngineFunction(fileSize, S32, ( const char* fileName ),,
 
    "@ingroup FileSystem")
 {
-   StrongRefPtr<Torque::FS::FileNode> node = Torque::FS::GetFileNode(fileName);
+   StrongRefPtr<studio::content::cscript::FS::FileNode> node = studio::content::cscript::FS::GetFileNode(fileName);
    if (node.isValid())
    {
       return node->getSize();
@@ -545,7 +545,7 @@ DefineEngineFunction( fileModifiedTime, String, ( const char* fileName ),,
    "@return Formatted string (OS specific) containing modified time, \"9/3/2010 12:33:47 PM\" for example\n"
    "@ingroup FileSystem")
 {
-   Torque::FS::FileNodeRef node = Torque::FS::GetFileNode(fileName);
+   studio::content::cscript::FS::FileNodeRef node = studio::content::cscript::FS::GetFileNode(fileName);
 
    if (node)
    {
@@ -568,7 +568,7 @@ DefineEngineFunction( fileCreatedTime, String, ( const char* fileName ),,
    "@return Formatted string (OS specific) containing created time, \"9/3/2010 12:33:47 PM\" for example\n"
    "@ingroup FileSystem")
 {
-   Torque::FS::FileNodeRef node = Torque::FS::GetFileNode(fileName);
+   studio::content::cscript::FS::FileNodeRef node = studio::content::cscript::FS::GetFileNode(fileName);
 
    if (node)
    {
@@ -592,8 +592,8 @@ DefineEngineFunction(compareFileTimes, S32, (const char* fileA, const char* file
    "@return S32. If value is 1, then fileA is newer. If value is -1, then fileB is newer. If value is 0, they are equal.\n"
    "@ingroup FileSystem")
 {
-   Torque::FS::FileNodeRef nodeA = Torque::FS::GetFileNode(fileA);
-   Torque::FS::FileNodeRef nodeB = Torque::FS::GetFileNode(fileB);
+   studio::content::cscript::FS::FileNodeRef nodeA = studio::content::cscript::FS::GetFileNode(fileA);
+   studio::content::cscript::FS::FileNodeRef nodeB = studio::content::cscript::FS::GetFileNode(fileB);
 
    // Can't do anything if either file doesn't exist
    if (!nodeA || !nodeB)
@@ -601,8 +601,8 @@ DefineEngineFunction(compareFileTimes, S32, (const char* fileA, const char* file
       return 0;
    }
 
-   Torque::FS::FileNode::Attributes fileAAttributes;
-   Torque::FS::FileNode::Attributes fileBAttributes;
+   studio::content::cscript::FS::FileNode::Attributes fileAAttributes;
+   studio::content::cscript::FS::FileNode::Attributes fileBAttributes;
 
    // If retrieval of attributes fails, we can't compare   
    if (!nodeA->getAttributes(&fileAAttributes) || !nodeB->getAttributes(&fileBAttributes))
@@ -629,7 +629,7 @@ DefineEngineFunction(fileDelete, bool, ( const char* path ),,
    "@return True if file was successfully deleted\n"
    "@ingroup FileSystem")
 {
-   return Torque::FS::Remove(path);
+   return studio::content::cscript::FS::Remove(path);
 }
 
 
@@ -844,7 +844,7 @@ DefineEngineFunction( pathCopy, bool, ( const char* fromFile, const char* toFile
    "@note Only present in a Tools build of Torque.\n"
    "@ingroup FileSystem")
 {
-   return Torque::FS::CopyFile(fromFile, toFile, noOverwrite);
+   return studio::content::cscript::FS::CopyFile(fromFile, toFile, noOverwrite);
 }
 
 //-----------------------------------------------------------------------------
@@ -857,7 +857,7 @@ DefineEngineFunction( getCurrentDirectory, String, (),,
    "@ingroup FileSystem")
 {
 #ifdef TORQUE_SECURE_VFS
-   return Torque::FS::GetCwd();
+   return studio::content::cscript::FS::GetCwd();
 #else
    return Platform::getCurrentDirectory();
 #endif
@@ -874,7 +874,7 @@ DefineEngineFunction( setCurrentDirectory, bool, ( const char* path ),,
    "@ingroup FileSystem")
 {
 #ifdef TORQUE_SECURE_VFS
-   return Torque::FS::SetCwd(path);
+   return studio::content::cscript::FS::SetCwd(path);
 #else
    return Platform::setCurrentDirectory( StringTable->insert( path ) );
 #endif
@@ -891,7 +891,7 @@ DefineEngineFunction( createPath, bool, ( const char* path ),,
    "@note Only present in a Tools build of Torque.\n"
    "@ingroup FileSystem" )
 {
-   return Torque::FS::CreatePath(path);
+   return studio::content::cscript::FS::CreatePath(path);
 }
 
 DefineEngineFunction(deleteDirectory, bool, (const char* path), ,

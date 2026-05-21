@@ -588,7 +588,7 @@ static void log(const char *string)
    // In mode 1, we open, append, close on each log write.
    if ((consoleLogMode & 0x3) == 1) 
    {
-      consoleLogFile.open(defLogFileName, Torque::FS::File::ReadWrite);
+      consoleLogFile.open(defLogFileName, studio::content::cscript::FS::File::ReadWrite);
    }
 
    // Write to the log if its status is hunky-dory.
@@ -1369,7 +1369,7 @@ void setLogMode(S32 newMode)
          Platform::debugBreak();
 #endif
          // Starting mode 2, must open logfile.
-         consoleLogFile.open(defLogFileName, Torque::FS::File::Write);
+         consoleLogFile.open(defLogFileName, studio::content::cscript::FS::File::Write);
       }
       consoleLogMode = newMode;
    }
@@ -1567,14 +1567,14 @@ bool isCurrentScriptToolScript()
 
 bool isScriptFile(const char* pFilePath)
 {
-   return (Torque::FS::IsFile(pFilePath)
-      || Torque::FS::IsFile(pFilePath + String(".dso"))
-      || Torque::FS::IsFile(pFilePath + String(".mis"))
-      || Torque::FS::IsFile(pFilePath + String(".mis.dso"))
-      || Torque::FS::IsFile(pFilePath + String(".gui"))
-      || Torque::FS::IsFile(pFilePath + String(".gui.dso"))
-      || Torque::FS::IsFile(pFilePath + String("." TORQUE_SCRIPT_EXTENSION))
-      || Torque::FS::IsFile(pFilePath + String("." TORQUE_SCRIPT_EXTENSION) + String(".dso")));
+   return (studio::content::cscript::FS::IsFile(pFilePath)
+      || studio::content::cscript::FS::IsFile(pFilePath + String(".dso"))
+      || studio::content::cscript::FS::IsFile(pFilePath + String(".mis"))
+      || studio::content::cscript::FS::IsFile(pFilePath + String(".mis.dso"))
+      || studio::content::cscript::FS::IsFile(pFilePath + String(".gui"))
+      || studio::content::cscript::FS::IsFile(pFilePath + String(".gui.dso"))
+      || studio::content::cscript::FS::IsFile(pFilePath + String("." TORQUE_SCRIPT_EXTENSION))
+      || studio::content::cscript::FS::IsFile(pFilePath + String("." TORQUE_SCRIPT_EXTENSION) + String(".dso")));
 }
 
 //------------------------------------------------------------------------------

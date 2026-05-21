@@ -27,12 +27,12 @@
 #include "core/util/noncopyable.h"
 #include "console/console.h"
 
-namespace Torque
+namespace studio::content::cscript
 {
    using namespace FS;
    using namespace Zip;
 
-class ZipFileNode : public Torque::FS::File, public Noncopyable
+class ZipFileNode : public studio::content::cscript::FS::File, public Noncopyable
 {
    typedef FileNode Parent;
 
@@ -165,10 +165,10 @@ public:
 // ZipDirectoryNode class (Internal)
 //--------------------------------------------------------------------------
 
-class ZipDirectoryNode : public Torque::FS::Directory, public Noncopyable
+class ZipDirectoryNode : public studio::content::cscript::FS::Directory, public Noncopyable
 {
 public:
-   ZipDirectoryNode(StrongRefPtr<ZipArchive>& archive, const Torque::Path& path, ZipArchive::ZipEntry* ze)
+   ZipDirectoryNode(StrongRefPtr<ZipArchive>& archive, const studio::content::cscript::Path& path, ZipArchive::ZipEntry* ze)
    {
       mPath = path;
       mArchive = archive;
@@ -180,7 +180,7 @@ public:
    {
    }
 
-   Torque::Path getName() const override { return mPath; }
+   studio::content::cscript::Path getName() const override { return mPath; }
 
    // getStatus() doesn't appear to be used for directories
    NodeStatus getStatus() const override
@@ -249,7 +249,7 @@ private:
       return 0;
    }
 
-   Torque::Path mPath;
+   studio::content::cscript::Path mPath;
    Map<String,ZipArchive::ZipEntry*>::Iterator mChildIter;
    StrongRefPtr<ZipArchive> mArchive;
    ZipArchive::ZipEntry* mZipEntry;
@@ -259,10 +259,10 @@ private:
 // ZipFakeRootNode class (Internal)
 //--------------------------------------------------------------------------
 
-class ZipFakeRootNode : public Torque::FS::Directory, public Noncopyable
+class ZipFakeRootNode : public studio::content::cscript::FS::Directory, public Noncopyable
 {
 public:
-   ZipFakeRootNode(StrongRefPtr<ZipArchive>& archive, const Torque::Path& path, const String &fakeRoot)
+   ZipFakeRootNode(StrongRefPtr<ZipArchive>& archive, const studio::content::cscript::Path& path, const String &fakeRoot)
    {
       mPath = path;
       mArchive = archive;
@@ -273,7 +273,7 @@ public:
    {
    }
 
-   Torque::Path getName() const override { return mPath; }
+   studio::content::cscript::Path getName() const override { return mPath; }
 
    // getStatus() doesn't appear to be used for directories
    NodeStatus getStatus() const override
@@ -341,7 +341,7 @@ private:
       return 0;
    }
 
-   Torque::Path mPath;
+   studio::content::cscript::Path mPath;
    Map<String,ZipArchive::ZipEntry*>::Iterator mChildIter;
    StrongRefPtr<ZipArchive> mArchive;
    bool mRead;
@@ -371,7 +371,7 @@ ZipFileSystem::ZipFileSystem(String& zipFilename, bool zipNameIsDir /* = false *
    // we open the file now so that whatever filesystems are mounted right now (which may be temporary)
    // can be umounted without affecting this file system.
    mZipArchiveStream = new FileStream();
-   mZipArchiveStream->open(mZipFilename, Torque::FS::File::Read);
+   mZipArchiveStream->open(mZipFilename, studio::content::cscript::FS::File::Read);
    
    // As far as the mount system is concerned, ZFSes are read only write now (even though 
    // ZipArchive technically support read-write, we don't expose this to the mount system because we 

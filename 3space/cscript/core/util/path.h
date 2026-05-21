@@ -27,7 +27,7 @@
 #include "core/util/str.h"
 #endif
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 //-----------------------------------------------------------------------------

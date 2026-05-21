@@ -23,7 +23,7 @@
 #include "core/util/byteBuffer.h"
 
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 class PrivateBBData

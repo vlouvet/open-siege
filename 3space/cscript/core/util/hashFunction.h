@@ -27,7 +27,7 @@
 #include "platform/types.h"
 #endif
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 extern U32 hash(const U8 *k, U32 length, U32 initval);

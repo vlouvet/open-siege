@@ -47,7 +47,7 @@ class RawData;
 class String;
 class NetSocket;
 
-namespace Torque {
+namespace studio::content::cscript {
    class ByteBuffer;
 }
 
@@ -177,9 +177,9 @@ public:
    bool read(RawData *);
 
    /// Write some raw data onto the stream.
-   bool write(const Torque::ByteBuffer &);
+   bool write(const studio::content::cscript::ByteBuffer &);
    /// Read some raw data from the stream.
-   bool read(Torque::ByteBuffer *);
+   bool read(studio::content::cscript::ByteBuffer *);
 
    // Overloaded write and read ops..
   public:

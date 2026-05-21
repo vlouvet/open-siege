@@ -30,7 +30,7 @@
 #include "core/util/tDictionary.h"
 #endif 
 
-namespace Torque
+namespace studio::content::cscript
 {
    using namespace FS;
 

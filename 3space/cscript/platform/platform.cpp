@@ -135,7 +135,7 @@ S32 Platform::compareModifiedTimes( const char *firstPath, const char *secondPat
    FileTime firstModTime;
    if ( !getFileTimes( firstPath, NULL, &firstModTime ) ) {
       //The reason we failed to get file times could be cause it is in a zip.  Lets check.
-      return Torque::FS::CompareModifiedTimes(firstPath, secondPath);
+      return studio::content::cscript::FS::CompareModifiedTimes(firstPath, secondPath);
    }
 
    FileTime secondModTime;

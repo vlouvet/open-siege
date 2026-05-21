@@ -30,14 +30,14 @@
 static const struct
 {
    const char *strMode;
-   Torque::FS::File::AccessMode mode;
+   studio::content::cscript::FS::File::AccessMode mode;
 } gModeMap[]=
 {
-   { "read", Torque::FS::File::Read },
-   { "write", Torque::FS::File::Write },
-   { "readwrite", Torque::FS::File::ReadWrite },
-   { "writeappend", Torque::FS::File::WriteAppend },
-   { NULL, (Torque::FS::File::AccessMode)0 }
+   { "read", studio::content::cscript::FS::File::Read },
+   { "write", studio::content::cscript::FS::File::Write },
+   { "readwrite", studio::content::cscript::FS::File::ReadWrite },
+   { "writeappend", studio::content::cscript::FS::File::WriteAppend },
+   { NULL, (studio::content::cscript::FS::File::AccessMode)0 }
 };
 
 //-----------------------------------------------------------------------------
@@ -92,7 +92,7 @@ bool FileStreamObject::onAdd()
 // Public Methods
 //-----------------------------------------------------------------------------
 
-bool FileStreamObject::open(const char *filename, Torque::FS::File::AccessMode mode)
+bool FileStreamObject::open(const char *filename, studio::content::cscript::FS::File::AccessMode mode)
 {
    close();
 
@@ -146,7 +146,7 @@ DefineEngineMethod( FileStreamObject, open, bool, (const char* filename, const c
    {
       if(dStricmp(gModeMap[i].strMode, openMode) == 0)
       {
-         Torque::FS::File::AccessMode mode = gModeMap[i].mode;
+         studio::content::cscript::FS::File::AccessMode mode = gModeMap[i].mode;
          char buffer[1024];
          Con::expandScriptFilename(buffer, sizeof(buffer), filename);
          return object->open(buffer, mode);

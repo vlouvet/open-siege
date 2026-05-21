@@ -146,7 +146,7 @@ bool ConsoleLogger::attach()
       return false;
 
    // Open the filestream
-   mStream.open( mFilename, ( mAppend ? Torque::FS::File::WriteAppend : Torque::FS::File::Write ) );
+   mStream.open( mFilename, ( mAppend ? studio::content::cscript::FS::File::WriteAppend : studio::content::cscript::FS::File::Write ) );
 
    // Add this to list of active loggers
    mActiveLoggers.push_back( this );

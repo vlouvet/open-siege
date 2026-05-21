@@ -48,16 +48,16 @@ IMPLEMENT_STRUCT( PolyhedronData::Edge,
 END_IMPLEMENT_STRUCT;
 
 
-IMPLEMENT_STRUCT(Torque::UUID,
+IMPLEMENT_STRUCT(studio::content::cscript::UUID,
    UUID, ,
    "")
 
-   Torque::UUIDEngineExport::getAField(),
-   Torque::UUIDEngineExport::getBField(),
-   Torque::UUIDEngineExport::getCField(),
-   Torque::UUIDEngineExport::getDField(),
-   Torque::UUIDEngineExport::getEField(),
-   Torque::UUIDEngineExport::getFField(),
+   studio::content::cscript::UUIDEngineExport::getAField(),
+   studio::content::cscript::UUIDEngineExport::getBField(),
+   studio::content::cscript::UUIDEngineExport::getCField(),
+   studio::content::cscript::UUIDEngineExport::getDField(),
+   studio::content::cscript::UUIDEngineExport::getEField(),
+   studio::content::cscript::UUIDEngineExport::getFField(),
 
 END_IMPLEMENT_STRUCT;
 

@@ -1482,7 +1482,7 @@ bool OpenVRProvider::getRenderModelTexture(S32 idx, GFXTextureObject **outTex, b
             dSprintf(buffer, 256, "OVRTEX-%i.png", loadedTexture.vrTextureId);
 
             FileStream fs;
-            fs.open(buffer, Torque::FS::File::Write);
+            fs.open(buffer, studio::content::cscript::FS::File::Write);
             bmp->writeBitmap("PNG", fs);
             fs.close();
 

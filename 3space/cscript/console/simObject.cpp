@@ -472,7 +472,7 @@ bool SimObject::save(const char *pcFileName, bool bOnlySelected, const char *pre
    if(bOnlySelected)
       writeFlags |= SimObject::SelectedOnly;
 
-   if((stream = FileStream::createAndOpen( pcFileName, Torque::FS::File::Write )) == NULL)
+   if((stream = FileStream::createAndOpen( pcFileName, studio::content::cscript::FS::File::Write )) == NULL)
       return false;
 
    char docRoot[256];

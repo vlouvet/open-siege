@@ -52,12 +52,12 @@ public:
 
    void setDeleteOnClose(bool del)        { mDeleteOnClose = del; }
 
-   virtual bool open(String filename, Torque::FS::File::AccessMode mode);
+   virtual bool open(String filename, studio::content::cscript::FS::File::AccessMode mode);
    
    /// Open a temporary file in ReadWrite mode. The file will be deleted when the stream is closed.
    virtual bool open()
    {
-      return open(String(), Torque::FS::File::ReadWrite);
+      return open(String(), studio::content::cscript::FS::File::ReadWrite);
    }
 
    void close() override
@@ -65,7 +65,7 @@ public:
       Parent::close();
 
       if(mDeleteOnClose)
-         Torque::FS::Remove(mFilename);
+         studio::content::cscript::FS::Remove(mFilename);
       
    }
 

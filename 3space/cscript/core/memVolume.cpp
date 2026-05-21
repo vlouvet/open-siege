@@ -29,7 +29,7 @@
 #include "core/strings/stringFunctions.h"
 #include "platform/platformVolume.h"
 
-namespace Torque
+namespace studio::content::cscript
 {
    namespace Mem
    {

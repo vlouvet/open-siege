@@ -27,7 +27,7 @@
 #include "core/util/zip/zipArchive.h"
 #include "core/util/autoPtr.h"
 
-namespace Torque
+namespace studio::content::cscript
 {
    using namespace FS;
    using namespace Zip;

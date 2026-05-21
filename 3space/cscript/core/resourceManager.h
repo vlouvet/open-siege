@@ -37,15 +37,15 @@ public:
 
    static ResourceManager &get();
 
-   ResourceBase load(const Torque::Path &path);
-   ResourceBase find(const Torque::Path &path);
+   ResourceBase load(const studio::content::cscript::Path &path);
+   ResourceBase find(const studio::content::cscript::Path &path);
 
    ResourceBase startResourceList( ResourceBase::Signature inSignature = U32_MAX );
    ResourceBase nextResource();
 
-   void reloadResource( const Torque::Path &path, bool showMessage = false );
+   void reloadResource( const studio::content::cscript::Path &path, bool showMessage = false );
 
-   typedef Signal<void(const Torque::Path &path)> ChangedSignal;
+   typedef Signal<void(const studio::content::cscript::Path &path)> ChangedSignal;
 
    /// Registering with this signal will give an opportunity to handle a change to the
    /// resource on disk.  For example, if a PNG file is edited by the artist and saved
@@ -68,7 +68,7 @@ protected:
 
    bool remove( ResourceBase::Header* header );
 
-   void  notifiedFileChanged( const Torque::Path &path );
+   void  notifiedFileChanged( const studio::content::cscript::Path &path );
 
    typedef HashTable<String,ResourceBase::Header*> ResourceHeaderMap;
 

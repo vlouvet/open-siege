@@ -43,7 +43,7 @@ public:
     unsigned8	node[6];
 };
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 
@@ -118,7 +118,7 @@ namespace Torque
 
 namespace DictHash
 {
-   inline U32 hash( const Torque::UUID& uuid )
+   inline U32 hash( const studio::content::cscript::UUID& uuid )
    {
       return uuid.getHash();
    }

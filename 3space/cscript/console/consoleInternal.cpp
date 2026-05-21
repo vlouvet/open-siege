@@ -167,7 +167,7 @@ void Dictionary::exportVariables(const char *varString, const char *fileName, bo
 
    if (fileName)
    {
-      if ((strm = FileStream::createAndOpen(fileName, append ? Torque::FS::File::ReadWrite : Torque::FS::File::Write)) == NULL)
+      if ((strm = FileStream::createAndOpen(fileName, append ? studio::content::cscript::FS::File::ReadWrite : studio::content::cscript::FS::File::Write)) == NULL)
       {
          Con::errorf(ConsoleLogEntry::General, "Unable to open file '%s for writing.", fileName);
          return;

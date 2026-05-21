@@ -36,7 +36,7 @@ FileStream::FileStream()
    init();
 }
 
-FileStream *FileStream::createAndOpen(const String &inFileName, Torque::FS::File::AccessMode inMode)
+FileStream *FileStream::createAndOpen(const String &inFileName, studio::content::cscript::FS::File::AccessMode inMode)
 {
    FileStream  *newStream = new FileStream;
 
@@ -104,11 +104,11 @@ bool FileStream::setPosition(const U32 i_newPosition)
 
       clearBuffer();
 
-      mFile->setPosition(i_newPosition, Torque::FS::File::Begin);
+      mFile->setPosition(i_newPosition, studio::content::cscript::FS::File::Begin);
 
       setStatus();
       
-      if (mFile->getStatus() == Torque::FS::FileNode::EndOfFile)
+      if (mFile->getStatus() == studio::content::cscript::FS::FileNode::EndOfFile)
          mEOF = true;
 
       return(Ok == getStatus() || EOS == getStatus());
@@ -130,7 +130,7 @@ U32 FileStream::getStreamSize()
 }
 
 //-----------------------------------------------------------------------------
-bool FileStream::open(const String &inFileName, Torque::FS::File::AccessMode inMode)
+bool FileStream::open(const String &inFileName, studio::content::cscript::FS::File::AccessMode inMode)
 {
    AssertWarn(0 == mStreamCaps, "FileStream::setPosition: the stream is already open");
    AssertFatal(inFileName.isNotEmpty(), "FileStream::open: empty filename");
@@ -138,29 +138,29 @@ bool FileStream::open(const String &inFileName, Torque::FS::File::AccessMode inM
    // make sure the file stream's state is clean
    clearBuffer();
 
-   Torque::Path   filePath(inFileName);
+   studio::content::cscript::Path   filePath(inFileName);
 
    // IF we are writing, make sure the path exists
-   if( inMode == Torque::FS::File::Write || inMode == Torque::FS::File::WriteAppend || inMode == Torque::FS::File::ReadWrite )
-      Torque::FS::CreatePath(filePath);
+   if( inMode == studio::content::cscript::FS::File::Write || inMode == studio::content::cscript::FS::File::WriteAppend || inMode == studio::content::cscript::FS::File::ReadWrite )
+      studio::content::cscript::FS::CreatePath(filePath);
 
-   mFile = Torque::FS::OpenFile(filePath, inMode);
+   mFile = studio::content::cscript::FS::OpenFile(filePath, inMode);
 
    if (mFile != NULL)
    {
       setStatus();
       switch (inMode)
       {
-         case Torque::FS::File::Read:
+         case studio::content::cscript::FS::File::Read:
             mStreamCaps = U32(StreamRead) |
                           U32(StreamPosition);
             break;
-         case Torque::FS::File::Write:
-         case Torque::FS::File::WriteAppend:
+         case studio::content::cscript::FS::File::Write:
+         case studio::content::cscript::FS::File::WriteAppend:
             mStreamCaps = U32(StreamWrite) |
                           U32(StreamPosition);
             break;
-         case Torque::FS::File::ReadWrite:
+         case studio::content::cscript::FS::File::ReadWrite:
             mStreamCaps = U32(StreamRead)  |
                           U32(StreamWrite) |
                           U32(StreamPosition);
@@ -193,7 +193,7 @@ void FileStream::close()
       // and close the file
       mFile->close();
 
-      AssertFatal(mFile->getStatus() == Torque::FS::FileNode::Closed, "FileStream::close: close failed");
+      AssertFatal(mFile->getStatus() == studio::content::cscript::FS::FileNode::Closed, "FileStream::close: close failed");
 
       mFile = NULL;
    }
@@ -216,8 +216,8 @@ bool FileStream::flush()
       // align the file pointer to the buffer head
       if (mBuffHead != mFile->getPosition())
       {
-         mFile->setPosition(mBuffHead, Torque::FS::File::Begin);
-         if (mFile->getStatus() != Torque::FS::FileNode::Open && mFile->getStatus() != Torque::FS::FileNode::EndOfFile)
+         mFile->setPosition(mBuffHead, studio::content::cscript::FS::File::Begin);
+         if (mFile->getStatus() != studio::content::cscript::FS::FileNode::Open && mFile->getStatus() != studio::content::cscript::FS::FileNode::EndOfFile)
             return(false);
       }
 
@@ -442,8 +442,8 @@ bool FileStream::fillBuffer(const U32 i_startPosition)
    // make sure start position and file pointer jive
    if (i_startPosition != mFile->getPosition())
    {
-      mFile->setPosition(i_startPosition, Torque::FS::File::Begin);
-      if (mFile->getStatus() != Torque::FS::FileNode::Open && mFile->getStatus() != Torque::FS::FileNode::EndOfFile)
+      mFile->setPosition(i_startPosition, studio::content::cscript::FS::File::Begin);
+      if (mFile->getStatus() != studio::content::cscript::FS::FileNode::Open && mFile->getStatus() != studio::content::cscript::FS::FileNode::EndOfFile)
       {
          setStatus();
          return(false);
@@ -525,31 +525,31 @@ void FileStream::setStatus()
 {
    switch (mFile->getStatus())
    {
-      case Torque::FS::FileNode::Open:
+      case studio::content::cscript::FS::FileNode::Open:
          Stream::setStatus(Ok);
          break;
 
-      case Torque::FS::FileNode::Closed:
+      case studio::content::cscript::FS::FileNode::Closed:
          Stream::setStatus(Closed);
          break;
 
-      case Torque::FS::FileNode::EndOfFile:
+      case studio::content::cscript::FS::FileNode::EndOfFile:
          Stream::setStatus(EOS);
          break;
 
-      case Torque::FS::FileNode::FileSystemFull:
-      case Torque::FS::FileNode::NoSuchFile:
-      case Torque::FS::FileNode::AccessDenied:
-      case Torque::FS::FileNode::NoDisk:
-      case Torque::FS::FileNode::SharingViolation:
+      case studio::content::cscript::FS::FileNode::FileSystemFull:
+      case studio::content::cscript::FS::FileNode::NoSuchFile:
+      case studio::content::cscript::FS::FileNode::AccessDenied:
+      case studio::content::cscript::FS::FileNode::NoDisk:
+      case studio::content::cscript::FS::FileNode::SharingViolation:
          Stream::setStatus(IOError);
          break;
 
-      case Torque::FS::FileNode::IllegalCall:
+      case studio::content::cscript::FS::FileNode::IllegalCall:
          Stream::setStatus(IllegalCall);
          break;
 
-      case Torque::FS::FileNode::UnknownError:
+      case studio::content::cscript::FS::FileNode::UnknownError:
          Stream::setStatus(UnknownError);
          break;
 
@@ -560,13 +560,13 @@ void FileStream::setStatus()
 
 FileStream* FileStream::clone() const
 {
-   Torque::FS::File::AccessMode mode;
+   studio::content::cscript::FS::File::AccessMode mode;
    if( hasCapability( StreamWrite ) && hasCapability( StreamRead ) )
-      mode = Torque::FS::File::ReadWrite;
+      mode = studio::content::cscript::FS::File::ReadWrite;
    else if( hasCapability( StreamWrite ) )
-      mode = Torque::FS::File::Write;
+      mode = studio::content::cscript::FS::File::Write;
    else
-      mode = Torque::FS::File::Read;
+      mode = studio::content::cscript::FS::File::Read;
 
    FileStream* copy = createAndOpen( mFile->getName(), mode );
    if( copy && copy->setPosition( getPosition() ) )

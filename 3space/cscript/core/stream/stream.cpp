@@ -343,14 +343,14 @@ bool Stream::read(RawData *rd)
    return s;
 }
 
-bool Stream::write(const Torque::ByteBuffer &rd)
+bool Stream::write(const studio::content::cscript::ByteBuffer &rd)
 {
    bool s = write(rd.getBufferSize());
    s &= write(rd.getBufferSize(), rd.getBuffer());
    return s;
 }
 
-bool Stream::read(Torque::ByteBuffer *rd)
+bool Stream::read(studio::content::cscript::ByteBuffer *rd)
 {
    U32 size = 0;
    bool s = read(&size);

@@ -25,7 +25,7 @@
 #include "core/volume.h"
 #include "core/util/tDictionary.h"
 
-namespace Torque
+namespace studio::content::cscript
 {
 namespace FS
 {

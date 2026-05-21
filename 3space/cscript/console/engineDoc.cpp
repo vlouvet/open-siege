@@ -664,7 +664,7 @@ static bool dumpEngineDocs( const char *outputFile )
 {
    // Create the output stream.
    FileStream stream;
-   if ( !stream.open( outputFile, Torque::FS::File::Write ) )
+   if ( !stream.open( outputFile, studio::content::cscript::FS::File::Write ) )
    {
       Con::errorf( "dumpEngineDocs - Failed to open output file." );
       return false;

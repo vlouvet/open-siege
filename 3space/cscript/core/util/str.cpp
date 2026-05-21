@@ -374,7 +374,7 @@ class String::StringData : protected StringDataImpl
          if( mHashCase == U32_MAX )
          {
             PROFILE_SCOPE(StringData_getOrCreateHashCase);
-            mHashCase = Torque::hash((const U8 *)(mData), mLength, 0);
+            mHashCase = studio::content::cscript::hash((const U8 *)(mData), mLength, 0);
          }
          return mHashCase;
       }
@@ -393,7 +393,7 @@ class String::StringData : protected StringDataImpl
             dStrncpy( lower, utf8(), mLength );
             lower[ mLength ] = 0;
             dStrlwr( lower );
-            mHashNoCase = Torque::hash( (const U8*)lower, mLength, 0 );
+            mHashNoCase = studio::content::cscript::hash( (const U8*)lower, mLength, 0 );
             delete [] lower;
          }
 

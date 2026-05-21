@@ -38,7 +38,7 @@
    #define TORQUE_CONSTANT_U64(a) (a##ULL)     ///< Used to declare unsigned 64 bit constants @hideinitializer
 #endif
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 //-----------------------------------------------------------------------------

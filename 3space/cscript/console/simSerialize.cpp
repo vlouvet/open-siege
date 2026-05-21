@@ -152,7 +152,7 @@ namespace Sim
 bool saveObject(SimObject *obj, const char *filename)
 {
    FileStream *stream;
-   if((stream = FileStream::createAndOpen( filename, Torque::FS::File::Write )) == NULL)
+   if((stream = FileStream::createAndOpen( filename, studio::content::cscript::FS::File::Write )) == NULL)
       return false;
 
    bool ret = saveObject(obj, stream);
@@ -172,7 +172,7 @@ bool saveObject(SimObject *obj, Stream *stream)
 SimObject *loadObjectStream(const char *filename)
 {
    FileStream * stream;
-   if((stream = FileStream::createAndOpen( filename, Torque::FS::File::Read )) == NULL)
+   if((stream = FileStream::createAndOpen( filename, studio::content::cscript::FS::File::Read )) == NULL)
       return NULL;
 
    SimObject * ret = loadObjectStream(stream);

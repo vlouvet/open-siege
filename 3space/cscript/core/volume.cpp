@@ -30,7 +30,7 @@
 #include "console/console.h"
 
 
-namespace Torque
+namespace studio::content::cscript
 {
 using namespace FS;
 
@@ -191,7 +191,7 @@ String FileSystemChangeNotifier::cleanPath(const Path& dir)
 {
    // This "cleans up" the path, if we don't do this we can get mismatches on the path
    // coming from the notifier
-   FileSystemRef fs = Torque::FS::GetFileSystem(dir);
+   FileSystemRef fs = studio::content::cscript::FS::GetFileSystem(dir);
    if (!fs)
       return String::EmptyString;
    return fs->mapFrom(fs->mapTo(dir));
@@ -357,11 +357,11 @@ U64    FileNode::getSize()
 
 U32 FileNode::getChecksum()
 {
-   bool  calculateCRC = (mLastChecksum == Torque::Time());
+   bool  calculateCRC = (mLastChecksum == studio::content::cscript::Time());
 
    if ( !calculateCRC )
    {
-      Torque::Time   modTime = getModifiedTime();
+      studio::content::cscript::Time   modTime = getModifiedTime();
 
       calculateCRC = (modTime > mLastChecksum);
    }
@@ -597,7 +597,7 @@ bool MountSystem::copyFile(const Path& source, const Path& destination, bool noO
 
 bool MountSystem::_dumpDirectories(DirectoryRef directory, Vector<StringTableEntry>& directories, S32 depth, bool noBasePath, S32 currentDepth, const Path& basePath)
 {
-   Vector<Torque::Path> directoryPaths;
+   Vector<studio::content::cscript::Path> directoryPaths;
    if (!directory->dumpDirectories(directoryPaths))
    {
       return false;
@@ -1191,9 +1191,9 @@ bool GetFileAttributes(const Path &path, FileNode::Attributes* attr)
 S32 CompareModifiedTimes(const Path& p1, const Path& p2)
 {
    FileNode::Attributes a1, a2;
-   if (!Torque::FS::GetFileAttributes(p1, &a1))
+   if (!studio::content::cscript::FS::GetFileAttributes(p1, &a1))
       return -1;
-   if (!Torque::FS::GetFileAttributes(p2, &a2))
+   if (!studio::content::cscript::FS::GetFileAttributes(p2, &a2))
       return -1;
    if (a1.mtime < a2.mtime)
       return -1;

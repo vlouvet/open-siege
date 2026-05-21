@@ -99,7 +99,7 @@ public:
    ResourceBase(Header *header) { mResourceHeader = (header ? header : &smBlank); }
    virtual ~ResourceBase() {}
 
-   const Torque::Path &getPath() const
+   const studio::content::cscript::Path &getPath() const
    {
       AssertFatal(mResourceHeader != NULL,"ResourceBase::getPath called on invalid resource");
       return mResourceHeader->getPath();
@@ -113,7 +113,7 @@ public:
 
 protected:
 
-   typedef void ( *NotifyUnloadFn )( const Torque::Path& path, void* resource );
+   typedef void ( *NotifyUnloadFn )( const studio::content::cscript::Path& path, void* resource );
 
    class Header : public StrongRefBase
    {
@@ -125,7 +125,7 @@ protected:
       {
       }
 
-      const Torque::Path   &getPath() const { return mPath; }
+      const studio::content::cscript::Path   &getPath() const { return mPath; }
 
       Signature   getSignature() const { return mSignature; }
       void *getResource() const { return (mResource ? mResource->getResource() : NULL); }
@@ -140,7 +140,7 @@ protected:
 
       Signature            mSignature;
       ResourceHolderBase*  mResource;
-      Torque::Path         mPath;
+      studio::content::cscript::Path         mPath;
       NotifyUnloadFn       mNotifyUnload;
    };
 
@@ -166,7 +166,7 @@ protected:
 
    // Create a Resource of desired type using passed path.  Derived
    // resource class must define this.
-   virtual void *create(const Torque::Path &path)
+   virtual void *create(const studio::content::cscript::Path &path)
    {
       AssertFatal(0,"ResourceBase::create: should not be called");
       return NULL;
@@ -178,10 +178,10 @@ protected:
       return mResourceHeader->getSignature();
    }
 
-   virtual Signal<bool(const Torque::Path &, void**)>   &getStaticLoadSignal()
+   virtual Signal<bool(const studio::content::cscript::Path &, void**)>   &getStaticLoadSignal()
    {
       AssertFatal(0,"ResourceBase::getStaticLoadSignal: should not be called");
-      static Signal<bool(const Torque::Path &, void**)>   sLoadSignal;
+      static Signal<bool(const studio::content::cscript::Path &, void**)>   sLoadSignal;
 
       return sLoadSignal;
    }
@@ -238,9 +238,9 @@ public:
    /// file extensions differently and allow a more plugin-like approach to
    /// adding resources.  Using this mechanism, one could, for example, override
    /// the default methods for loading DTS without touching the main source.
-   static Signal<bool(const Torque::Path &, void**)>  &getLoadSignal()
+   static Signal<bool(const studio::content::cscript::Path &, void**)>  &getLoadSignal()
    {
-      static Signal<bool(const Torque::Path &, void**)>   sLoadSignal;
+      static Signal<bool(const studio::content::cscript::Path &, void**)>   sLoadSignal;
       return sLoadSignal;
    }
 
@@ -254,9 +254,9 @@ public:
 
    /// Register with this signal to get notified when resources of this type
    /// are about to get unloaded.
-   static Signal< void( const Torque::Path&, T* ) >& getUnloadSignal()
+   static Signal< void( const studio::content::cscript::Path&, T* ) >& getUnloadSignal()
    {
-      static Signal< void( const Torque::Path&, T* ) > sUnloadSignal;
+      static Signal< void( const studio::content::cscript::Path&, T* ) > sUnloadSignal;
       return sUnloadSignal;
    }
 
@@ -268,9 +268,9 @@ private:
 
    ResourceHolderBase   *createHolder(void *) override;
 
-   Signal<bool(const Torque::Path &, void**)>   &getStaticLoadSignal() override { return getLoadSignal(); }
+   Signal<bool(const studio::content::cscript::Path &, void**)>   &getStaticLoadSignal() override { return getLoadSignal(); }
 
-   static void _notifyUnload( const Torque::Path& path, void* resource ) { getUnloadSignal().trigger( path, ( T* ) resource ); }
+   static void _notifyUnload( const studio::content::cscript::Path& path, void* resource ) { getUnloadSignal().trigger( path, ( T* ) resource ); }
 
    void _triggerPostLoadSignal() override { getPostLoadSignal().trigger( *this ); }
    NotifyUnloadFn _getNotifyUnloadFn() override { return ( NotifyUnloadFn ) &_notifyUnload; }
@@ -279,7 +279,7 @@ private:
    // No generic version is provided...however, since
    // base resources are instantiated by resource manager,
    // these are not pure virtuals if undefined (but will assert)...
-   void *create(const Torque::Path &path) override;
+   void *create(const studio::content::cscript::Path &path) override;
 };
 
 
@@ -302,7 +302,7 @@ template <class T>
 class ResourceRegisterLoadSignal
 {
 public:
-   ResourceRegisterLoadSignal( Delegate<bool(const Torque::Path &, void **)> func )
+   ResourceRegisterLoadSignal( Delegate<bool(const studio::content::cscript::Path &, void **)> func )
    {
       Resource<T>::getLoadSignal().notify( func );
    }
@@ -324,7 +324,7 @@ class ResourceRegisterUnloadSignal
 {
    public:
 
-      ResourceRegisterUnloadSignal( Delegate< void( const Torque::Path&, T* ) > func )
+      ResourceRegisterUnloadSignal( Delegate< void( const studio::content::cscript::Path&, T* ) > func )
       {
          Resource< T >::getUnloadSignal().notify( func );
       }

@@ -27,7 +27,7 @@
 #include "platform/types.h"
 #endif
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 /// A list template class.

@@ -26,7 +26,7 @@
 #include "console/console.h"
 #include "core/tAlgorithm.h"
 
-namespace Torque
+namespace studio::content::cscript
 {
 namespace FS
 {
@@ -61,7 +61,7 @@ bool VirtualMountSystem::mount(String root, FileSystemRef fs)
 //    // but, we want to override its default behavior so that it searches only the desired fs.
 //    _setFindByPatternOverrideFS(fs);
 // 
-//    Torque::Path basePath;
+//    studio::content::cscript::Path basePath;
 //    // we use an empty root so that the resulting filenames don't have the root filename in them.  
 //    // we don't want to include the root in the dict has entries.  we can omit the root because we have 
 //    // specified an override FS; the search would fail otherwise.
@@ -313,4 +313,4 @@ FileSystemRef VirtualMountSystem::_getFileSystemFromList(const Path& fullpath) c
 }
 
 } //namespace FS
-} //namespace Torque
+} //namespace studio::content::cscript

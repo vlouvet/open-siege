@@ -35,7 +35,7 @@
 
 
 template< typename T > class Vector;
-namespace Torque {
+namespace studio::content::cscript {
    class UUID;
 }
 
@@ -52,7 +52,7 @@ DECLARE_STRUCT_R(Vector< PlaneF >);
 DECLARE_STRUCT_R(PolyhedronData::Edge);
 DECLARE_STRUCT_R(Vector< PolyhedronData::Edge >);
 DECLARE_STRUCT_R(Vector< const char* >);
-DECLARE_STRUCT_R(Torque::UUID);
+DECLARE_STRUCT_R(studio::content::cscript::UUID);
 DECLARE_STRUCT_R(ColorI);
 DECLARE_STRUCT_R(LinearColorF);
 

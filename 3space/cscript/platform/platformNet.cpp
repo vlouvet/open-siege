@@ -1976,10 +1976,10 @@ U32 NetAddress::getHash() const
    switch (type)
    {
    case NetAddress::IPAddress:
-      value = Torque::hash((const U8*)&address.ipv4.netNum, sizeof(address.ipv4.netNum), 0);
+      value = studio::content::cscript::hash((const U8*)&address.ipv4.netNum, sizeof(address.ipv4.netNum), 0);
       break;
    case NetAddress::IPV6Address:
-      value = Torque::hash((const U8*)address.ipv6.netNum, sizeof(address.ipv6.netNum), 0);
+      value = studio::content::cscript::hash((const U8*)address.ipv6.netNum, sizeof(address.ipv6.netNum), 0);
       break;
    default:
       value = 0;

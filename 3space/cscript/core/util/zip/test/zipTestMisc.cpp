@@ -82,7 +82,7 @@ private:
    {
       FileStream source, dest;
 
-      if(! source.open(mBaselineFilename, Torque::FS::File::Read))
+      if(! source.open(mBaselineFilename, studio::content::cscript::FS::File::Read))
       {
          fail("Failed to open baseline zip for read");
          return false;
@@ -90,7 +90,7 @@ private:
 
       // [tom, 2/7/2007] FileStream's d'tor calls close() so we don't really have to do it here
 
-      if(! dest.open(mWorkingFilename, Torque::FS::File::Write))
+      if(! dest.open(mWorkingFilename, studio::content::cscript::FS::File::Write))
       {
          fail("Failed to open working zip for write");
          return false;

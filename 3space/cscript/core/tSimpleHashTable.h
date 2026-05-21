@@ -80,17 +80,17 @@ public:
 
 template <class T> inline void SimpleHashTable<T>::insert(T* pObject, U8 *key, U32 keyLen)
 {
-   Parent::insert(pObject, Torque::hash(key, keyLen, 0));
+   Parent::insert(pObject, studio::content::cscript::hash(key, keyLen, 0));
 }
 
 template <class T> inline T* SimpleHashTable<T>::remove(U8 *key, U32 keyLen)
 {
-   return Parent::remove(Torque::hash(key, keyLen, 0));
+   return Parent::remove(studio::content::cscript::hash(key, keyLen, 0));
 }
 
 template <class T> inline T* SimpleHashTable<T>::retreive(U8 *key, U32 keyLen)
 {
-   return Parent::retreive(Torque::hash(key, keyLen, 0));
+   return Parent::retreive(studio::content::cscript::hash(key, keyLen, 0));
 }
 
 template <class T> inline void SimpleHashTable<T>::insert(T* pObject, const char *key)

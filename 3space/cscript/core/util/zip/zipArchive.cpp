@@ -358,14 +358,14 @@ void ZipArchive::updateFile(ZipTempStream *stream)
 
 //-----------------------------------------------------------------------------
 
-U32 ZipArchive::localTimeToDOSTime(const Torque::Time::DateTime &dt)
+U32 ZipArchive::localTimeToDOSTime(const studio::content::cscript::Time::DateTime &dt)
 {
    // DOS time format 
    // http://msdn.microsoft.com/en-us/library/ms724274(VS.85).aspx
-   return TimeToDOSTime(Torque::Time(dt));
+   return TimeToDOSTime(studio::content::cscript::Time(dt));
 }
 
-U32 ZipArchive::TimeToDOSTime(const Torque::Time& t)
+U32 ZipArchive::TimeToDOSTime(const studio::content::cscript::Time& t)
 {
    S32 year,month,day,hour,minute,second,microsecond;
    t.get(&year, &month, &day, &hour, &minute, &second, &microsecond);
@@ -376,9 +376,9 @@ U32 ZipArchive::TimeToDOSTime(const Torque::Time& t)
    return (((day) + (32 * (month)) + (512 * year)) << 16) | ((second/2) + (32* minute) + (2048 * (U32)hour));
 }
 
-Torque::Time ZipArchive::DOSTimeToTime(U16 time, U16 date)
+studio::content::cscript::Time ZipArchive::DOSTimeToTime(U16 time, U16 date)
 {
-   Torque::Time::DateTime dt;
+   studio::content::cscript::Time::DateTime dt;
    dt.microsecond = 0;
    dt.hour = (time & 0xF800) >> 11;
    dt.minute = (time & 0x07E0) >> 5;
@@ -388,10 +388,10 @@ Torque::Time ZipArchive::DOSTimeToTime(U16 time, U16 date)
    dt.month = (date & 0x01E0) >> 5;
    dt.day = (date & 0x001F);
 
-   return Torque::Time(dt);
+   return studio::content::cscript::Time(dt);
 }
 
-Torque::Time ZipArchive::DOSTimeToTime(U32 dosTime)
+studio::content::cscript::Time ZipArchive::DOSTimeToTime(U32 dosTime)
 {
    U16 time = dosTime & 0x0000ffff;
    U16 date = (dosTime & 0xffff0000) >> 16;
@@ -401,8 +401,8 @@ Torque::Time ZipArchive::DOSTimeToTime(U32 dosTime)
 
 U32 ZipArchive::currentTimeToDOSTime()
 {
-   Torque::Time::DateTime dt;
-   Torque::Time::getCurrentDateTime(dt);
+   studio::content::cscript::Time::DateTime dt;
+   studio::content::cscript::Time::getCurrentDateTime(dt);
 
    return localTimeToDOSTime(dt);
 }
@@ -427,7 +427,7 @@ bool ZipArchive::rebuildZip()
   {
      newZipName = String(mFilename) + ".new";
 
-     if(! tempFile.open(newZipName, mMode == Write ? Torque::FS::File::Write : Torque::FS::File::ReadWrite))
+     if(! tempFile.open(newZipName, mMode == Write ? studio::content::cscript::FS::File::Write : studio::content::cscript::FS::File::ReadWrite))
         return false;
 
      zipFile = &tempFile;
@@ -501,13 +501,13 @@ bool ZipArchive::rebuildZip()
       String oldRename;
       oldRename = String(mFilename) + ".old";
       
-      if(! Torque::FS::Rename(mFilename, oldRename))
+      if(! studio::content::cscript::FS::Rename(mFilename, oldRename))
          return false;
 
-      if(! Torque::FS::Rename(newZipName, mFilename))
+      if(! studio::content::cscript::FS::Rename(newZipName, mFilename))
          return false;
 
-      Torque::FS::Remove(oldRename);
+      studio::content::cscript::FS::Remove(oldRename);
    }
    return true;
 }
@@ -587,7 +587,7 @@ bool ZipArchive::openArchive(const char *filename, AccessMode mode /* = Read */)
    closeArchive();
 
    mDiskStream = new FileStream;
-   if(mDiskStream->open(filename, (Torque::FS::File::AccessMode)mode))
+   if(mDiskStream->open(filename, (studio::content::cscript::FS::File::AccessMode)mode))
    {
       setFilename(filename);
 
@@ -831,7 +831,7 @@ Stream *ZipArchive::openFileForRead(const CentralDir *fileCD)
 bool ZipArchive::addFile(const char *filename, const char *pathInZip, bool replace /* = true */)
 {
    FileStream f;
-   if (!f.open(filename, Torque::FS::File::Read))
+   if (!f.open(filename, studio::content::cscript::FS::File::Read))
       return false;
 
    const CentralDir *cd = findFileInfo(pathInZip);
@@ -863,7 +863,7 @@ bool ZipArchive::extractFile(const char *pathInZip, const char *filename, bool *
       return false;
    
    FileStream dest;
-   if(! dest.open(filename, Torque::FS::File::Write))
+   if(! dest.open(filename, studio::content::cscript::FS::File::Write))
       return false;
 
    Stream *source = openFile(pathInZip, Read);

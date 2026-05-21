@@ -31,7 +31,7 @@
 
 #include "core/util/hashFunction.h"
 
-namespace Torque
+namespace studio::content::cscript
 {
 
 #define hashsize(n) ((U32)1<<(n))

@@ -30,8 +30,8 @@ namespace Platform
 {
 namespace FS
 {
-   using namespace Torque;
-   using namespace Torque::FS;
+   using namespace studio::content::cscript;
+   using namespace studio::content::cscript::FS;
 
    FileSystemRef  createNativeFS( const String &volume );
 

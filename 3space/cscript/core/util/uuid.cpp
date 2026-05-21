@@ -384,7 +384,7 @@ namespace {
    uuid_state gUUIDState;
 }
 
-namespace Torque
+namespace studio::content::cscript
 {
    UUID UUID::smNull;
    
@@ -430,37 +430,37 @@ namespace Torque
    }
 }
 
-EngineFieldTable::Field Torque::UUIDEngineExport::getAField()
+EngineFieldTable::Field studio::content::cscript::UUIDEngineExport::getAField()
 {
    typedef UUID ThisType;
    return _FIELD(a, a, 1, "");
 }
 
-EngineFieldTable::Field Torque::UUIDEngineExport::getBField()
+EngineFieldTable::Field studio::content::cscript::UUIDEngineExport::getBField()
 {
    typedef UUID ThisType;
    return _FIELD(b, b, 1, "");
 }
 
-EngineFieldTable::Field Torque::UUIDEngineExport::getCField()
+EngineFieldTable::Field studio::content::cscript::UUIDEngineExport::getCField()
 {
    typedef UUID ThisType;
    return _FIELD(c, c, 1, "");
 }
 
-EngineFieldTable::Field Torque::UUIDEngineExport::getDField()
+EngineFieldTable::Field studio::content::cscript::UUIDEngineExport::getDField()
 {
    typedef UUID ThisType;
    return _FIELD(d, d, 1, "");
 }
 
-EngineFieldTable::Field Torque::UUIDEngineExport::getEField()
+EngineFieldTable::Field studio::content::cscript::UUIDEngineExport::getEField()
 {
    typedef UUID ThisType;
    return _FIELD(e, e, 1, "");
 }
 
-EngineFieldTable::Field Torque::UUIDEngineExport::getFField()
+EngineFieldTable::Field studio::content::cscript::UUIDEngineExport::getFField()
 {
    typedef UUID ThisType;
    return _FIELD_AS(U8, f, f, 6, "");

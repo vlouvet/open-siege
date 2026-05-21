@@ -2161,7 +2161,7 @@ void gotoWebPage(const char* address)
    // the bogus url, and hope for the best.
 
    String addr;
-   if (Torque::FS::IsFile(address) || Torque::FS::IsDirectory(address))
+   if (studio::content::cscript::FS::IsFile(address) || studio::content::cscript::FS::IsDirectory(address))
    {
 #ifdef TORQUE2D_TOOLS_FIXME
       addr = String::ToString("file://%s", address);
@@ -2265,12 +2265,12 @@ DefineEngineFunction( countBits, S32, ( S32 v ),,
 
 //-----------------------------------------------------------------------------
 
-DefineEngineFunction( generateUUID, Torque::UUID, (),,
+DefineEngineFunction( generateUUID, studio::content::cscript::UUID, (),,
    "Generate a new universally unique identifier (UUID).\n\n"
    "@return A newly generated UUID.\n\n"
    "@ingroup Utilities" )
 {
-   Torque::UUID uuid;
+   studio::content::cscript::UUID uuid;
    
    uuid.generate();
    return uuid;
@@ -2343,7 +2343,7 @@ DefineEngineFunction( compile, bool, ( const char* fileName, bool overrideNoDSO 
    "@see exec\n"
    "@ingroup Scripting" )
 {
-   return TorqueScript::getRuntime()->compile(fileName, overrideNoDSO);
+   return studio::content::cscript::TorqueScript::getRuntime()->compile(fileName, overrideNoDSO);
 }
 
 //-----------------------------------------------------------------------------
@@ -2652,7 +2652,7 @@ DefineEngineFunction(execPrefs, bool, (const char* relativeFileName, bool noCall
       return false;
 
    // Scripts do this a lot, so we may as well help them out
-   if (!Platform::isFile(relativeFileName) && !Torque::FS::IsFile(relativeFileName))
+   if (!Platform::isFile(relativeFileName) && !studio::content::cscript::FS::IsFile(relativeFileName))
       return true;
 
    return Con::executeFile(relativeFileName, noCalls, journalScript);
@@ -2818,8 +2818,8 @@ DefineEngineFunction(getTimestamp, const char*, (), ,
    "Gets datetime string.\n\n"
    "@return YYYY-mm-DD_hh-MM-ss formatted date time string.")
 {
-   Torque::Time::DateTime curTime;
-   Torque::Time::getCurrentDateTime(curTime);
+   studio::content::cscript::Time::DateTime curTime;
+   studio::content::cscript::Time::getCurrentDateTime(curTime);
 
    String timestampStr = String::ToString(curTime.year + 1900) + "-" +
       String::ToString(curTime.month + 1) + "-" + String::ToString(curTime.day) + "_" +

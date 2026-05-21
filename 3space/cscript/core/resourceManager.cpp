@@ -29,7 +29,7 @@
 
 #include "console/engineAPI.h"
 
-using namespace Torque;
+using namespace studio::content::cscript;
 
 static AutoPtr< ResourceManager > smInstance;
 
@@ -50,7 +50,7 @@ ResourceManager &ResourceManager::get()
    return *smInstance;
 }
 
-ResourceBase ResourceManager::load(const Torque::Path &path)
+ResourceBase ResourceManager::load(const studio::content::cscript::Path &path)
 {
 #ifdef TORQUE_DEBUG_RES_MANAGER
    Con::printf( "ResourceManager::load : [%s]", path.getFullPath().c_str() );
@@ -85,7 +85,7 @@ ResourceBase ResourceManager::load(const Torque::Path &path)
    return ResourceBase( header );
 }
 
-ResourceBase ResourceManager::find(const Torque::Path &path)
+ResourceBase ResourceManager::find(const studio::content::cscript::Path &path)
 {
 #ifdef TORQUE_DEBUG_RES_MANAGER
    Con::printf( "ResourceManager::find : [%s]", path.getFullPath().c_str() );
@@ -164,12 +164,12 @@ bool ResourceManager::remove( ResourceBase::Header* header )
    return true;
 }
 
-void ResourceManager::notifiedFileChanged( const Torque::Path &path )
+void ResourceManager::notifiedFileChanged( const studio::content::cscript::Path &path )
 {
    reloadResource( path, true );
 }
 
-void ResourceManager::reloadResource( const Torque::Path &path, bool showMessage )
+void ResourceManager::reloadResource( const studio::content::cscript::Path &path, bool showMessage )
 {
    if ( showMessage )
       Con::warnf( "[ResourceManager::notifiedFileChanged] : File changed [%s]", path.getFullPath().c_str() );
