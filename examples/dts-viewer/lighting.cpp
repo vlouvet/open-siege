@@ -53,14 +53,41 @@ SceneLighting build_scene_lighting(
     using namespace studio::content::mission;
 
     SceneLighting out;
-    if (scene.sky && finite_color(scene.sky->ambient_color)) {
-        out.ambient_color = scene.sky->ambient_color;
-        for (auto& c : out.ambient_color) c = std::clamp(c, 0.0f, 1.0f);
-    }
 
     std::vector<const node_sim_light*> sim_lights;
     std::vector<std::pair<const node_planet*, std::string>> planets;
     walk(scene.root, sim_lights, planets, "");
+
+    // Ambient fallback chain (spec 07/06):
+    //   1. scene.sky->ambient_color if finite AND non-zero (a Sky that
+    //      authored explicit ambientColor wins).
+    //   2. Brightest Planet's ambient field (Tribes stores the scene
+    //      ambient on the Planet/Sun in most shipped missions —
+    //      Citadels has ambient="0.299983 0.299983 0.299983" on its
+    //      Planet, Sky has no ambientColor at all).
+    //   3. Hard-coded (0.2, 0.2, 0.2) struct default.
+    auto nonzero = [](const std::array<float, 3>& c) {
+        return c[0] > 0.0f || c[1] > 0.0f || c[2] > 0.0f;
+    };
+    const char* ambient_source = "default";
+    if (scene.sky && finite_color(scene.sky->ambient_color)
+        && nonzero(scene.sky->ambient_color)) {
+        out.ambient_color = scene.sky->ambient_color;
+        ambient_source = "sky";
+    } else {
+        const node_planet* best = nullptr;
+        float best_mag = -1.0f;
+        for (auto& [pl, name] : planets) {
+            if (!finite_color(pl->ambient) || !nonzero(pl->ambient)) continue;
+            float m = color_magnitude(pl->ambient);
+            if (m > best_mag) { best_mag = m; best = pl; }
+        }
+        if (best) {
+            out.ambient_color = best->ambient;
+            ambient_source = "planet";
+        }
+    }
+    for (auto& c : out.ambient_color) c = std::clamp(c, 0.0f, 1.0f);
 
     // Pick the brightest planet (or the one named "Sun") as the sun.
     const node_planet* sun_planet = nullptr;
@@ -108,6 +135,10 @@ SceneLighting build_scene_lighting(
         std::fprintf(stderr, "lighting: dropped %d SimLight entries (cap=8)\n", dropped);
     }
 
+    std::fprintf(stdout,
+        "lighting: ambient=(%.2f,%.2f,%.2f) source=%s\n",
+        out.ambient_color[0], out.ambient_color[1], out.ambient_color[2],
+        ambient_source);
     return out;
 }
 

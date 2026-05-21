@@ -116,8 +116,10 @@ namespace studio::content::mission {
   // Planet — billboard sun/moon
   struct node_planet {
     transform xf;
-    std::string texture;   // fileName property
+    std::string texture;             // fileName property
     float radius = 0.0f;
+    std::array<float, 3> intensity{};// intensity property (sun colour magnitude)
+    std::array<float, 3> ambient{};  // ambient property (scene ambient term)
   };
 
   // Sky — sky dome; dml_name references a .dml material list

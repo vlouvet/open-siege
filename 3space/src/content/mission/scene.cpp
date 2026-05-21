@@ -312,6 +312,18 @@ namespace studio::content::mission
         if (v) n.radius = *v;
         consume(consumed, props, "size");
       }
+      if (const auto* p = find_prop(props, "intensity"))
+      {
+        auto v = parse_vec3(p->value);
+        if (v) n.intensity = *v;
+        consume(consumed, props, "intensity");
+      }
+      if (const auto* p = find_prop(props, "ambient"))
+      {
+        auto v = parse_vec3(p->value);
+        if (v) n.ambient = *v;
+        consume(consumed, props, "ambient");
+      }
       return n;
     }
 
