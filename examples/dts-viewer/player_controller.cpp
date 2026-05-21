@@ -72,8 +72,46 @@ void player_update(PlayerState&        ps,
     ps.vel.x = vel_h.x;
     ps.vel.z = vel_h.z;
 
-    // ---- Vertical: gravity ----
-    ps.vel.y -= t.gravity * dt;
+    // ---- Vertical: gravity + jet (spec 09/04) ----
+    // Shared Space key: a brief tap fires the jump impulse (handled at end);
+    // a held Space (past `jet_tap_seconds`) flips into jet thrust mode.
+    if (in.jet) {
+        ps.jet_hold_timer += dt;
+    } else {
+        ps.jet_hold_timer = 0.0f;
+    }
+
+    if (ps.jet_lockout > 0.0f) ps.jet_lockout = std::max(0.0f, ps.jet_lockout - dt);
+
+    const bool jet_eligible = (ps.jet_hold_timer >= t.jet_tap_seconds) && in.jet;
+    const bool jet_has_fuel = (ps.jet_fuel > 0.0f) &&
+                              (ps.jet_lockout <= 0.0f);
+
+    ps.jet_active = jet_eligible && jet_has_fuel;
+    if (ps.jet_active) {
+        const bool burst = in.sprint;
+        const float thrust = burst ? t.jet_thrust_burst : t.jet_thrust;
+        const float burn   = t.jet_fuel_burn * (burst ? t.jet_burst_mult : 1.0f);
+        ps.vel.y += thrust * dt;
+        if (ps.vel.y > t.jet_upward_cap) ps.vel.y = t.jet_upward_cap;
+        ps.jet_fuel = std::max(0.0f, ps.jet_fuel - burn * dt);
+        if (ps.jet_fuel <= 0.0f) {
+            ps.jet_lockout = t.jet_lockout_sec;
+            ps.jet_active  = false;
+        }
+        // Don't apply gravity while jetting — thrust is net upward.
+    } else {
+        ps.vel.y -= t.gravity * dt;
+        // Fuel regen only when grounded AND not pressing jet.
+        if (ps.on_ground && !in.jet) {
+            ps.jet_fuel = std::min(t.jet_fuel_max,
+                                   ps.jet_fuel + t.jet_fuel_regen * dt);
+        }
+        // Lockout clears once fuel regenerates above the resume threshold.
+        if (ps.jet_lockout <= 0.0f && ps.jet_fuel >= t.jet_resume_fuel) {
+            // no-op; gate above re-enables jet next eligible step
+        }
+    }
 
     // ---- Integrate ----
     ps.pos.x += ps.vel.x * dt;

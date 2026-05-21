@@ -30,9 +30,15 @@ struct PlayerTuning
     float max_walk_speed  = 8.5f;      // m/s; cap when grounded + not skiing
     float gravity         = 20.0f;     // m/s^2 (Tribes-canonical)
     float jet_thrust      = 18.0f;     // upward accel while jet held (m/s^2)
+    float jet_thrust_burst = 32.0f;    // afterburner thrust (Shift + Space)
     float jet_fuel_max    = 100.0f;
-    float jet_fuel_regen  = 25.0f;     // units/s while not jetting
-    float jet_fuel_burn   = 40.0f;     // units/s while jetting
+    float jet_fuel_regen  = 25.0f;     // units/s while not jetting + grounded
+    float jet_fuel_burn   = 1.0f;      // units/s base consumption while jetting
+    float jet_burst_mult  = 2.5f;      // burst burns this much faster
+    float jet_upward_cap  = 25.0f;     // m/s soft cap on vel.y while jet held
+    float jet_tap_seconds = 0.15f;     // hold Space < this == tap-jump; > == jet
+    float jet_lockout_sec = 0.30f;     // lockout after fuel hits 0
+    float jet_resume_fuel = 5.0f;      // fuel must regen above this before resuming
     float eye_height      = 1.75f;     // metres above feet
     float jump_speed      = 7.5f;      // m/s applied upward on jump rising edge
     float ground_slop     = 0.05f;     // metres; on-ground if feet within this of terrain
@@ -68,6 +74,10 @@ struct PlayerState
     // Spec 09/02: counts down each step from `coyote_seconds` after
     // on_ground becomes false; lets a slightly-late jump still fire.
     float     coyote_timer = 0.0f;
+    // Spec 09/04: jetpack bookkeeping.
+    bool      jet_active     = false;  // true while thrust is being applied
+    float     jet_hold_timer = 0.0f;   // how long in.jet has been held continuously
+    float     jet_lockout    = 0.0f;   // post-empty cooldown countdown
 };
 
 struct InputState
@@ -76,8 +86,8 @@ struct InputState
     bool back = false;
     bool left = false;
     bool right = false;
-    bool jump = false;       // held — not edge-triggered
-    bool jet  = false;       // held — burns fuel while down
+    bool jump = false;       // Space held (raw); edge-triggered for jump impulse
+    bool jet  = false;       // Space held past the tap window; same key as jump
     bool sprint = false;     // shift; respected by spec 09/03
     float mouse_dx = 0.0f;   // raw pixels since last frame
     float mouse_dy = 0.0f;

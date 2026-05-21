@@ -1828,8 +1828,11 @@ int main(int argc, char** argv)
                 in.back   = keys[SDL_SCANCODE_S];
                 in.left   = keys[SDL_SCANCODE_A];
                 in.right  = keys[SDL_SCANCODE_D];
+                // Shared Space key: in.jump triggers a single jump impulse on
+                // rising edge; in.jet activates jet thrust after the
+                // tap-vs-hold window (`jet_tap_seconds`).
                 in.jump   = keys[SDL_SCANCODE_SPACE];
-                in.jet    = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+                in.jet    = keys[SDL_SCANCODE_SPACE];
                 in.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
 
                 // Yaw/pitch always come from the camera (mouse-look runs
@@ -1868,13 +1871,16 @@ int main(int argc, char** argv)
                 if (now_ms - pstep_log_last_ms >= 1000) {
                     std::fprintf(stderr,
                         "player: %d steps/s | pos=(%.1f,%.1f,%.1f) "
-                        "vel=(%.1f,%.1f,%.1f) on_ground=%d coyote=%.2f fuel=%.0f\n",
+                        "vel=(%.1f,%.1f,%.1f) on_ground=%d coyote=%.2f "
+                        "jet=%d fuel=%.0f lockout=%.2f\n",
                         pstep_count_window,
                         pstate.pos.x, pstate.pos.y, pstate.pos.z,
                         pstate.vel.x, pstate.vel.y, pstate.vel.z,
                         pstate.on_ground ? 1 : 0,
                         pstate.coyote_timer,
-                        pstate.jet_fuel);
+                        pstate.jet_active ? 1 : 0,
+                        pstate.jet_fuel,
+                        pstate.jet_lockout);
                     pstep_count_window = 0;
                     pstep_log_last_ms  = now_ms;
                 }
