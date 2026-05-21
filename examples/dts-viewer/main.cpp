@@ -41,6 +41,9 @@
 #include "content/terrain/dtb.hpp"
 #include "mission_loader.hpp"
 #include "camera.hpp"
+#include "height_sampler.hpp"
+#include "mission_bounds.hpp"
+#include "walk_camera.hpp"
 #include <set>
 #include <cstdint>
 
@@ -895,6 +898,21 @@ void main() {
 }
 )";
 
+// ---------------------- flat-color line shader (debug overlays) ----------------------
+static const char* FLAT_VS_SRC = R"(
+#version 410 core
+layout(location = 0) in vec3 a_pos;
+uniform mat4 u_mvp;
+void main() { gl_Position = u_mvp * vec4(a_pos, 1.0); }
+)";
+
+static const char* FLAT_FS_SRC = R"(
+#version 410 core
+uniform vec3 u_color;
+out vec4 frag;
+void main() { frag = vec4(u_color, 1.0); }
+)";
+
 // ---------------------- terrain shaders (spec 05-terrain) ----------------------
 //
 // Per-quad flat coloring: 16 hard-coded distinct colors selected via
@@ -1384,6 +1402,13 @@ int main(int argc, char** argv)
             compile_shader(GL_FRAGMENT_SHADER, TERRAIN_FS_SRC));
         GLint u_ter_mvp = glGetUniformLocation(terrain_prog, "u_mvp");
 
+        // Flat-color debug program (bounds + future markers/sky).
+        GLuint flat_prog = link_program(
+            compile_shader(GL_VERTEX_SHADER,   FLAT_VS_SRC),
+            compile_shader(GL_FRAGMENT_SHADER, FLAT_FS_SRC));
+        GLint u_flat_mvp   = glGetUniformLocation(flat_prog, "u_mvp");
+        GLint u_flat_color = glGetUniformLocation(flat_prog, "u_color");
+
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_MULTISAMPLE);
         glDisable(GL_CULL_FACE);
@@ -1403,6 +1428,58 @@ int main(int argc, char** argv)
         ter_cam.far_plane   = ter_radius * 10.0f;
         dts_viewer::set_mouse_capture(ter_cam, true);
 
+        // Optionally load the matching .mis from the same directory.
+        std::optional<dts_viewer::LoadedMission> ter_mission;
+        {
+            fs::path stem      = ted_path.stem();
+            fs::path mis_guess = ted_path.parent_path() / (stem.string() + ".mis");
+            if (!fs::exists(mis_guess)) {
+                // try case-insensitive search
+                if (fs::exists(ted_path.parent_path())) {
+                    for (auto& e : fs::directory_iterator(ted_path.parent_path())) {
+                        if (e.path().extension() != ".mis") continue;
+                        std::string a = e.path().stem().string();
+                        std::string b = stem.string();
+                        if (a.size() != b.size()) continue;
+                        bool ci = true;
+                        for (std::size_t i = 0; i < a.size(); ++i) {
+                            if (std::tolower((unsigned char)a[i]) !=
+                                std::tolower((unsigned char)b[i])) { ci = false; break; }
+                        }
+                        if (ci) { mis_guess = e.path(); break; }
+                    }
+                }
+            }
+            if (fs::exists(mis_guess)) {
+                fs::path missions_dir = mis_guess.parent_path();
+                fs::path base_dir     = missions_dir.parent_path();
+                ter_mission = dts_viewer::load_mission(missions_dir, base_dir, stem.string());
+                if (ter_mission) {
+                    std::printf("terrain: loaded scene from %s (%zu mounted vols)\n",
+                        mis_guess.filename().string().c_str(),
+                        ter_mission->mounted_vols.size());
+                }
+            }
+        }
+
+        dts_viewer::HeightSampler height_sampler{
+            block.heights.data(),
+            static_cast<int>(block.size[0]) + 1,
+            metres_per_quad
+        };
+
+        dts_viewer::MissionBounds bounds = dts_viewer::compute_bounds(
+            ter_mission ? ter_mission->scene
+                        : studio::content::mission::scene_graph{},
+            (block.size[0] + 1) * metres_per_quad,
+            terrain.bbox_min.y,
+            terrain.bbox_max.y);
+
+        // Stretch the camera's far plane to fit the playable area.
+        ter_cam.far_plane = std::max(ter_cam.far_plane, bounds.recommended_far_plane);
+
+        dts_viewer::CameraMode cam_mode = dts_viewer::CameraMode::Free;
+        bool show_bounds_debug = false;
         bool wireframe = false;
         bool running = true;
 
@@ -1414,7 +1491,8 @@ int main(int argc, char** argv)
         int  screenshot_warmup = screenshot_path_ter.empty() ? -1 : 0;
         bool screenshot_done   = false;
 
-        std::printf("keys: F1=wireframe  WASD=fly  mouse=look  Esc=release cursor  Q=quit\n");
+        std::printf("keys: F1=wireframe  Tab=walk/free  F=spawn  F3=bounds  "
+                    "WASD=fly  mouse=look  Esc=release  Q=quit\n");
 
         while (running) {
             SDL_Event ev;
@@ -1428,6 +1506,53 @@ int main(int argc, char** argv)
                         if (ev.key.keysym.sym == SDLK_F1) {
                             wireframe = !wireframe;
                             std::printf("wireframe: %s\n", wireframe ? "on" : "off");
+                        }
+                        if (ev.key.keysym.sym == SDLK_F3) {
+                            show_bounds_debug = !show_bounds_debug;
+                            std::printf("bounds debug: %s\n",
+                                show_bounds_debug ? "on" : "off");
+                        }
+                        if (ev.key.keysym.sym == SDLK_TAB) {
+                            cam_mode = (cam_mode == dts_viewer::CameraMode::Free)
+                                ? dts_viewer::CameraMode::Walk
+                                : dts_viewer::CameraMode::Free;
+                            if (cam_mode == dts_viewer::CameraMode::Walk) {
+                                std::array<float, 3> p{
+                                    ter_cam.position.x,
+                                    ter_cam.position.y,
+                                    ter_cam.position.z };
+                                p = dts_viewer::clamp_to_bounds(p, bounds);
+                                ter_cam.position.x = p[0];
+                                ter_cam.position.z = p[2];
+                                dts_viewer::snap_camera_to_terrain(
+                                    ter_cam, height_sampler);
+                                std::printf("camera: walk mode\n");
+                            } else {
+                                std::printf("camera: free mode\n");
+                            }
+                        }
+                        if (ev.key.keysym.sym == SDLK_f && ter_mission) {
+                            std::array<float, 3> here{
+                                ter_cam.position.x,
+                                ter_cam.position.y,
+                                ter_cam.position.z };
+                            auto dp = dts_viewer::nearest_drop_point(
+                                ter_mission->scene, here);
+                            if (dp) {
+                                ter_cam.position.x = (*dp)[0];
+                                ter_cam.position.z = (*dp)[2];
+                                if (cam_mode == dts_viewer::CameraMode::Walk) {
+                                    dts_viewer::snap_camera_to_terrain(
+                                        ter_cam, height_sampler);
+                                } else {
+                                    ter_cam.position.y = (*dp)[1] + 1.8f;
+                                }
+                                std::printf("teleport: drop point %.1f,%.1f,%.1f\n",
+                                    (*dp)[0], (*dp)[1], (*dp)[2]);
+                            } else {
+                                std::fprintf(stderr,
+                                    "teleport: no DropPointMarker found\n");
+                            }
                         }
                         break;
                     case SDL_MOUSEBUTTONDOWN:
@@ -1445,7 +1570,11 @@ int main(int argc, char** argv)
             float dt_ter = static_cast<float>(
                 static_cast<double>(now_ter - fps_last) / static_cast<double>(perf_freq));
             fps_last = now_ter;
-            dts_viewer::update_camera_free(ter_cam, dt_ter);
+            if (cam_mode == dts_viewer::CameraMode::Walk) {
+                dts_viewer::update_camera_walk(ter_cam, dt_ter, height_sampler, bounds);
+            } else {
+                dts_viewer::update_camera_free(ter_cam, dt_ter);
+            }
 
             int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
             glViewport(0, 0, w, h);
@@ -1462,6 +1591,11 @@ int main(int argc, char** argv)
             if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             dts_viewer::draw_terrain(terrain, u_ter_mvp);
             if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+            if (show_bounds_debug) {
+                glUseProgram(flat_prog);
+                dts_viewer::draw_bounds_debug(bounds, u_flat_mvp, u_flat_color, MVP);
+            }
 
             SDL_GL_SwapWindow(win);
 
