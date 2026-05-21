@@ -57,6 +57,7 @@
 #include "projectile.hpp"
 #include "inv_station.hpp"
 #include "entity_renderer.hpp"
+#include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
 #include <cstdint>
@@ -912,6 +913,44 @@ void main() {
 }
 )";
 
+// ---------------------- interior shader (shared, used by --interior + --mission) ----------------------
+static const char* INT_VS_SRC_SHARED = R"(
+#version 410 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+layout(location = 3) in vec2 a_uv_lm;
+uniform mat4 u_mvp;
+out vec2 v_uv;
+out vec2 v_uv_lm;
+void main() {
+    v_uv    = a_uv;
+    v_uv_lm = a_uv_lm;
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+)";
+
+static const char* INT_FS_SRC_SHARED = R"(
+#version 410 core
+in vec2 v_uv;
+in vec2 v_uv_lm;
+uniform sampler2D u_tex0;
+uniform sampler2D u_lightmap;
+uniform bool u_has_texture;
+uniform bool u_has_lightmap;
+out vec4 frag;
+void main() {
+    vec4 diffuse = u_has_texture
+        ? texture(u_tex0, v_uv)
+        : vec4(0.75, 0.78, 0.82, 1.0);
+    vec3 lm = u_has_lightmap
+        ? texture(u_lightmap, v_uv_lm).rgb
+        : vec3(0.5, 0.5, 0.5);
+    vec3 lit = diffuse.rgb * lm * 2.0;
+    frag = vec4(lit, diffuse.a);
+}
+)";
+
 // ---------------------- flat-color line shader (debug overlays) ----------------------
 static const char* FLAT_VS_SRC = R"(
 #version 410 core
@@ -1670,6 +1709,69 @@ int main(int argc, char** argv)
         std::deque<std::string> message_feed;
         bool show_command_map = false;
 
+        // ---- Interior meshes (Track 14 follow-up: render placed bases) ----
+        // Uses the cross-VOL resolver (3space/interior_set) to pull each
+        // node_interior's DIS+DIG+DIL+DML, then build_interior_mesh + the
+        // shared interior shader to draw them at the mission's transforms.
+        GLuint int_prog_m = 0;
+        GLint  int_u_mvp_m = -1, int_u_has_texture_m = -1, int_u_tex0_m = -1;
+        GLint  int_u_lightmap_m = -1, int_u_has_lightmap_m = -1;
+        struct PlacedInterior {
+            dts_viewer::InteriorMesh mesh;
+            studio::content::mission::transform xf;
+            std::string shape_name;
+        };
+        std::vector<PlacedInterior> placed_interiors;
+        if (ter_mission) {
+            int_prog_m = link_program(
+                compile_shader(GL_VERTEX_SHADER,   INT_VS_SRC_SHARED),
+                compile_shader(GL_FRAGMENT_SHADER, INT_FS_SRC_SHARED));
+            int_u_mvp_m          = glGetUniformLocation(int_prog_m, "u_mvp");
+            int_u_has_texture_m  = glGetUniformLocation(int_prog_m, "u_has_texture");
+            int_u_tex0_m         = glGetUniformLocation(int_prog_m, "u_tex0");
+            int_u_lightmap_m     = glGetUniformLocation(int_prog_m, "u_lightmap");
+            int_u_has_lightmap_m = glGetUniformLocation(int_prog_m, "u_has_lightmap");
+
+            studio::content::interior::interior_resolver iresolver;
+            for (const auto& v : ter_mission->mounted_vols) {
+                if (fs::exists(v)) iresolver.add_vol(v);
+            }
+            auto pal_map_int = by_index(ter_palettes);
+
+            auto walk_int = [&](auto& self,
+                const studio::content::mission::scene_node& n) -> void
+            {
+                std::visit([&](const auto& p) {
+                    using T = std::decay_t<decltype(p)>;
+                    if constexpr (std::is_same_v<T,
+                        studio::content::mission::node_interior>)
+                    {
+                        auto opt = iresolver.resolve(p.shape_name);
+                        if (!opt) {
+                            std::fprintf(stderr,
+                                "interior: resolve failed for '%s'\n",
+                                p.shape_name.c_str());
+                            return;
+                        }
+                        PlacedInterior pi;
+                        pi.shape_name = p.shape_name;
+                        pi.xf = p.xf;
+                        pi.mesh = dts_viewer::build_interior_mesh(
+                            opt->dig, opt->material, ter_resolver, pal_map_int,
+                            &opt->dil);
+                        if (pi.mesh.valid()) {
+                            placed_interiors.push_back(std::move(pi));
+                        }
+                    }
+                }, n.payload);
+                for (auto& c : n.children) self(self, c);
+            };
+            walk_int(walk_int, ter_mission->scene.root);
+            std::fprintf(stderr,
+                "interior: placed %zu interior meshes\n",
+                placed_interiors.size());
+        }
+
         // Track 14 — entity stubs (collect at mission load).
         std::vector<dts_viewer::StaticShapeState>      ent_statics;
         std::vector<dts_viewer::ItemState>             ent_items;
@@ -2123,6 +2225,37 @@ int main(int argc, char** argv)
                 dts_viewer::draw_markers_debug(
                     ter_mission->scene, u_flat_mvp, u_flat_color, MVP);
                 glEnable(GL_DEPTH_TEST);
+            }
+
+            // Render placed interiors (the cross-VOL resolver bundled
+            // DIS/DIG/DIL/DML for each node_interior; we draw them at
+            // their authored transforms).
+            if (ter_mission && hud.show_interiors && !placed_interiors.empty()) {
+                glUseProgram(int_prog_m);
+                for (auto& pi : placed_interiors) {
+                    glm::vec3 t{ pi.xf.position[0], pi.xf.position[1], pi.xf.position[2] };
+                    // Rotation arrives as (rx, ry, rz, w).  When w==1 the
+                    // first three floats are typically Euler radians (XYZ
+                    // in the corpus); if w differs it's a true quaternion.
+                    glm::mat4 R(1.0f);
+                    if (std::abs(pi.xf.rotation[3] - 1.0f) < 1e-3f) {
+                        R = glm::rotate(R, pi.xf.rotation[0], glm::vec3(1,0,0));
+                        R = glm::rotate(R, pi.xf.rotation[1], glm::vec3(0,1,0));
+                        R = glm::rotate(R, pi.xf.rotation[2], glm::vec3(0,0,1));
+                    } else {
+                        glm::quat q(pi.xf.rotation[3],
+                                    pi.xf.rotation[0],
+                                    pi.xf.rotation[1],
+                                    pi.xf.rotation[2]);
+                        R = glm::mat4_cast(q);
+                    }
+                    glm::mat4 M = glm::translate(glm::mat4(1.0f), t) * R;
+                    glm::mat4 MVP_pi = MVP * M;
+                    dts_viewer::draw_interior(pi.mesh,
+                        int_u_mvp_m, int_u_has_texture_m, int_u_tex0_m,
+                        int_u_lightmap_m, int_u_has_lightmap_m,
+                        MVP_pi);
+                }
             }
 
             // Track 14 — render entity cubes (placeholder until DTS pipe
