@@ -45,6 +45,7 @@
 #include "mission_bounds.hpp"
 #include "walk_camera.hpp"
 #include "skybox_renderer.hpp"
+#include "lighting.hpp"
 #include <set>
 #include <cstdint>
 
@@ -926,10 +927,12 @@ layout(location = 1) in float a_mat_idx;
 layout(location = 2) in vec3 a_normal;
 uniform mat4 u_mvp;
 out vec3 v_normal_ws;
+out vec3 v_pos_ws;
 out float v_mat_idx;
 void main() {
     v_normal_ws = a_normal;
-    v_mat_idx = a_mat_idx;
+    v_pos_ws    = a_pos;
+    v_mat_idx   = a_mat_idx;
     gl_Position = u_mvp * vec4(a_pos, 1.0);
 }
 )";
@@ -937,10 +940,18 @@ void main() {
 static const char* TERRAIN_FS_SRC = R"(
 #version 410 core
 in vec3 v_normal_ws;
+in vec3 v_pos_ws;
 in float v_mat_idx;
 out vec4 frag;
+uniform vec3  u_ambient_color;
+uniform vec3  u_sun_dir;
+uniform vec3  u_sun_color;
+uniform int   u_point_count;
+uniform vec3  u_point_pos[8];
+uniform vec3  u_point_color[8];
+uniform float u_point_radius[8];
 void main() {
-    // 16 visually distinct colors.
+    // 16 visually distinct colors (debug per-material palette).
     const vec3 palette[16] = vec3[16](
         vec3(0.90, 0.20, 0.20),
         vec3(0.20, 0.75, 0.20),
@@ -961,10 +972,18 @@ void main() {
     );
     int idx = int(v_mat_idx) % 16;
     vec3 base = palette[idx];
-    vec3 L = normalize(vec3(0.4, 0.8, 0.6));
-    float lambert = max(dot(normalize(v_normal_ws), L), 0.0);
-    vec3 col = base * (0.30 + 0.70 * lambert);
-    frag = vec4(col, 1.0);
+    vec3 N = normalize(v_normal_ws);
+    float sun = max(dot(N, normalize(u_sun_dir)), 0.0);
+    vec3 lit = base * u_ambient_color + base * u_sun_color * sun;
+    for (int i = 0; i < u_point_count && i < 8; ++i) {
+        vec3 d = u_point_pos[i] - v_pos_ws;
+        float dist = length(d);
+        float r = max(u_point_radius[i], 1.0);
+        float atten = 1.0 / (1.0 + (dist / r) + (dist * dist) / (r * r));
+        float pl = max(dot(N, normalize(d)), 0.0);
+        lit += base * u_point_color[i] * pl * atten;
+    }
+    frag = vec4(lit, 1.0);
 }
 )";
 
@@ -1526,6 +1545,18 @@ int main(int argc, char** argv)
         }
         bool show_sky = sky_box.has_value();
 
+        // Mission lighting.
+        dts_viewer::SceneLighting lighting = ter_mission
+            ? dts_viewer::build_scene_lighting(ter_mission->scene)
+            : dts_viewer::SceneLighting{};
+        dts_viewer::LightingMode lighting_mode = dts_viewer::LightingMode::Full;
+        if (ter_mission) {
+            std::printf("lighting: ambient=(%.2f,%.2f,%.2f) sun_dir=(%.2f,%.2f,%.2f) points=%zu\n",
+                lighting.ambient_color[0], lighting.ambient_color[1], lighting.ambient_color[2],
+                lighting.sun.direction[0], lighting.sun.direction[1], lighting.sun.direction[2],
+                lighting.point_lights.size());
+        }
+
         dts_viewer::CameraMode cam_mode = dts_viewer::CameraMode::Free;
         bool show_bounds_debug = false;
         bool wireframe = false;
@@ -1559,6 +1590,15 @@ int main(int argc, char** argv)
                             show_bounds_debug = !show_bounds_debug;
                             std::printf("bounds debug: %s\n",
                                 show_bounds_debug ? "on" : "off");
+                        }
+                        if (ev.key.keysym.sym == SDLK_F2) {
+                            int next = (static_cast<int>(lighting_mode) + 1) % 3;
+                            lighting_mode = static_cast<dts_viewer::LightingMode>(next);
+                            const char* name = (lighting_mode == dts_viewer::LightingMode::AmbientOnly)
+                                ? "ambient-only"
+                                : (lighting_mode == dts_viewer::LightingMode::SunOnly)
+                                    ? "+sun" : "full";
+                            std::printf("lighting: %s\n", name);
                         }
                         if (ev.key.keysym.sym == SDLK_TAB) {
                             cam_mode = (cam_mode == dts_viewer::CameraMode::Free)
@@ -1639,6 +1679,8 @@ int main(int argc, char** argv)
 
             glUseProgram(terrain_prog);
             glUniformMatrix4fv(u_ter_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
+            dts_viewer::apply_scene_lighting(terrain_prog,
+                dts_viewer::masked_lighting(lighting, lighting_mode));
 
             if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             dts_viewer::draw_terrain(terrain, u_ter_mvp);

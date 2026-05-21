@@ -24,7 +24,8 @@ add_executable(dts-viewer
     interior_renderer.cpp
     mission_loader.cpp
     mission_bounds.cpp
-    skybox_renderer.cpp)
+    skybox_renderer.cpp
+    lighting.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include
