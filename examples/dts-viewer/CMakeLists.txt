@@ -30,6 +30,8 @@ find_package(span-lite REQUIRED)
 find_package(pegtl REQUIRED)
 find_package(libzip REQUIRED)
 
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
+
 add_executable(dts-viewer
     main.cpp
     interior_renderer.cpp
@@ -54,7 +56,15 @@ add_executable(dts-viewer
     player_simobject.cpp
     entity_bindings.cpp
     mission.cpp
-    hud_bindings.cpp)
+    hud_bindings.cpp
+    imgui_layer.cpp
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 
 target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/include
@@ -65,6 +75,8 @@ target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/cscript/math/impl
     ${THREESPACE_DIR}/cscript/lib
     ${THREESPACE_DIR}/cscript/lib/tinyxml2
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
     ${SDL2_INCLUDE_DIRS})
 
 target_link_libraries(dts-viewer PRIVATE

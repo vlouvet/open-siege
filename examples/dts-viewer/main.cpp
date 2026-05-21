@@ -60,6 +60,7 @@
 #include "cscript_host.hpp"
 #include "mission.hpp"
 #include "hud_bindings.hpp"
+#include "imgui_layer.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1498,6 +1499,10 @@ int main(int argc, char** argv)
         SDL_GL_SetSwapInterval(1);
         std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
 
+        // Spec 25/01 — ImGui must init after the GL context but before
+        // any host code that consumes SDL events or issues GL draws.
+        dts_viewer::imgui_init(win, ctx);
+
         // Spec 11/02 — bring up the audio backend.  The stub backend
         // logs to stderr and returns true; a future spec swaps in a
         // miniaudio / OpenAL Soft implementation behind the same API.
@@ -1896,6 +1901,11 @@ int main(int argc, char** argv)
         while (running) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
+                // Spec 25/01 — ImGui sees the event first. When it
+                // returns true, the host suppresses its own handling
+                // (mouse over a panel, keyboard in a text widget).
+                bool imgui_consumed = dts_viewer::imgui_process_event(ev);
+                if (imgui_consumed && ev.type != SDL_QUIT) continue;
                 switch (ev.type) {
                     case SDL_QUIT: running = false; break;
                     case SDL_KEYDOWN:
@@ -1963,6 +1973,7 @@ int main(int argc, char** argv)
                                 std::printf("mission-switch: -> %s\n",
                                     mission_reg.short_names[idx].c_str());
                                 std::fflush(stdout);
+                                dts_viewer::imgui_shutdown();
                                 SDL_GL_DeleteContext(ctx);
                                 SDL_DestroyWindow(win);
                                 SDL_Quit();
@@ -2377,6 +2388,12 @@ int main(int argc, char** argv)
                 }
             }
 
+            // Spec 25/01 — ImGui pass after the 3D world + 2D HUD, before
+            // SwapWindow. begin/end together so the build + render pair
+            // happens in one frame's worth of state.
+            dts_viewer::imgui_begin_frame();
+            dts_viewer::imgui_end_frame();
+
             SDL_GL_SwapWindow(win);
 
             // Screenshot capture.
@@ -2429,6 +2446,7 @@ int main(int argc, char** argv)
         dts_viewer::mission_sounds_unload(mission_audio);
         dts_viewer::audio_shutdown();
         dts_viewer::hud2d_shutdown();
+        dts_viewer::imgui_shutdown();
         SDL_GL_DeleteContext(ctx);
         SDL_DestroyWindow(win);
         SDL_Quit();
@@ -3247,6 +3265,9 @@ void main() {
 
     std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
 
+    // Spec 25/01 — wire ImGui for the shape-viewer mode too.
+    dts_viewer::imgui_init(win, ctx);
+
     // ---- spec 06: texture cache + upload ---------------------------------
     //
     // Two-tier cache (per the spec's Outputs section):
@@ -3793,6 +3814,8 @@ void main() {
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            bool imgui_consumed = dts_viewer::imgui_process_event(ev);
+            if (imgui_consumed && ev.type != SDL_QUIT) continue;
             switch (ev.type) {
                 case SDL_QUIT: running = false; break;
                 case SDL_KEYDOWN:
@@ -4101,6 +4124,9 @@ void main() {
             glEnable(GL_DEPTH_TEST);
         }
 
+        dts_viewer::imgui_begin_frame();
+        dts_viewer::imgui_end_frame();
+
         SDL_GL_SwapWindow(win);
 
         // spec 09: one-shot screenshot capture. We need a few frames of
@@ -4159,6 +4185,7 @@ void main() {
         }
     }
 
+    dts_viewer::imgui_shutdown();
     SDL_GL_DeleteContext(ctx);
     SDL_DestroyWindow(win);
     SDL_Quit();
