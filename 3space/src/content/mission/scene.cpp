@@ -359,6 +359,18 @@ namespace studio::content::mission
         if (v) n.ambient_color = *v;
         consume(consumed, props, "ambientColor");
       }
+      if (const auto* p = find_prop(props, "skyColor"))
+      {
+        auto v = parse_vec3(p->value);
+        if (v) n.sky_color = *v;
+        consume(consumed, props, "skyColor");
+      }
+      if (const auto* p = find_prop(props, "hazeColor"))
+      {
+        auto v = parse_vec3(p->value);
+        if (v) n.haze_color = *v;
+        consume(consumed, props, "hazeColor");
+      }
       return n;
     }
 

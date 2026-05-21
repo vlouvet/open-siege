@@ -203,10 +203,34 @@ std::optional<SkyboxResources> build_skybox(
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
+    // Spec 07/07 — Tribes sky is a horizon TUBE, not a cube. The 6+
+    // referenced DML textures are vertical strips (sky-on-top,
+    // ground-on-bottom, horizon-line through the middle) meant to
+    // wrap around the player at the horizon, with sky/haze colour
+    // filling the dome above and below. Naively mapping strip 2/3
+    // to GL +Y/-Y leaves a horizon strip cutting diagonally across
+    // the upward view. The right fix is a cylinder renderer; the v1
+    // fix is to synthesise +Y and -Y from skyColor/hazeColor with a
+    // sensible default when the MIS gave us all zeroes (Citadels).
     int uploaded = 0;
     int cube_size = 0;
+    // Per-pixel sums from the strip's top + bottom rows so the synth
+    // top / bottom cube faces can match the lateral texture's edges
+    // and the dome-to-side seam fades.
+    std::array<float, 3> top_avg{0, 0, 0};
+    std::array<float, 3> bot_avg{0, 0, 0};
+    int top_avg_samples = 0;
+    int bot_avg_samples = 0;
+    // Spec 07/07: use the SAME strip texture (textures[0]) on all 4
+    // lateral cube faces. Tribes' real renderer wraps 16 strips into a
+    // tube; mapping different strips to different cube faces produces
+    // seams where neighbouring strips don't tile. Using one strip on
+    // all sides removes the seams at the cost of a repeating sky —
+    // better than a glitchy panorama for v1. +Y / -Y are synthesised
+    // below from skyColor / hazeColor.
     for (int face = 0; face < kFaces; ++face) {
-        int mat_idx = sky.textures[face];
+        if (face == 2 || face == 3) continue;     // +Y / -Y handled below
+        int mat_idx = sky.textures[0];            // single shared strip
         if (mat_idx < 0 || mat_idx >= static_cast<int>(mat_names.size())) {
             continue;
         }
@@ -241,12 +265,57 @@ std::optional<SkyboxResources> build_skybox(
         }
 
         auto rgba = rgba_from_pbmp(img, palette_map);
+
+        // Accumulate top/bottom row averages so the synth +Y/-Y faces
+        // can match the lateral texture's vertical edges.
+        if (top_avg_samples == 0 && img.width > 0 && img.height > 0) {
+            const int rows = std::min<int>(8, static_cast<int>(img.height));
+            for (int y = 0; y < rows; ++y) {
+                for (int x = 0; x < static_cast<int>(img.width); ++x) {
+                    const std::size_t i = (static_cast<std::size_t>(y) * img.width + x) * 4;
+                    top_avg[0] += rgba[i + 0];
+                    top_avg[1] += rgba[i + 1];
+                    top_avg[2] += rgba[i + 2];
+                    ++top_avg_samples;
+                }
+            }
+            for (int y = static_cast<int>(img.height) - rows; y < static_cast<int>(img.height); ++y) {
+                for (int x = 0; x < static_cast<int>(img.width); ++x) {
+                    const std::size_t i = (static_cast<std::size_t>(y) * img.width + x) * 4;
+                    bot_avg[0] += rgba[i + 0];
+                    bot_avg[1] += rgba[i + 1];
+                    bot_avg[2] += rgba[i + 2];
+                    ++bot_avg_samples;
+                }
+            }
+        }
+
         GLenum target = static_cast<GLenum>(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face);
         glTexImage2D(target, 0, GL_RGBA8,
             static_cast<GLsizei>(img.width),
             static_cast<GLsizei>(img.height),
             0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
         ++uploaded;
+
+        // Spec 07/07 — when DTS_DEBUG_SKYBOX=1 is set, dump each face's
+        // decoded RGBA to /tmp/sky_face_<idx>_<name>.ppm so a broken
+        // face can be visually identified.
+        if (const char* dbg = std::getenv("DTS_DEBUG_SKYBOX"); dbg && *dbg == '1') {
+            char path[256];
+            std::snprintf(path, sizeof(path),
+                "/tmp/sky_face_%d_%s.ppm", face, mat_name.c_str());
+            FILE* f = std::fopen(path, "wb");
+            if (f) {
+                std::fprintf(f, "P6\n%u %u\n255\n", img.width, img.height);
+                for (std::size_t i = 0; i + 3 < rgba.size(); i += 4) {
+                    std::fwrite(&rgba[i], 1, 3, f);
+                }
+                std::fclose(f);
+                std::fprintf(stdout,
+                    "skybox: dumped face %d ('%s') -> %s\n",
+                    face, mat_name.c_str(), path);
+            }
+        }
     }
 
     if (uploaded == 0 || cube_size == 0) {
@@ -255,18 +324,68 @@ std::optional<SkyboxResources> build_skybox(
         return std::nullopt;
     }
 
-    // Fill any missing faces with the average ambient colour so sampling
-    // doesn't return undefined.
+    // Spec 07/07 — synthesise +Y (top) and -Y (bottom) cube faces from
+    // skyColor / hazeColor. When the MIS authored zeroes (Citadels),
+    // fall back to a light-blue / tan default so the dome doesn't
+    // become a black void.
+    auto avg_to_byte = [](const std::array<float, 3>& sum, int n,
+                          float def_r, float def_g, float def_b) {
+        if (n <= 0) {
+            const auto cl = [](float v) {
+                return static_cast<std::uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f);
+            };
+            return std::array<std::uint8_t, 3>{ cl(def_r), cl(def_g), cl(def_b) };
+        }
+        return std::array<std::uint8_t, 3>{
+            static_cast<std::uint8_t>(std::clamp(sum[0] / n, 0.0f, 255.0f)),
+            static_cast<std::uint8_t>(std::clamp(sum[1] / n, 0.0f, 255.0f)),
+            static_cast<std::uint8_t>(std::clamp(sum[2] / n, 0.0f, 255.0f)),
+        };
+    };
+    auto pack_color = [](const std::array<float, 3>& c, float def_r, float def_g, float def_b) {
+        const bool zero = (c[0] <= 0.0f && c[1] <= 0.0f && c[2] <= 0.0f);
+        const float r = zero ? def_r : c[0];
+        const float g = zero ? def_g : c[1];
+        const float b = zero ? def_b : c[2];
+        const auto cl = [](float v) {
+            return static_cast<std::uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f);
+        };
+        return std::array<std::uint8_t, 3>{ cl(r), cl(g), cl(b) };
+    };
+    // Prefer MIS-authored colours; fall back to the lateral strip's
+    // top/bottom-row average; ultimate fallback is a hard-coded sky/tan.
+    const bool mis_top    = sky.sky_color[0] > 0.0f || sky.sky_color[1] > 0.0f || sky.sky_color[2] > 0.0f;
+    const bool mis_bottom = sky.haze_color[0] > 0.0f || sky.haze_color[1] > 0.0f || sky.haze_color[2] > 0.0f;
+    const auto top_col    = mis_top
+        ? pack_color(sky.sky_color,  0.55f, 0.70f, 0.90f)
+        : avg_to_byte(top_avg, top_avg_samples, 0.55f, 0.70f, 0.90f);
+    const auto bottom_col = mis_bottom
+        ? pack_color(sky.haze_color, 0.60f, 0.55f, 0.45f)
+        : avg_to_byte(bot_avg, bot_avg_samples, 0.60f, 0.55f, 0.45f);
+    auto fill_solid = [&](GLenum target, const std::array<std::uint8_t, 3>& c) {
+        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(cube_size) * cube_size * 4);
+        for (std::size_t i = 0; i < rgba.size(); i += 4) {
+            rgba[i + 0] = c[0]; rgba[i + 1] = c[1]; rgba[i + 2] = c[2]; rgba[i + 3] = 255;
+        }
+        glTexImage2D(target, 0, GL_RGBA8, cube_size, cube_size,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    };
+    fill_solid(GL_TEXTURE_CUBE_MAP_POSITIVE_Y, top_col);
+    fill_solid(GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, bottom_col);
+
+    // Backstop: any lateral face that still has no upload (e.g. a
+    // missing PBMP) falls back to a mid-tone so sampling doesn't
+    // return undefined memory.
     for (int face = 0; face < kFaces; ++face) {
         GLenum target = static_cast<GLenum>(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face);
         GLint w = 0;
         glGetTexLevelParameteriv(target, 0, GL_TEXTURE_WIDTH, &w);
         if (w > 0) continue;
-        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(cube_size) * cube_size * 4,
-                                       static_cast<std::uint8_t>(60));
-        for (std::size_t i = 0; i < rgba.size(); i += 4) rgba[i + 3] = 255;
-        glTexImage2D(target, 0, GL_RGBA8, cube_size, cube_size,
-                     0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        // For a lateral face mid-grey is fine; +Y/-Y handled above.
+        const auto mid = (face == 2) ? top_col
+                       : (face == 3) ? bottom_col
+                       : std::array<std::uint8_t, 3>{ 100, 110, 120 };
+        fill_solid(target, mid);
     }
 
     SkyboxResources sb;

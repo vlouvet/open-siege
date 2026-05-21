@@ -127,6 +127,8 @@ namespace studio::content::mission {
     std::string dml_name;
     std::array<int, 16> textures{};
     std::array<float, 3> ambient_color{};
+    std::array<float, 3> sky_color{};   // skyColor — dome top
+    std::array<float, 3> haze_color{};  // hazeColor — dome bottom
   };
 
   // StarField — background star billboard layer
