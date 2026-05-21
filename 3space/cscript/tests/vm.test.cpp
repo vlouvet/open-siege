@@ -17,6 +17,7 @@
 #include "console/console.h"
 #include "console/script.h"
 #include "console/runtime.h"
+#include "console/sim.h"
 #include "console/torquescript/runtime.h"
 
 #include <cstdarg>
@@ -159,33 +160,37 @@ static void testControlFlow()
 
 static void testInstantAndSim()
 {
-    std::printf("\n[group] vm_instant_dialect_a (PARSE-ONLY)\n");
-    // The `instant` alias was added in spec 15/04. We verify PARSING works
-    // (no syntax error reported) but skip actual instantiation because
-    // creating a SimObject in the script-VM-only build path crashes —
-    // SimObject's full initialization needs the engine module manager
-    // wired (sfx/gfx/T3D), which is out of scope for cscript_core.
-    //
-    // Parse-only verification: feed the script through evaluate() with a
-    // syntax-error sentinel. If the parser rejected `instant SimGroup`
-    // it would emit an error message into the console capture.
-    resetCapture();
-    Con::evaluate("function _parseInstant() { return 0; } echo(\"parsed-ok\");",
-                  false, "instant_parse_smoke");
-    if (captureContains("parsed-ok"))
-        passHere("dialect-A: function + echo parse + run");
-    else
-        failHere("dialect-A function definition failed to execute");
+    std::printf("\n[group] vm_instant_dialect_a\n");
+    // The 'instant' alias was added in spec 15/04 — same token as 'new',
+    // produces the same SimGroup-derived object. Both must parse, evaluate,
+    // and return a non-zero numeric object ID.
 
     // Verify '@' string concat (T1's hallmark dialect-A operator).
     checkEvalOutputContains("echo(\"a\" @ \"b\");", "ab", "dialect-A: @ concat");
 
-    // Verify 'instant' is accepted by the lexer (no PARSER-FATAL output).
-    // We can't actually instantiate — the SimObject subsystem isn't fully
-    // wired in cscript_core — but the line should parse cleanly.
+    // 'new SimGroup' — produces a Sim object id.
     resetCapture();
-    Con::evaluate("// instant SimGroup(MyGroup) {};\n", false, "instant_lexer_ok");
-    passHere("dialect-A: 'instant' keyword tokenized (lexer accepts)");
+    Con::evaluate("$g = new SimGroup(MyGroupA); echo($g);", false, "instant_new");
+    const char* gA = Con::getVariable("g");
+    if (gA && gA[0] != '\0' && gA[0] != '0')
+        passHere("dialect-A: new SimGroup returns object id");
+    else
+        failHere("dialect-A: new SimGroup did not return an id");
+
+    // 'instant SimGroup' — same token, must also work.
+    resetCapture();
+    Con::evaluate("$h = instant SimGroup(MyGroupB); echo($h);", false, "instant_instant");
+    const char* gB = Con::getVariable("h");
+    if (gB && gB[0] != '\0' && gB[0] != '0')
+        passHere("dialect-A: instant SimGroup returns object id");
+    else
+        failHere("dialect-A: instant SimGroup did not return an id");
+
+    // Objects must have distinct IDs.
+    if (gA && gB && std::strcmp(gA, gB) != 0)
+        passHere("dialect-A: each 'new'/'instant' yields a distinct id");
+    else
+        failHere("dialect-A: two SimGroup creations returned same id");
 }
 
 static char* readFile(const char* path, long* len_out)
@@ -247,9 +252,9 @@ int main(int /*argc*/, char** /*argv*/)
     setbuf(stderr, nullptr);
     std::printf("cscript_vm_test: starting up\n");
     Con::init();
-    std::printf("cscript_vm_test: init done\n");
+    Sim::init();   // Required before any SimObject construction works.
+    std::printf("cscript_vm_test: Con + Sim init done\n");
     Con::addConsumer(captureConsole);
-    std::printf("cscript_vm_test: consumer added\n");
     Con::registerRuntime(0, TorqueScript::getRuntime());
     std::printf("cscript_vm_test: runtime registered\n");
 
