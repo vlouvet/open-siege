@@ -30,6 +30,7 @@
 
 #include "content/dig/dig.hpp"
 #include "content/dts/darkstar_structures.hpp"
+#include "content/interior/dil.hpp"
 #include "materials.hpp"
 #include "ppl.hpp"
 
@@ -47,10 +48,16 @@ struct InteriorDrawRange
 struct InteriorMesh
 {
     GLuint vao = 0;
-    GLuint vbo = 0;     // interleaved pos(3) + uv(2) per vertex
+    GLuint vbo = 0;     // interleaved pos(3) + uv_d(2) + uv_lm(2) per vertex
     GLuint ibo = 0;     // u32 index buffer
     GLsizei index_count = 0;   // total (sum of all ranges)
     std::vector<InteriorDrawRange> ranges;
+
+    // Per-interior lightmap atlas (spec 06-06). 0 when no DIL was supplied
+    // or the unpack produced no usable texels.
+    GLuint  lightmap_atlas = 0;
+    GLsizei lightmap_atlas_w = 0;
+    GLsizei lightmap_atlas_h = 0;
 
     // Bounding box for camera framing.
     glm::vec3 bbox_min{ 1e30f,  1e30f,  1e30f};
@@ -64,19 +71,32 @@ struct InteriorMesh
 // bytes + uploads GL textures (identical pipeline as the DTS path).
 // `palette_map` should carry the same palettes already loaded for the
 // DTS viewer session (Shell.ppl + world .day.ppl).
+//
+// `dil` (optional) carries the per-surface baked lightmap data; when
+// supplied, the function decodes each surface's Huffman bit-stream,
+// packs the unpacked 4:4:4:4 IRGB rectangles into a single atlas, and
+// adds per-vertex lightmap UVs alongside the diffuse UVs. Pass nullptr
+// to fall back to diffuse-only rendering (vertex shader receives zero
+// lightmap UV, fragment shader treats lightmap sample as white).
 InteriorMesh build_interior_mesh(
     const studio::content::dig::dig_file& geom,
     const studio::content::dts::darkstar::material_list_variant& dml,
     const MaterialResolver& resolver,
-    const std::map<std::uint32_t, const Palette*>& palette_map);
+    const std::map<std::uint32_t, const Palette*>& palette_map,
+    const studio::content::interior::dil_file* dil = nullptr);
 
-// Draw the interior using a shader program that already has u_mvp and
-// u_has_texture / u_tex0 uniforms set up (identical to the DTS shader).
+// Draw the interior using a two-sampler shader program. `u_tex0` is the
+// diffuse PBMP sampler (texture unit 0), `u_lightmap` is the per-
+// interior baked-lighting atlas (texture unit 1). Pass -1 for
+// `u_lightmap_loc` / `u_has_lightmap_loc` when the shader has no
+// lightmap binding.
 void draw_interior(
     const InteriorMesh& mesh,
     GLint u_mvp_loc,
     GLint u_has_texture_loc,
     GLint u_tex0_loc,
+    GLint u_lightmap_loc,
+    GLint u_has_lightmap_loc,
     const glm::mat4& mvp);
 
 } // namespace dts_viewer

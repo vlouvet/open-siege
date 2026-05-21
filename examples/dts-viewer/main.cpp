@@ -2095,11 +2095,21 @@ int main(int argc, char** argv)
         }
 
         // ---- Spec 06-06: load the stock DIL lightmap, if available. ----
-        // The DIS lists DIL filenames per light state; state 0 is the
-        // baked stock lighting. Mission-specific DILs are handled via the
-        // IndexEntry remap in a later spec — v1 uses the stock DIL only.
+        // The DIS lists one DIL filename per light state; each LOD has a
+        // `light_state_index` selecting its DIL (each LOD has its own
+        // matching DIL since the surface count differs per LOD). Mission
+        // -specific DILs and the IndexEntry remap are a later spec —
+        // v1 uses the per-LOD stock DIL only.
         std::optional<studio::content::interior::dil_file> dil_opt;
-        std::string dil_name = dis.lightmap_file();
+        std::string dil_name;
+        if (!dis.lods.empty() && !dis.lightmap_files.empty()) {
+            const std::uint32_t lsi = dis.lods.back().light_state_index;
+            if (lsi < dis.lightmap_files.size()) {
+                dil_name = dis.lightmap_files[lsi];
+            } else {
+                dil_name = dis.lightmap_files.front();
+            }
+        }
         if (!dil_name.empty()) {
             std::string dil_lower = dil_name;
             for (auto& c : dil_lower) c = std::tolower((unsigned char)c);
