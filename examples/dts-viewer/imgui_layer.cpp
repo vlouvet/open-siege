@@ -1,13 +1,17 @@
 // Spec 25/01 — ImGui glue for SDL2 + OpenGL 4.1 core context.
 // Spec 25/02 — top-level menu bar (File / Edit / View / Help).
+// Spec 25/03 — Open Mission / Open Shape pickers + Recent submenu.
 
 #include "imgui_layer.hpp"
+#include "viewer_state.hpp"
 
 #include "third_party/imgui/imgui.h"
 #include "third_party/imgui/backends/imgui_impl_sdl2.h"
 #include "third_party/imgui/backends/imgui_impl_opengl3.h"
 
 #include <SDL_keycode.h>
+
+#include <cstring>
 
 namespace dts_viewer {
 
@@ -36,6 +40,60 @@ void default_quit()
     SDL_PushEvent(&e);
 }
 
+// Spec 25/03 picker-modal state. One bool per modal; the menu sets
+// them and the draw pass reads + clears them.
+bool   g_open_mission_modal = false;
+bool   g_open_shape_modal   = false;
+char   g_modal_filter[128]  = {};
+
+void draw_picker_modal(const char* title,
+                       const std::vector<std::string>& items,
+                       void (*on_select)(const std::string&))
+{
+    if (!ImGui::BeginPopupModal(title, nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::SetNextItemWidth(360.0f);
+    ImGui::InputTextWithHint("##filter", "filter\xE2\x80\xA6",
+        g_modal_filter, sizeof(g_modal_filter));
+
+    if (ImGui::BeginListBox("##items", ImVec2(360, 320))) {
+        for (const auto& name : items) {
+            if (g_modal_filter[0] != '\0' &&
+                std::strstr(name.c_str(), g_modal_filter) == nullptr) {
+                continue;
+            }
+            bool dummy = false;
+            if (ImGui::Selectable(name.c_str(), dummy,
+                    ImGuiSelectableFlags_AllowDoubleClick)) {
+                if (ImGui::IsMouseDoubleClicked(0)) {
+                    on_select(name);
+                    g_modal_filter[0] = '\0';
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ImGui::EndListBox();
+    }
+    if (ImGui::Button("Cancel")) {
+        g_modal_filter[0] = '\0';
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void on_pick_mission(const std::string& name)
+{
+    request_load_mission(name);
+    add_recent_mission(name);
+}
+
+void on_pick_shape(const std::string& name)
+{
+    request_load_shape(name);
+    add_recent_shape(name);
+}
+
 bool query(const std::function<bool()>& q) { return q ? q() : false; }
 
 // Display strings for accelerators. On macOS use "Cmd"; on others
@@ -59,14 +117,36 @@ void draw_menu_bar()
     if (!ImGui::BeginMainMenuBar()) return;
 
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Open Mission\xE2\x80\xA6", kCmdO))
-            call_or_log(g_actions.open_mission, "File > Open Mission");
-        if (ImGui::MenuItem("Open Shape\xE2\x80\xA6", kCmdShiftO))
-            call_or_log(g_actions.open_shape, "File > Open Shape");
+        if (ImGui::MenuItem("Open Mission\xE2\x80\xA6", kCmdO)) {
+            std::fprintf(stdout, "[menu] File > Open Mission\n");
+            g_open_mission_modal = true;
+        }
+        if (ImGui::MenuItem("Open Shape\xE2\x80\xA6", kCmdShiftO)) {
+            std::fprintf(stdout, "[menu] File > Open Shape\n");
+            g_open_shape_modal = true;
+        }
         if (ImGui::BeginMenu("Recent")) {
-            // Spec 25/03 will populate this; for the skeleton, show an
-            // explicit "(empty)" hint so menu navigation works.
-            ImGui::MenuItem("(empty)", nullptr, false, false);
+            const auto& rm = recent_missions();
+            const auto& rs = recent_shapes();
+            if (rm.empty() && rs.empty()) {
+                ImGui::MenuItem("(empty)", nullptr, false, false);
+            } else {
+                if (!rm.empty()) {
+                    ImGui::TextDisabled("Missions");
+                    for (const auto& m : rm) {
+                        if (ImGui::MenuItem(m.c_str()))
+                            on_pick_mission(m);
+                    }
+                }
+                if (!rs.empty()) {
+                    if (!rm.empty()) ImGui::Separator();
+                    ImGui::TextDisabled("Shapes");
+                    for (const auto& s : rs) {
+                        if (ImGui::MenuItem(s.c_str()))
+                            on_pick_shape(s);
+                    }
+                }
+            }
             ImGui::EndMenu();
         }
         ImGui::Separator();
@@ -122,6 +202,20 @@ void draw_menu_bar()
     }
 
     ImGui::EndMainMenuBar();
+
+    // Spec 25/03 — drive picker modals from the click-set flags. Open
+    // here (after the menu bar closed), so the popup stack is
+    // independent of the menu hierarchy.
+    if (g_open_mission_modal) {
+        ImGui::OpenPopup("Open Mission");
+        g_open_mission_modal = false;
+    }
+    if (g_open_shape_modal) {
+        ImGui::OpenPopup("Open Shape");
+        g_open_shape_modal = false;
+    }
+    draw_picker_modal("Open Mission", mission_catalogue(), &on_pick_mission);
+    draw_picker_modal("Open Shape",   shape_catalogue(),   &on_pick_shape);
 }
 
 } // namespace
@@ -203,8 +297,10 @@ bool imgui_try_menu_shortcut(const SDL_Event& ev)
 
     switch (k) {
         case SDLK_o:
-            if (shift) call_or_log(g_actions.open_shape, "File > Open Shape");
-            else       call_or_log(g_actions.open_mission, "File > Open Mission");
+            if (shift) { std::fprintf(stdout, "[menu] File > Open Shape\n");
+                         g_open_shape_modal = true; }
+            else       { std::fprintf(stdout, "[menu] File > Open Mission\n");
+                         g_open_mission_modal = true; }
             return true;
         case SDLK_q:
             call_or_log(g_actions.quit, "File > Quit");

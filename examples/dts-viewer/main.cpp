@@ -61,6 +61,7 @@
 #include "mission.hpp"
 #include "hud_bindings.hpp"
 #include "imgui_layer.hpp"
+#include "viewer_state.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -738,6 +739,31 @@ static std::vector<char> read_dts_from_vol(const fs::path& vol_path, const std::
         return std::vector<char>(s.begin(), s.end());
     }
     throw std::runtime_error("no matching DTS found");
+}
+
+// Spec 25/03 — enumerate every `.dts` entry in a VOL. Returns the
+// shape "short names" (stem only, no extension, lowercased) so the
+// picker modal can display them and the relaunch path can pass the
+// name as argv[2] to `--match`.
+static std::vector<std::string> list_dts_in_vol(const fs::path& vol_path)
+{
+    std::vector<std::string> out;
+    std::ifstream in(vol_path, std::ios::binary);
+    if (!in) return out;
+    dv::vol_file_archive plugin;
+    if (!plugin.stream_is_supported(in)) return out;
+    in.clear(); in.seekg(0);
+    auto all = sr::get_all_content(vol_path, in, plugin);
+    for (auto& entry : all) {
+        auto* f = std::get_if<sr::file_info>(&entry);
+        if (!f) continue;
+        auto name = f->filename.string();
+        auto lower = name;
+        for (auto& c : lower) c = std::tolower((unsigned char)c);
+        if (lower.size() < 4 || lower.substr(lower.size()-4) != ".dts") continue;
+        out.push_back(lower.substr(0, lower.size() - 4));
+    }
+    return out;
 }
 
 struct loaded_shape
@@ -1464,6 +1490,11 @@ int main(int argc, char** argv)
                 ? "(none)"
                 : mission_reg.short_names[mission_reg.current_index].c_str());
 
+        // Spec 25/03 — viewer-state init: load Recent MRU from
+        // config.json, populate the mission catalogue for the picker.
+        dts_viewer::load_config();
+        dts_viewer::set_mission_catalogue(mission_reg.short_names);
+
         std::string screenshot_path_ter;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
@@ -1899,6 +1930,33 @@ int main(int argc, char** argv)
                     "WASD=fly  mouse=look  Esc=release  Q=quit\n");
 
         while (running) {
+            // Spec 25/03 — drain the deferred-load queue. The picker
+            // modal calls request_load_mission(...) on selection; we
+            // re-exec into the new mission via the existing execv
+            // path that the [ / ] keys use.
+            if (auto pl = dts_viewer::take_pending_load();
+                pl.kind == dts_viewer::LoadKind::Mission) {
+                for (std::size_t i = 0; i < mission_reg.short_names.size(); ++i) {
+                    if (mission_reg.short_names[i] != pl.name) continue;
+                    fs::path next_ted = mission_reg.ted_paths[i];
+                    std::printf("mission-switch: -> %s (menu)\n", pl.name.c_str());
+                    std::fflush(stdout);
+                    dts_viewer::imgui_shutdown();
+                    SDL_GL_DeleteContext(ctx);
+                    SDL_DestroyWindow(win);
+                    SDL_Quit();
+                    std::string ted_str = next_ted.string();
+                    char* args[] = {
+                        const_cast<char*>(self_arg0.c_str()),
+                        const_cast<char*>("--mission"),
+                        const_cast<char*>(ted_str.c_str()),
+                        nullptr
+                    };
+                    execv(self_arg0.c_str(), args);
+                    std::fprintf(stderr, "mission-switch: execv failed\n");
+                    std::exit(1);
+                }
+            }
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {
                 // Spec 25/01 — ImGui sees the event first. When it
@@ -3271,6 +3329,10 @@ void main() {
     // Spec 25/01 — wire ImGui for the shape-viewer mode too.
     dts_viewer::imgui_init(win, ctx);
 
+    // Spec 25/03 — viewer-state init for the shape-viewer mode.
+    dts_viewer::load_config();
+    dts_viewer::set_shape_catalogue(list_dts_in_vol(vol_path));
+
     // ---- spec 06: texture cache + upload ---------------------------------
     //
     // Two-tier cache (per the spec's Outputs section):
@@ -3814,7 +3876,30 @@ void main() {
     bool screenshot_done = false;
 
     bool running = true;
+    std::string self_arg0_shape = argv[0];
     while (running) {
+        // Spec 25/03 — drain deferred-load. For the shape viewer mode
+        // we re-exec ourselves with `<vol> <shape>`.
+        if (auto pl = dts_viewer::take_pending_load();
+            pl.kind == dts_viewer::LoadKind::Shape) {
+            std::printf("shape-switch: -> %s (menu)\n", pl.name.c_str());
+            std::fflush(stdout);
+            dts_viewer::imgui_shutdown();
+            SDL_GL_DeleteContext(ctx);
+            SDL_DestroyWindow(win);
+            SDL_Quit();
+            std::string vol_str   = vol_path.string();
+            std::string match_str = pl.name;
+            char* args[] = {
+                const_cast<char*>(self_arg0_shape.c_str()),
+                const_cast<char*>(vol_str.c_str()),
+                const_cast<char*>(match_str.c_str()),
+                nullptr
+            };
+            execv(self_arg0_shape.c_str(), args);
+            std::fprintf(stderr, "shape-switch: execv failed\n");
+            std::exit(1);
+        }
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             bool imgui_consumed = dts_viewer::imgui_process_event(ev);
