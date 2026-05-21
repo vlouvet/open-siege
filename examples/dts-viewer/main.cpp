@@ -32,6 +32,13 @@
 #include "pbmp.hpp"
 #include "ppl.hpp"
 #include "materials.hpp"
+#include "interior_renderer.hpp"
+#include "terrain_renderer.hpp"
+#include "content/dig/dig.hpp"
+#include "content/dis/dis.hpp"
+#include "content/dml/dml.hpp"
+#include "content/terrain/dtf.hpp"
+#include "content/terrain/dtb.hpp"
 #include <set>
 #include <cstdint>
 
@@ -886,6 +893,60 @@ void main() {
 }
 )";
 
+// ---------------------- terrain shaders (spec 05-terrain) ----------------------
+//
+// Per-quad flat coloring: 16 hard-coded distinct colors selected via
+// int(mat_idx) % 16. Lambert shading from normal attribute.
+
+static const char* TERRAIN_VS_SRC = R"(
+#version 410 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in float a_mat_idx;
+layout(location = 2) in vec3 a_normal;
+uniform mat4 u_mvp;
+out vec3 v_normal_ws;
+out float v_mat_idx;
+void main() {
+    v_normal_ws = a_normal;
+    v_mat_idx = a_mat_idx;
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+)";
+
+static const char* TERRAIN_FS_SRC = R"(
+#version 410 core
+in vec3 v_normal_ws;
+in float v_mat_idx;
+out vec4 frag;
+void main() {
+    // 16 visually distinct colors.
+    const vec3 palette[16] = vec3[16](
+        vec3(0.90, 0.20, 0.20),
+        vec3(0.20, 0.75, 0.20),
+        vec3(0.20, 0.40, 0.90),
+        vec3(0.90, 0.75, 0.10),
+        vec3(0.70, 0.20, 0.80),
+        vec3(0.10, 0.80, 0.80),
+        vec3(0.90, 0.50, 0.10),
+        vec3(0.50, 0.90, 0.20),
+        vec3(0.10, 0.20, 0.60),
+        vec3(0.80, 0.10, 0.50),
+        vec3(0.30, 0.60, 0.10),
+        vec3(0.60, 0.35, 0.10),
+        vec3(0.20, 0.60, 0.60),
+        vec3(0.75, 0.75, 0.20),
+        vec3(0.50, 0.10, 0.10),
+        vec3(0.70, 0.70, 0.70)
+    );
+    int idx = int(v_mat_idx) % 16;
+    vec3 base = palette[idx];
+    vec3 L = normalize(vec3(0.4, 0.8, 0.6));
+    float lambert = max(dot(normalize(v_normal_ws), L), 0.0);
+    vec3 col = base * (0.30 + 0.70 * lambert);
+    frag = vec4(col, 1.0);
+}
+)";
+
 // ---------------------- PBMP smoke test (spec 02) ----------------------
 //
 // Pull a single .bmp out of a VOL by filename substring, run it through
@@ -1156,6 +1217,98 @@ static int dump_rgba_to_ppm(const fs::path& seed_vol_path,
 
 // ---------------------- main ----------------------
 
+// ---- terrain mission loader -----------------------------------------------
+//
+// Extracts the DTF and first DTB from a .ted PVOL archive, parses them, and
+// returns the parsed structures.  Returns false on any failure.
+static bool load_terrain_from_ted(
+    const fs::path& ted_path,
+    studio::content::terrain::dtf_file& out_dtf,
+    studio::content::terrain::grid_block& out_block)
+{
+    std::ifstream in(ted_path, std::ios::binary);
+    if (!in) {
+        std::fprintf(stderr, "terrain: cannot open %s\n", ted_path.string().c_str());
+        return false;
+    }
+    dv::vol_file_archive plugin;
+    if (!plugin.stream_is_supported(in)) {
+        std::fprintf(stderr, "terrain: %s is not a PVOL archive\n", ted_path.string().c_str());
+        return false;
+    }
+    in.clear(); in.seekg(0);
+
+    auto all = sr::get_all_content(ted_path, in, plugin);
+
+    std::vector<char> dtf_bytes;
+    std::vector<char> dtb_bytes;
+    std::string dtf_name, dtb_name;
+
+    for (auto& entry : all) {
+        auto* f = std::get_if<sr::file_info>(&entry);
+        if (!f) continue;
+        std::string name = f->filename.string();
+        std::string lower = name;
+        for (auto& c : lower) c = (char)std::tolower((unsigned char)c);
+
+        if (dtf_bytes.empty() && lower.size() >= 4
+            && lower.substr(lower.size() - 4) == ".dtf") {
+            std::stringstream buf;
+            in.clear(); in.seekg(0);
+            plugin.extract_file_contents(in, *f, buf);
+            auto s = buf.str();
+            dtf_bytes.assign(s.begin(), s.end());
+            dtf_name = name;
+        }
+        if (dtb_bytes.empty() && lower.size() >= 4
+            && lower.substr(lower.size() - 4) == ".dtb") {
+            std::stringstream buf;
+            in.clear(); in.seekg(0);
+            plugin.extract_file_contents(in, *f, buf);
+            auto s = buf.str();
+            dtb_bytes.assign(s.begin(), s.end());
+            dtb_name = name;
+        }
+        if (!dtf_bytes.empty() && !dtb_bytes.empty()) break;
+    }
+
+    if (dtf_bytes.empty()) {
+        std::fprintf(stderr, "terrain: no .dtf found in %s\n", ted_path.string().c_str());
+        return false;
+    }
+    if (dtb_bytes.empty()) {
+        std::fprintf(stderr, "terrain: no .dtb found in %s\n", ted_path.string().c_str());
+        return false;
+    }
+
+    {
+        std::stringstream ss(std::string(dtf_bytes.begin(), dtf_bytes.end()));
+        auto opt = studio::content::terrain::parse_dtf(ss);
+        if (!opt) {
+            std::fprintf(stderr, "terrain: parse_dtf failed for %s\n", dtf_name.c_str());
+            return false;
+        }
+        out_dtf = std::move(*opt);
+    }
+    {
+        std::stringstream ss(std::string(dtb_bytes.begin(), dtb_bytes.end()));
+        auto opt = studio::content::terrain::parse_dtb(ss);
+        if (!opt) {
+            std::fprintf(stderr, "terrain: parse_dtb failed for %s\n", dtb_name.c_str());
+            return false;
+        }
+        out_block = std::move(*opt);
+    }
+
+    std::printf("terrain: loaded %s + %s\n", dtf_name.c_str(), dtb_name.c_str());
+    std::printf("terrain: scale=%d (%.1f m/quad)  size=%dx%d  heights=[%.1f..%.1f]\n",
+        out_dtf.scale, static_cast<float>(1 << out_dtf.scale),
+        out_block.size[0], out_block.size[1],
+        out_block.height_min, out_block.height_max);
+    std::printf("terrain: material_list=%s\n", out_dtf.material_list_name.c_str());
+    return true;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2) {
@@ -1163,13 +1316,213 @@ int main(int argc, char** argv)
             "usage: %s <path-to-vol> [dts-substring] [--grid N] [--screenshot path.ppm]\n"
             "       %s <path-to-vol> --dump-bmp <bmp-substring>\n"
             "       %s <path-to-vol> --dump-rgba <bmp-substring> <ppl-substring>\n"
+            "       %s --mission <path-to-.ted> [--screenshot path.ppm]\n"
             "  e.g. %s tribes-game/base/Entities.vol chainturret\n"
             "       %s tribes-game/base/Entities.vol larmor --grid 4\n"
             "       %s tribes-game/base/Entities.vol --dump-bmp ammo\n"
-            "       %s tribes-game/base/Entities.vol --dump-rgba ammo Shell.ppl\n",
-            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+            "       %s tribes-game/base/Entities.vol --dump-rgba ammo Shell.ppl\n"
+            "       %s --mission tribes-game/base/missions/1_Welcome.ted\n",
+            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
+
+    // ---- --mission <path> mode: terrain heightmap renderer ----
+    if (argc >= 3 && std::string(argv[1]) == "--mission") {
+        fs::path ted_path = argv[2];
+
+        std::string screenshot_path_ter;
+        for (int i = 3; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a == "--screenshot" && i + 1 < argc) {
+                screenshot_path_ter = argv[i + 1];
+                ++i;
+            }
+        }
+
+        studio::content::terrain::dtf_file dtf;
+        studio::content::terrain::grid_block block;
+        if (!load_terrain_from_ted(ted_path, dtf, block)) return 1;
+
+        const float metres_per_quad = static_cast<float>(1 << dtf.scale);
+
+        if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+            std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+            return 3;
+        }
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
+
+        SDL_Window* win = SDL_CreateWindow("dts-viewer (terrain)",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1920, 1080,
+            SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_GLContext ctx = SDL_GL_CreateContext(win);
+        SDL_GL_SetSwapInterval(1);
+        std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
+
+        // Build terrain mesh.
+        dts_viewer::TerrainMesh terrain = dts_viewer::build_terrain_mesh(block, metres_per_quad);
+        if (!terrain.valid()) {
+            std::fprintf(stderr, "terrain: build_terrain_mesh failed\n");
+            return 2;
+        }
+        std::printf("terrain: mesh built — %d triangles, bbox=[%.1f %.1f %.1f]..[%.1f %.1f %.1f]\n",
+            terrain.index_count / 3,
+            terrain.bbox_min.x, terrain.bbox_min.y, terrain.bbox_min.z,
+            terrain.bbox_max.x, terrain.bbox_max.y, terrain.bbox_max.z);
+
+        // Compile terrain program.
+        GLuint terrain_prog = link_program(
+            compile_shader(GL_VERTEX_SHADER,   TERRAIN_VS_SRC),
+            compile_shader(GL_FRAGMENT_SHADER, TERRAIN_FS_SRC));
+        GLint u_ter_mvp = glGetUniformLocation(terrain_prog, "u_mvp");
+
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_MULTISAMPLE);
+        glDisable(GL_CULL_FACE);
+
+        // Camera centered on terrain midpoint, elevated to see the full surface.
+        glm::vec3 ter_center = 0.5f * (terrain.bbox_min + terrain.bbox_max);
+        glm::vec3 ter_extent = terrain.bbox_max - terrain.bbox_min;
+        float ter_radius = 0.5f * glm::length(ter_extent);
+        if (ter_radius < 1.0f) ter_radius = 1.0f;
+
+        float yaw   = 0.6f;
+        float pitch = 0.5f;   // elevated view to see rolling terrain
+        float dist  = ter_radius * 1.4f;
+        bool dragging = false; int last_x = 0, last_y = 0;
+
+        bool wireframe = false;
+        bool running = true;
+
+        Uint64 fps_window_start = SDL_GetPerformanceCounter();
+        const Uint64 perf_freq  = SDL_GetPerformanceFrequency();
+        int    fps_window_frames = 0;
+
+        int  screenshot_warmup = screenshot_path_ter.empty() ? -1 : 0;
+        bool screenshot_done   = false;
+
+        std::printf("keys: F1=wireframe toggle  drag=orbit  scroll=zoom  Q/Esc=quit\n");
+
+        while (running) {
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                switch (ev.type) {
+                    case SDL_QUIT: running = false; break;
+                    case SDL_KEYDOWN:
+                        if (ev.key.keysym.sym == SDLK_ESCAPE
+                            || ev.key.keysym.sym == SDLK_q) running = false;
+                        if (ev.key.keysym.sym == SDLK_F1) {
+                            wireframe = !wireframe;
+                            std::printf("wireframe: %s\n", wireframe ? "on" : "off");
+                        }
+                        break;
+                    case SDL_MOUSEBUTTONDOWN:
+                        if (ev.button.button == SDL_BUTTON_LEFT) {
+                            dragging = true; last_x = ev.button.x; last_y = ev.button.y;
+                        }
+                        break;
+                    case SDL_MOUSEBUTTONUP:
+                        if (ev.button.button == SDL_BUTTON_LEFT) dragging = false;
+                        break;
+                    case SDL_MOUSEMOTION:
+                        if (dragging) {
+                            yaw   += (ev.motion.x - last_x) * 0.005f;
+                            pitch += (ev.motion.y - last_y) * 0.005f;
+                            pitch = glm::clamp(pitch, 0.05f, 1.55f);
+                            last_x = ev.motion.x; last_y = ev.motion.y;
+                        }
+                        break;
+                    case SDL_MOUSEWHEEL:
+                        dist *= (ev.wheel.y > 0) ? 0.9f : 1.1f;
+                        dist = glm::clamp(dist, ter_radius * 0.05f, ter_radius * 5.0f);
+                        break;
+                }
+            }
+
+            int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
+            glViewport(0, 0, w, h);
+            glClearColor(0.10f, 0.14f, 0.20f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            glm::vec3 eye = ter_center + dist * glm::vec3(
+                std::cos(pitch) * std::sin(yaw),
+                std::sin(pitch),
+                std::cos(pitch) * std::cos(yaw));
+
+            glm::mat4 V = glm::lookAt(eye, ter_center, glm::vec3(0, 1, 0));
+            glm::mat4 P = glm::perspective(glm::radians(45.0f),
+                                           (float)w / (float)h,
+                                           ter_radius * 0.001f,
+                                           ter_radius * 10.0f);
+            glm::mat4 MVP = P * V;
+
+            glUseProgram(terrain_prog);
+            glUniformMatrix4fv(u_ter_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
+
+            if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            dts_viewer::draw_terrain(terrain, u_ter_mvp);
+            if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+            SDL_GL_SwapWindow(win);
+
+            // Screenshot capture.
+            if (screenshot_warmup >= 0 && !screenshot_done) {
+                ++screenshot_warmup;
+                if (screenshot_warmup >= 5) {
+                    int sw, sh; SDL_GL_GetDrawableSize(win, &sw, &sh);
+                    std::vector<std::uint8_t> rgb((std::size_t)sw * sh * 3);
+                    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    glReadBuffer(GL_BACK);
+                    glReadPixels(0, 0, sw, sh, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+                    // Flip rows (GL is bottom-up, PPM is top-down).
+                    std::vector<std::uint8_t> flipped(rgb.size());
+                    const std::size_t row_bytes = (std::size_t)sw * 3;
+                    for (int ry = 0; ry < sh; ++ry) {
+                        std::memcpy(&flipped[(sh - 1 - ry) * row_bytes],
+                                    &rgb[(std::size_t)ry * row_bytes], row_bytes);
+                    }
+                    std::ofstream f(screenshot_path_ter, std::ios::binary);
+                    if (f) {
+                        f << "P6\n" << sw << " " << sh << "\n255\n";
+                        f.write(reinterpret_cast<const char*>(flipped.data()),
+                                flipped.size());
+                        std::fprintf(stderr, "screenshot: wrote %s (%dx%d)\n",
+                            screenshot_path_ter.c_str(), sw, sh);
+                    } else {
+                        std::fprintf(stderr, "screenshot: failed to open %s\n",
+                            screenshot_path_ter.c_str());
+                    }
+                    screenshot_done = true;
+                    running = false;
+                }
+            }
+
+            // FPS counter.
+            ++fps_window_frames;
+            {
+                Uint64 now2 = SDL_GetPerformanceCounter();
+                double elapsed = (double)(now2 - fps_window_start) / (double)perf_freq;
+                if (elapsed >= 1.0) {
+                    std::fprintf(stderr, "fps: %.1f (%d frames in %.2fs)\n",
+                        fps_window_frames / elapsed, fps_window_frames, elapsed);
+                    fps_window_start = now2;
+                    fps_window_frames = 0;
+                }
+            }
+        }
+
+        SDL_GL_DeleteContext(ctx);
+        SDL_DestroyWindow(win);
+        SDL_Quit();
+        return 0;
+    }
+
     fs::path vol_path = argv[1];
 
     // spec 09: --grid N renders N*N instances on a grid with desync'd phase.
@@ -1178,6 +1531,7 @@ int main(int argc, char** argv)
     // image). Both flags are optional and order-independent after argv[1].
     int  grid_n = 1;
     std::string screenshot_path;
+    std::string interior_match; // non-empty when --interior <name> was given
     // Re-parse argv for these flags AFTER the existing positional dts-match
     // logic runs; we strip them out by replacing with empty strings so the
     // legacy code path (which looks at argv[2]) ignores them. Cleaner than
@@ -1191,6 +1545,12 @@ int main(int argc, char** argv)
             ++i;
         } else if (a == "--screenshot" && i + 1 < argc) {
             screenshot_path = argv[i + 1];
+            argv[i] = (char*)"";
+            argv[i + 1] = (char*)"";
+            ++i;
+        } else if (a == "--interior" && i + 1 < argc) {
+            interior_match = argv[i + 1];
+            for (auto& c : interior_match) c = (char)std::tolower((unsigned char)c);
             argv[i] = (char*)"";
             argv[i + 1] = (char*)"";
             ++i;
@@ -1215,6 +1575,271 @@ int main(int argc, char** argv)
         for (auto& c : bmp_match) c = std::tolower((unsigned char)c);
         for (auto& c : ppl_match) c = std::tolower((unsigned char)c);
         return dump_rgba_to_ppm(vol_path, bmp_match, ppl_match);
+    }
+
+    // ---- --interior mode: DIS/DIG interior renderer --------------------------------
+    if (!interior_match.empty()) {
+        // Collect sibling VOLs.
+        std::vector<fs::path> int_vols;
+        int_vols.push_back(vol_path);
+        {
+            const fs::path dir = vol_path.parent_path();
+            if (!dir.empty() && fs::exists(dir)) {
+                for (const auto& ent : fs::directory_iterator(dir)) {
+                    if (!ent.is_regular_file()) continue;
+                    auto p = ent.path();
+                    auto ext = p.extension().string();
+                    for (auto& c : ext) c = std::tolower((unsigned char)c);
+                    if (ext != ".vol") continue;
+                    if (fs::equivalent(p, vol_path)) continue;
+                    int_vols.push_back(p);
+                }
+            }
+        }
+
+        // Find DIS file.
+        std::vector<char> dis_bytes;
+        std::string dis_name;
+        for (const auto& v : int_vols) {
+            if (read_named_file_from_vol(v, interior_match, ".dis", dis_bytes, dis_name)) break;
+        }
+        if (dis_bytes.empty()) {
+            std::fprintf(stderr, "interior: no DIS matching '%s' found\n", interior_match.c_str());
+            return 1;
+        }
+
+        // Parse DIS.
+        std::stringstream dis_ss(std::string(dis_bytes.begin(), dis_bytes.end()));
+        auto dis_opt = studio::content::dis::parse_dis(dis_ss);
+        if (!dis_opt) {
+            std::fprintf(stderr, "interior: failed to parse DIS '%s'\n", dis_name.c_str());
+            return 1;
+        }
+        const auto& dis = *dis_opt;
+        std::printf("interior: DIS '%s' — %zu LODs, DML='%s'\n",
+            dis_name.c_str(), dis.lods.size(), dis.material_list_file.c_str());
+
+        // Pick highest-detail LOD (last = largest min_pixels = most detail).
+        const std::string dig_name = dis.lods.empty() ? "" : dis.lods.back().geometry_file;
+        if (dig_name.empty()) {
+            std::fprintf(stderr, "interior: DIS has no LOD records\n");
+            return 1;
+        }
+        std::string dig_lower = dig_name;
+        for (auto& c : dig_lower) c = std::tolower((unsigned char)c);
+
+        // Find and parse DIG.
+        std::vector<char> dig_bytes;
+        std::string dig_found;
+        for (const auto& v : int_vols) {
+            if (read_named_file_from_vol(v, dig_lower, ".dig", dig_bytes, dig_found)) break;
+        }
+        if (dig_bytes.empty()) {
+            std::fprintf(stderr, "interior: DIG '%s' not found\n", dig_name.c_str());
+            return 1;
+        }
+        std::stringstream dig_ss(std::string(dig_bytes.begin(), dig_bytes.end()));
+        auto dig_opt = studio::content::dig::read_dig_file(dig_ss);
+        if (!dig_opt) {
+            std::fprintf(stderr, "interior: failed to parse DIG '%s'\n", dig_found.c_str());
+            return 1;
+        }
+        std::printf("interior: DIG '%s' — %zu surfaces, %zu pts3, %zu pts2\n",
+            dig_found.c_str(),
+            dig_opt->surfaces.size(), dig_opt->points3.size(), dig_opt->points2.size());
+
+        // Find and parse DML.
+        std::string dml_lower = dis.material_list_file;
+        for (auto& c : dml_lower) c = std::tolower((unsigned char)c);
+        std::vector<char> dml_bytes;
+        std::string dml_found;
+        for (const auto& v : int_vols) {
+            if (read_named_file_from_vol(v, dml_lower, ".dml", dml_bytes, dml_found)) break;
+        }
+        if (dml_bytes.empty()) {
+            std::fprintf(stderr, "interior: DML '%s' not found\n",
+                dis.material_list_file.c_str());
+            return 1;
+        }
+        std::stringstream dml_ss(std::string(dml_bytes.begin(), dml_bytes.end()));
+        auto dml_opt = studio::content::dml::get_dml_data(dml_ss);
+        if (!dml_opt) {
+            std::fprintf(stderr, "interior: failed to parse DML '%s'\n", dml_found.c_str());
+            return 1;
+        }
+
+        // MaterialResolver.
+        dts_viewer::MaterialResolver int_resolver;
+        for (const auto& v : int_vols) int_resolver.add_vol(v);
+
+        // SDL + GL.
+        if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+            std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+            return 3;
+        }
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
+
+        SDL_Window* win_i = SDL_CreateWindow("dts-viewer (interior)",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720,
+            SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_GLContext ctx_i = SDL_GL_CreateContext(win_i);
+        SDL_GL_SetSwapInterval(1);
+        std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
+
+        // Load palettes for texture expansion.
+        std::vector<Palette> int_pals;
+        auto try_int_ppl = [&](const std::string& match, const std::string& ext) {
+            std::vector<char> b; std::string fn;
+            for (const auto& v : int_vols) {
+                if (read_named_file_from_vol(v, match, ext, b, fn)) {
+                    std::stringstream ss(std::string(b.begin(), b.end()));
+                    auto pals = load_ppl(ss);
+                    for (auto& p : pals) int_pals.push_back(std::move(p));
+                    return true;
+                }
+            }
+            return false;
+        };
+        try_int_ppl("shell.ppl", ".ppl");
+        const char* world_ppls[] = {
+            "lush.day.ppl", "ice.day.ppl", "desert.day.ppl",
+            "mars.day.ppl", "mud.day.ppl", "alien.day.ppl"
+        };
+        for (const char* wp : world_ppls) { if (try_int_ppl(wp, ".ppl")) break; }
+        auto int_pal_map = by_index(int_pals);
+
+        // Build mesh.
+        dts_viewer::InteriorMesh int_mesh = dts_viewer::build_interior_mesh(
+            *dig_opt, *dml_opt, int_resolver, int_pal_map);
+        if (!int_mesh.valid()) {
+            std::fprintf(stderr, "interior: no renderable geometry\n");
+            SDL_GL_DeleteContext(ctx_i);
+            SDL_DestroyWindow(win_i);
+            SDL_Quit();
+            return 2;
+        }
+        std::printf("interior: %d indices, %zu ranges\n",
+            int_mesh.index_count, int_mesh.ranges.size());
+
+        GLuint int_prog = link_program(
+            compile_shader(GL_VERTEX_SHADER,   VS_SRC),
+            compile_shader(GL_FRAGMENT_SHADER, FS_SRC));
+        GLint int_u_mvp         = glGetUniformLocation(int_prog, "u_mvp");
+        GLint int_u_normal_mat  = glGetUniformLocation(int_prog, "u_normal_mat");
+        GLint int_u_has_texture = glGetUniformLocation(int_prog, "u_has_texture");
+        GLint int_u_tex0        = glGetUniformLocation(int_prog, "u_tex0");
+
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_MULTISAMPLE);
+        glDisable(GL_CULL_FACE);
+
+        glm::vec3 ic = 0.5f * (int_mesh.bbox_min + int_mesh.bbox_max);
+        float     ir = 0.5f * glm::length(int_mesh.bbox_max - int_mesh.bbox_min);
+        if (ir < 1.0f) ir = 1.0f;
+
+        float yaw_i = 0.6f, pitch_i = 0.4f, dist_i = ir * 2.5f;
+        bool drag_i = false; int lx_i = 0, ly_i = 0;
+        bool wf_i = false, run_i = true;
+        int sc_warm_i = screenshot_path.empty() ? -1 : 0;
+        bool sc_done_i = false;
+
+        std::printf("keys: F1=wireframe  drag=orbit  scroll=zoom  Q/Esc=quit\n");
+
+        while (run_i) {
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                switch (ev.type) {
+                    case SDL_QUIT: run_i = false; break;
+                    case SDL_KEYDOWN:
+                        if (ev.key.keysym.sym == SDLK_ESCAPE || ev.key.keysym.sym == SDLK_q)
+                            run_i = false;
+                        if (ev.key.keysym.sym == SDLK_F1) {
+                            wf_i = !wf_i;
+                            std::printf("wireframe: %s\n", wf_i ? "on" : "off");
+                        }
+                        break;
+                    case SDL_MOUSEBUTTONDOWN:
+                        if (ev.button.button == SDL_BUTTON_LEFT) {
+                            drag_i = true; lx_i = ev.button.x; ly_i = ev.button.y;
+                        }
+                        break;
+                    case SDL_MOUSEBUTTONUP:
+                        if (ev.button.button == SDL_BUTTON_LEFT) drag_i = false;
+                        break;
+                    case SDL_MOUSEMOTION:
+                        if (drag_i) {
+                            yaw_i   += (ev.motion.x - lx_i) * 0.005f;
+                            pitch_i += (ev.motion.y - ly_i) * 0.005f;
+                            pitch_i = glm::clamp(pitch_i, -1.5f, 1.5f);
+                            lx_i = ev.motion.x; ly_i = ev.motion.y;
+                        }
+                        break;
+                    case SDL_MOUSEWHEEL:
+                        dist_i *= (ev.wheel.y > 0) ? 0.9f : 1.1f;
+                        dist_i = glm::clamp(dist_i, ir * 0.05f, ir * 10.0f);
+                        break;
+                }
+            }
+
+            int wi, hi; SDL_GL_GetDrawableSize(win_i, &wi, &hi);
+            glViewport(0, 0, wi, hi);
+            glClearColor(0.10f, 0.14f, 0.20f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            glm::vec3 eye_i = ic + dist_i * glm::vec3(
+                std::cos(pitch_i) * std::sin(yaw_i),
+                std::sin(pitch_i),
+                std::cos(pitch_i) * std::cos(yaw_i));
+            glm::mat4 V_i = glm::lookAt(eye_i, ic, glm::vec3(0, 1, 0));
+            glm::mat4 P_i = glm::perspective(glm::radians(60.0f),
+                (float)wi / (float)hi, ir * 0.001f, ir * 20.0f);
+            glm::mat4 MVP_i = P_i * V_i;
+            glm::mat3 nm_i  = glm::mat3(glm::transpose(glm::inverse(V_i)));
+
+            glUseProgram(int_prog);
+            glUniformMatrix3fv(int_u_normal_mat, 1, GL_FALSE, glm::value_ptr(nm_i));
+
+            if (wf_i) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            dts_viewer::draw_interior(int_mesh, int_u_mvp, int_u_has_texture, int_u_tex0, MVP_i);
+            if (wf_i) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+            SDL_GL_SwapWindow(win_i);
+
+            if (sc_warm_i >= 0 && !sc_done_i) {
+                ++sc_warm_i;
+                if (sc_warm_i >= 5) {
+                    int sw, sh; SDL_GL_GetDrawableSize(win_i, &sw, &sh);
+                    std::vector<std::uint8_t> rgb((std::size_t)sw * sh * 3);
+                    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    glReadBuffer(GL_BACK);
+                    glReadPixels(0, 0, sw, sh, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+                    std::vector<std::uint8_t> flipped(rgb.size());
+                    const std::size_t rb = (std::size_t)sw * 3;
+                    for (int ry = 0; ry < sh; ++ry)
+                        std::memcpy(&flipped[(sh-1-ry)*rb], &rgb[(std::size_t)ry*rb], rb);
+                    std::ofstream fsc(screenshot_path, std::ios::binary);
+                    if (fsc) {
+                        fsc << "P6\n" << sw << " " << sh << "\n255\n";
+                        fsc.write(reinterpret_cast<const char*>(flipped.data()), flipped.size());
+                        std::fprintf(stderr, "screenshot: wrote %s\n", screenshot_path.c_str());
+                    }
+                    sc_done_i = true;
+                    run_i = false;
+                }
+            }
+        }
+
+        SDL_GL_DeleteContext(ctx_i);
+        SDL_DestroyWindow(win_i);
+        SDL_Quit();
+        return 0;
     }
 
     std::string dts_match = argc >= 3 ? argv[2] : "";
