@@ -47,7 +47,8 @@ void walk(
         if constexpr (std::is_same_v<T, node_static_shape>) {
             auto it = ambient_map().find(p.data_block.name);
             if (it != ambient_map().end()) {
-                glm::vec3 pos{ p.xf.position[0], p.xf.position[1], p.xf.position[2] };
+                // Tribes Z-up -> GL Y-up (see mis_axes.hpp).
+                glm::vec3 pos{ p.xf.position[0], p.xf.position[2], p.xf.position[1] };
                 SoundHandle h = audio_play_at(placeholder, pos,
                     8.0f, 100.0f, 1.0f, /*looping*/true);
                 if (h != kInvalidSound) state.voices.push_back(h);

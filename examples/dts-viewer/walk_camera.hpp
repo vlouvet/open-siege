@@ -67,7 +67,9 @@ inline void update_camera_walk(
 }
 
 // Linear scan over scene_graph for nearest Marker with dataBlock "DropPointMarker".
-// Returns std::nullopt if none found.
+// Returns std::nullopt if none found. `near_pos` is in GL world coords
+// (Y-up); the returned array is also in GL world coords (Tribes Z-up
+// permutation already applied via mis_pos_to_gl).
 inline std::optional<std::array<float, 3>> nearest_drop_point(
     const studio::content::mission::scene_graph& scene,
     const std::array<float, 3>& near_pos)
@@ -78,13 +80,15 @@ inline std::optional<std::array<float, 3>> nearest_drop_point(
     float best_d2 = 1e30f;
 
     auto consider = [&](const transform& xf) {
-        float dx = xf.position[0] - near_pos[0];
-        float dy = xf.position[1] - near_pos[1];
-        float dz = xf.position[2] - near_pos[2];
+        // Convert marker MIS coords -> GL coords (Z-up to Y-up swap).
+        std::array<float, 3> p{ xf.position[0], xf.position[2], xf.position[1] };
+        float dx = p[0] - near_pos[0];
+        float dy = p[1] - near_pos[1];
+        float dz = p[2] - near_pos[2];
         float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 < best_d2) {
             best_d2 = d2;
-            best = xf.position;
+            best = p;
         }
     };
 

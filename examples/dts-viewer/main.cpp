@@ -66,6 +66,7 @@
 #include "inspector.hpp"
 #include "open_url.hpp"
 #include "help_menu.hpp"
+#include "mis_axes.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1607,14 +1608,23 @@ int main(int argc, char** argv)
         glEnable(GL_MULTISAMPLE);
         glDisable(GL_CULL_FACE);
 
-        // Camera positioned above terrain centre, looking inward.
+        // Camera positioned above terrain centre, looking inward. Use
+        // the horizontal (XZ) radius for distance + scale so the
+        // camera doesn't end up at a ridiculous Y-altitude on flat-ish
+        // missions (terrain Y extent is tiny vs 2048m XZ). Pitch down
+        // gently from a height of ~150m so player-scale entities like
+        // citadel interiors are visible at spawn instead of dots.
         glm::vec3 ter_center = 0.5f * (terrain.bbox_min + terrain.bbox_max);
         glm::vec3 ter_extent = terrain.bbox_max - terrain.bbox_min;
-        float ter_radius = 0.5f * glm::length(ter_extent);
-        if (ter_radius < 1.0f) ter_radius = 1.0f;
+        float ter_radius_h = 0.5f * std::sqrt(ter_extent.x * ter_extent.x
+                                            + ter_extent.z * ter_extent.z);
+        if (ter_radius_h < 1.0f) ter_radius_h = 1.0f;
+        float ter_radius = ter_radius_h;  // legacy alias used below
 
         dts_viewer::Camera ter_cam;
-        ter_cam.position    = ter_center + glm::vec3(0, ter_radius * 0.4f, ter_radius);
+        ter_cam.position    = glm::vec3(ter_center.x,
+                                        terrain.bbox_max.y + 150.0f,
+                                        ter_center.z + ter_radius_h * 0.6f);
         ter_cam.yaw         = glm::pi<float>();  // face -Z toward center
         ter_cam.pitch       = -0.35f;
         ter_cam.move_speed  = ter_radius * 0.05f;
@@ -1935,7 +1945,7 @@ int main(int argc, char** argv)
                     if constexpr (std::is_same_v<T,
                         studio::content::mission::node_static_shape>)
                     {
-                        glm::vec3 wp{ p.xf.position[0], p.xf.position[1], p.xf.position[2] };
+                        glm::vec3 wp = dts_viewer::mis_pos_to_gl(p.xf.position);
                         std::array<float,3> col{ 0.4f, 0.7f, 0.4f };
                         if (p.data_block.name == "Generator" ||
                             p.data_block.name == "PortGenerator")
@@ -2458,23 +2468,13 @@ int main(int argc, char** argv)
             if (ter_mission && hud.show_interiors && !placed_interiors.empty()) {
                 glUseProgram(int_prog_m);
                 for (auto& pi : placed_interiors) {
-                    glm::vec3 t{ pi.xf.position[0], pi.xf.position[1], pi.xf.position[2] };
-                    // Rotation arrives as (rx, ry, rz, w).  When w==1 the
-                    // first three floats are typically Euler radians (XYZ
-                    // in the corpus); if w differs it's a true quaternion.
-                    glm::mat4 R(1.0f);
-                    if (std::abs(pi.xf.rotation[3] - 1.0f) < 1e-3f) {
-                        R = glm::rotate(R, pi.xf.rotation[0], glm::vec3(1,0,0));
-                        R = glm::rotate(R, pi.xf.rotation[1], glm::vec3(0,1,0));
-                        R = glm::rotate(R, pi.xf.rotation[2], glm::vec3(0,0,1));
-                    } else {
-                        glm::quat q(pi.xf.rotation[3],
-                                    pi.xf.rotation[0],
-                                    pi.xf.rotation[1],
-                                    pi.xf.rotation[2]);
-                        R = glm::mat4_cast(q);
-                    }
-                    glm::mat4 M = glm::translate(glm::mat4(1.0f), t) * R;
+                    // Interior meshes carry vertex data in Tribes Z-up
+                    // coords; the MIS transform is also Tribes coords.
+                    // mis_world_matrix builds M = P_gl * T * R so the
+                    // building stands upright at the right yaw under
+                    // GL Y-up.
+                    glm::mat4 M = dts_viewer::mis_world_matrix(
+                        pi.xf.position, pi.xf.rotation);
                     glm::mat4 MVP_pi = MVP * M;
                     dts_viewer::draw_interior(pi.mesh,
                         int_u_mvp_m, int_u_has_texture_m, int_u_tex0_m,
@@ -2493,7 +2493,7 @@ int main(int argc, char** argv)
                         u_flat_mvp, u_flat_color, MVP);
                 };
                 for (auto& ss : ent_statics) {
-                    glm::vec3 wp{ ss.xf.position[0], ss.xf.position[1], ss.xf.position[2] };
+                    glm::vec3 wp = dts_viewer::mis_pos_to_gl(ss.xf.position);
                     std::array<float,3> col{ 0.6f, 0.6f, 0.6f };
                     if (ss.data_block_name == "Generator" ||
                         ss.data_block_name == "PortGenerator")
@@ -2506,12 +2506,12 @@ int main(int argc, char** argv)
                 }
                 for (auto& it : ent_items) {
                     if (!it.active) continue;
-                    glm::vec3 wp{ it.xf.position[0], it.xf.position[1], it.xf.position[2] };
+                    glm::vec3 wp = dts_viewer::mis_pos_to_gl(it.xf.position);
                     draw(wp, 1.0f, { 1.0f, 0.4f, 1.0f });
                 }
                 for (auto& tu : ent_turrets) {
                     if (tu.destroyed) continue;
-                    glm::vec3 wp{ tu.xf.position[0], tu.xf.position[1], tu.xf.position[2] };
+                    glm::vec3 wp = dts_viewer::mis_pos_to_gl(tu.xf.position);
                     draw(wp, 2.0f, { 0.95f, 0.1f, 0.1f });
                 }
                 for (auto& m : ent_moveables) {
@@ -2519,9 +2519,8 @@ int main(int argc, char** argv)
                 }
                 for (auto& v : ent_vehicles) {
                     if (!v.visible) continue;
-                    glm::vec3 wp{ v.pad_xf.position[0],
-                                  v.pad_xf.position[1] + 1.5f,
-                                  v.pad_xf.position[2] };
+                    glm::vec3 wp = dts_viewer::mis_pos_to_gl(v.pad_xf.position);
+                    wp.y += 1.5f;
                     draw(wp, 4.0f, { 0.1f, 0.8f, 0.9f });
                 }
             }

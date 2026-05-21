@@ -149,8 +149,8 @@ std::vector<MoveableState> collect_moveables(
                 s.xf = p.xf;
                 s.data_block_name = p.data_block.name;
                 s.endpoint_a = glm::vec3{ p.xf.position[0],
-                                          p.xf.position[1],
-                                          p.xf.position[2] };
+                                          p.xf.position[2],
+                                          p.xf.position[1] };
                 s.endpoint_b = s.endpoint_a + glm::vec3{ 0.0f, 10.0f, 0.0f };
                 s.close_time = p.close_time > 0.1f ? p.close_time : 4.0f;
                 s.dwell_time = p.delay_time > 0.0f ? p.delay_time : 2.0f;
@@ -248,7 +248,7 @@ void tick_items(std::vector<ItemState>& items,
             if (it.respawn_remaining <= 0.0f) it.active = true;
             continue;
         }
-        glm::vec3 pos{ it.xf.position[0], it.xf.position[1], it.xf.position[2] };
+        glm::vec3 pos{ it.xf.position[0], it.xf.position[2], it.xf.position[1] };
         float dist = glm::length(player.pos - pos);
         if (dist > kPickupRadius) continue;
         // Effect by datablock
@@ -291,7 +291,7 @@ void tick_turrets(std::vector<TurretState>& turrets,
             t.fire_cooldown = std::max(0.0f, t.fire_cooldown - dt);
             continue;
         }
-        glm::vec3 pos{ t.xf.position[0], t.xf.position[1], t.xf.position[2] };
+        glm::vec3 pos{ t.xf.position[0], t.xf.position[2], t.xf.position[1] };
         glm::vec3 d = pos - player.pos;
         float dist = glm::length(d);
         t.fire_cooldown = std::max(0.0f, t.fire_cooldown - dt);

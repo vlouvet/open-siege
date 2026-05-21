@@ -98,8 +98,9 @@ void draw_markers_debug(
     glBindVertexArray(vao);
 
     auto draw_at = [&](const transform& xf, const std::array<float, 3>& color, float scale) {
+        // Tribes Z-up -> GL Y-up (see mis_axes.hpp).
         glm::mat4 M = glm::translate(glm::mat4(1.0f),
-            glm::vec3(xf.position[0], xf.position[1], xf.position[2]));
+            glm::vec3(xf.position[0], xf.position[2], xf.position[1]));
         M = glm::scale(M, glm::vec3(scale));
         glm::mat4 MVP = view_proj * M;
         if (u_mvp_loc >= 0)

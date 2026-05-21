@@ -20,7 +20,8 @@ void walk_collect(
         if constexpr (std::is_same_v<T, node_static_shape>) {
             if (p.data_block.name == "InventoryStation") {
                 InvStation s;
-                s.pos = glm::vec3{ p.xf.position[0], p.xf.position[1], p.xf.position[2] };
+                // Tribes Z-up -> GL Y-up (see mis_axes.hpp).
+                s.pos = glm::vec3{ p.xf.position[0], p.xf.position[2], p.xf.position[1] };
                 out.push_back(s);
             }
         }
