@@ -34,31 +34,37 @@ enum class ProjType : std::uint8_t
 
 struct ProjectileTuning
 {
-    // Disc
-    float disc_init_speed    = 80.0f;
-    float disc_gravity_scale = 0.0f;
-    float disc_lifetime      = 5.0f;
-    float disc_splash_radius = 5.0f;
-    float disc_splash_dmg    = 60.0f;
-    float disc_splash_impulse = 18.0f;     // delta-v applied at point-blank
-    float disc_self_dmg_coef  = 0.5f;
-    float disc_fire_interval  = 1.2f;      // seconds between shots
+    // Canonical values cross-checked against `baseProjData.cs` from
+    // scripts.vol (open community data per CLAUDE.md).  Source labels:
+    //   muzzleVelocity / terminalVelocity / explosionRadius / damageValue
+    //   / kickBackStrength / liveTime / elasticity.  damageValue is on
+    //   the engine's 0..1 HP scale; we multiply by 100 for HP units.
 
-    // Grenade
+    // Disc — RocketData DiscShell
+    float disc_init_speed    = 80.0f;      // ~ terminalVelocity 80 (muzzle 65; accel 5)
+    float disc_gravity_scale = 0.0f;       // RocketData ignores gravity in Tribes
+    float disc_lifetime      = 5.0f;
+    float disc_splash_radius = 7.5f;       // explosionRadius
+    float disc_splash_dmg    = 50.0f;      // damageValue 0.5 * 100
+    float disc_splash_impulse = 22.0f;     // m/s point-blank; tuned from kickBackStrength 150
+    float disc_self_dmg_coef  = 0.5f;
+    float disc_fire_interval  = 1.2f;
+
+    // Grenade — GrenadeData GrenadeShell
     float gren_init_speed     = 30.0f;
     float gren_gravity_scale  = 1.0f;
     float gren_drag           = 0.4f;
-    float gren_fuse_seconds   = 3.0f;
-    float gren_bounce_decay   = 0.45f;     // velocity multiplier on each bounce
+    float gren_fuse_seconds   = 1.0f;      // liveTime
+    float gren_bounce_decay   = 0.45f;     // elasticity (matches existing value)
     int   gren_max_bounces    = 3;
-    float gren_splash_radius  = 6.0f;
-    float gren_splash_dmg     = 80.0f;
-    float gren_splash_impulse = 20.0f;
+    float gren_splash_radius  = 15.0f;     // explosionRadius
+    float gren_splash_dmg     = 40.0f;     // damageValue 0.4 * 100
+    float gren_splash_impulse = 22.0f;
     float gren_fire_interval  = 1.0f;
 
-    // ChainBullet
-    float chain_range         = 250.0f;
-    float chain_dmg           = 8.0f;
+    // Chain — BulletData ChaingunBullet
+    float chain_range         = 250.0f;    // muzzleVelocity 425 * totalTime 1.5 ~= 637 — clamped
+    float chain_dmg           = 11.0f;     // damageValue 0.11 * 100
     float chain_fire_interval = 0.10f;
 };
 
