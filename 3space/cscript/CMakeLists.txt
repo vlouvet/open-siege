@@ -36,7 +36,9 @@ set(CSCRIPT_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 # Spec 15/03 (namespace rename) and a later 15/02-followup (math/ import)
 # will widen the set as the cascade is resolved.
 set(CSCRIPT_VM_SOURCES
-        ${CSCRIPT_ROOT}/core/strings/stringFunctions.cpp)
+        ${CSCRIPT_ROOT}/core/strings/stringFunctions.cpp
+        # Spec 15/05 — dialect detector. Pure string analysis, no VM deps.
+        ${CSCRIPT_ROOT}/console/torquescript/dialectDetect.cpp)
 
 add_library(cscript_core STATIC EXCLUDE_FROM_ALL ${CSCRIPT_VM_SOURCES})
 set_property(TARGET cscript_core PROPERTY CXX_STANDARD 17)
@@ -59,3 +61,22 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR
     target_compile_options(cscript_core PRIVATE
             -Wno-everything)
 endif()
+
+# --- Spec 15/05 dialect-detector test executable ---------------------------
+#
+# Standalone unit test that exercises detectDialect() against canned
+# inputs mirroring the shipping T1 .cs / ted.vol corpus. Doesn't depend
+# on Catch2 or the VM — pure printf-based assertion. EXCLUDE_FROM_ALL
+# so it doesn't slow normal builds.
+add_executable(cscript_dialect_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/dialectDetect.test.cpp)
+set_property(TARGET cscript_dialect_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_dialect_test PRIVATE cscript_core)
+
+# Corpus walker — classifies every .cs file in a directory and compares
+# against an expected dialect. Drives the extracted scripts.vol / ted.vol
+# fixtures (extracted with vol-list).
+add_executable(cscript_dialect_corpus EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/dialectCorpus.test.cpp)
+set_property(TARGET cscript_dialect_corpus PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_dialect_corpus PRIVATE cscript_core)

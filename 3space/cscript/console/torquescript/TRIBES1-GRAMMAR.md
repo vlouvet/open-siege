@@ -57,3 +57,81 @@ the same VM-runs prerequisite.
 - The grammar regen toolchain pinning (bison 3.8.2 + flex 2.6.4) is
   documented here; if upstream resyncs introduce grammar drift, the
   regen flow is `flex -o CMDscan.cpp CMDscan.l` from this directory.
+
+## Dialect B (ConsoleWorld) detection — spec 15/05
+
+Tribes 1 ships TWO coexisting CScript dialects (see CS-SCRIPT.md research
+doc). Dialect A is the C-like syntax that became TorqueScript; dialect B
+is the shell-style ConsoleWorld syntax used by the terrain editor.
+
+Spec 15/05 implements the **detector** (`dialectDetect.h/.cpp`) — the
+file-load entry point that classifies a script as dialect A or B. The
+detector is independently testable and ships with two test executables:
+
+| Target                    | Purpose                                                |
+|---------------------------|--------------------------------------------------------|
+| `cscript_dialect_test`    | 28 canned unit cases covering both dialects + edge cases (block comments, '#' headers, false-positive guards, length-bounded input). |
+| `cscript_dialect_corpus`  | Walks a directory of `.cs` files and compares each classification against an expected dialect. Drives the extracted scripts.vol / ted.vol corpora. |
+
+### Corpus verification results
+
+Both runs are 100% accurate (after declaring two documented exceptions
+that are actually dialect-B scripts shipped in scripts.vol):
+
+```
+$ build/cscript/cscript_dialect_corpus /tmp/scripts A
+cscript_dialect_corpus: /tmp/scripts expectation=A scanned=80 matched=80 mismatched=0
+
+$ build/cscript/cscript_dialect_corpus /tmp/ted B
+cscript_dialect_corpus: /tmp/ted expectation=B scanned=40 matched=40 mismatched=0
+```
+
+The two known dialect-B-in-scripts.vol files are `changeMission.cs`
+(4-line shell script) and `loadShow.cs` (alias definitions).
+
+### Classification heuristic (in priority order)
+
+1. **First-line dialect-A leads** — `function`, `datablock`, `singleton`,
+   `package`, `switch`, `instant Type`, `new Type`, lines starting with
+   `$` or `%`. These shapes never appear at the head of a dialect-B file.
+2. **First-line dialect-B leads** — `if test`, `endif`, `set Ident Value`,
+   `alias Ident "..."`, `Ted::*` (editor namespace), `not Ident`, plus a
+   30-entry whitelist of ConsoleWorld bareword commands observed in
+   ted.vol (`newClient`, `focusClient`, `addToolButton`, `confirmBox`,
+   `listFiles`, etc.).
+3. **Structural brace presence** — dialect-B never uses `{` for blocks,
+   so finding any structural `{` (outside strings/comments) proves
+   dialect A. This catches T1's implicit-datablock form:
+   ```
+   SoundProfileData Profile3dVoice
+   {
+       baseVolume = 0;
+       ...
+   }
+   ```
+   which lacks a leading keyword on its first significant line.
+4. **Default A** — if no discriminator fires, return dialect A (the
+   engine's default load context).
+
+### Dialect-B *parser* — deferred to a follow-up spec
+
+The detector ships in this spec. The full dialect-B **parser** (newline-
+significant Flex states + parallel Bison grammar accepting `if test ...
+endif`, `set X Y`, bareword calls, namespace-qualified calls like
+`Ted::*`) is deferred. Justification:
+
+- Dialect-B is overwhelmingly used by the **terrain editor** (40 of
+  ~42 dialect-B files in the entire shipping freeware corpus live in
+  ted.vol). The editor is not on the critical path to single-player
+  gameplay.
+- The only non-editor dialect-B script that gameplay touches is
+  `changeMission.cs`, which is 4 lines of shell commands. Once the VM
+  is live, that file is small enough to special-case at the load layer
+  or hand-translate to dialect A without a full parser.
+- The dialect-B parser would require a non-trivial second grammar
+  (separate Bison file or parallel rule set) — substantially more code
+  than the detector. Deferring keeps Tier-C scope honest.
+
+When a follow-up spec lights it up, the entry point is in place: the
+detector returns the dialect; the loader can dispatch to whichever
+parser is wired in.
