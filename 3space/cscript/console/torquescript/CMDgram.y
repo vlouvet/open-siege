@@ -515,6 +515,20 @@ expr
       { $$ = InternalSlotAccessNode::alloc( $1.lineNumber, $1.object, $1.slotExpr, $1.recurse); }
    | IDENT
       { $$ = ConstantNode::alloc( $1.lineNumber, $1.value ); }
+   // Open Siege spec 17/04 — bare namespace-qualified identifier as a value.
+   //
+   // Tribes-1 corpus frequently passes function references unquoted, e.g.
+   //   Group::iterateRecursive(MissionGroup, ObjectiveMission::initCheck);
+   // The C++ side does name-based dispatch (Con::execute("Namespace::Name", ...)).
+   // The funcall_expr rule below covers `IDENT :: IDENT '(' args ')'`; LALR
+   // lookahead reduces to this rule only when the next token is NOT '(',
+   // so the function-call form continues to win for `Foo::bar(arg)`.
+   | IDENT opCOLONCOLON IDENT
+      {
+         char buf[256];
+         dSprintf(buf, sizeof(buf), "%s::%s", $1.value, $3.value);
+         $$ = ConstantNode::alloc( $1.lineNumber, StringTable->insert(buf) );
+      }
    | STRATOM
       { $$ = StrConstNode::alloc( $1.lineNumber, $1.value, false); }
    | VAR

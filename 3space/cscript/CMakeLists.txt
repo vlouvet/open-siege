@@ -261,3 +261,11 @@ add_executable(cscript_hud_bindings_test EXCLUDE_FROM_ALL
 set_property(TARGET cscript_hud_bindings_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(cscript_hud_bindings_test PRIVATE cscript_core)
 
+# Spec 17/04 namespace-qualified function-reference args — `Foo::bar`
+# (no parens) as an expression value yields "Foo::bar" string. Used
+# by objectives.cs:300-style iteration callbacks.
+add_executable(cscript_funcref_test EXCLUDE_FROM_ALL
+        ${CSCRIPT_ROOT}/tests/funcref.test.cpp)
+set_property(TARGET cscript_funcref_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(cscript_funcref_test PRIVATE cscript_core)
+
