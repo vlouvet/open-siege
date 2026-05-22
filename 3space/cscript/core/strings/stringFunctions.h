@@ -41,9 +41,9 @@
 #define strcasecmp   _stricmp
 #define strncasecmp  _strnicmp
 
-#if _MSC_VER < 1800
+#if defined(_MSC_VER) && _MSC_VER < 1800
 #define strtof       (float)strtod
-#endif // _MSC_VER < 1800
+#endif // defined(_MSC_VER) && _MSC_VER < 1800
 
 #endif // defined(TORQUE_OS_WIN)
 
