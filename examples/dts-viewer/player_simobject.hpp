@@ -29,12 +29,17 @@
 #include "console/engineAPI.h"
 #include "console/simObject.h"
 
+namespace dts_viewer { struct PlayerState; }
+
 class Player : public SimObject
 {
     typedef SimObject Parent;
 
 public:
     // Reflected fields (writable from script via Hero.fieldName = value).
+    // When mLive is bound (see setLivePlayerState), these become caches —
+    // the protected setters/getters defined in initPersistFields() forward
+    // reads/writes to mLive->… so script edits drive real gameplay.
     StringTableEntry mPos;       // serialised as "x y z" — Tribes idiom
     StringTableEntry mVel;       // serialised as "x y z"
     F32              mHealth;
@@ -44,6 +49,10 @@ public:
     S32              mTeam;
     StringTableEntry mDataBlock; // datablock identifier (e.g. "LightArmor")
     S32              mMountedItems;
+
+    // Spec 16/09 — live gameplay state pointer. nullptr means no bridge
+    // is wired (script-only path, used by the spec 16/05 unit test).
+    dts_viewer::PlayerState* mLive = nullptr;
 
     // Engine-side counters for script-callable methods.
     static int sFireCalls;
@@ -61,6 +70,18 @@ public:
     void setPos     (const char* xyz);
     void setVelocity(const char* xyz);
     S32  getMountedItemCount() const { return mMountedItems; }
+
+    // Spec 16/09 — bind/unbind the gameplay-side PlayerState pointer.
+    // The bridge is opt-in; callers that just want a script-side
+    // SimObject (e.g. spec 16/05's unit test) leave it nullptr.
+    void setLivePlayerState(dts_viewer::PlayerState* live);
+
+    // Sync helpers exposed for the protected-field callbacks.
+    void syncFromLive();   // mLive -> cached mPos/mVel/mHealth/mEnergy
+    void writePosToLive(const char* xyz);
+    void writeVelToLive(const char* xyz);
+    void writeHealthToLive(float v);
+    void writeEnergyToLive(float v);
 
     DECLARE_CONOBJECT(Player);
 };

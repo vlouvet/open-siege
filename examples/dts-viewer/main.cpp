@@ -62,6 +62,10 @@
 #include "vehicle.hpp"
 #include "asset_cache.hpp"
 #include "cscript_host.hpp"
+#include "player_simobject.hpp"
+#include "console/console.h"
+#include "console/sim.h"
+#include "console/script.h"
 #include "mission.hpp"
 #include "hud_bindings.hpp"
 #include "imgui_layer.hpp"
@@ -1976,6 +1980,31 @@ int main(int argc, char** argv)
             dts_viewer::mission_load(
                 mctx, missions_dir, base_dir, ted_path.stem().string());
         }
+        // Spec 16/09 — Player SimObject ↔ PlayerState bridge.
+        // Constructs `$thePlayer` once (after VM init, after PlayerState
+        // is initialised) and binds it to the live gameplay state so
+        // script-side reads/writes hit real data. The script-only path
+        // (the spec 16/05 unit test) still works because the bridge is
+        // opt-in via setLivePlayerState.
+        Player* g_thePlayer = nullptr;
+        {
+            // Constructed via Con::evaluate so the Sim registry tracks
+            // it like any other script-side instance.
+            Con::evaluate(
+                "if (!isObject($thePlayer)) {\n"
+                "    new Player(thePlayer) {};\n"
+                "    $thePlayer = thePlayer;\n"
+                "}\n", false, "spec-16-09-bridge");
+            if (SimObject* o = Sim::findObject("thePlayer")) {
+                g_thePlayer = dynamic_cast<Player*>(o);
+                if (g_thePlayer) g_thePlayer->setLivePlayerState(&pstate);
+            }
+            if (!g_thePlayer) {
+                std::fprintf(stderr,
+                    "[cscript] spec 16/09: $thePlayer construction failed\n");
+            }
+        }
+
         // Spec 17/06 — print one-line summary of how many benign Tribes
         // warnings were suppressed during script load.
         if (int n = dts_viewer::cscript::flush_suppression_count(); n > 0) {
@@ -2628,6 +2657,33 @@ int main(int argc, char** argv)
                         dts_viewer::laser_tick(proj_sys, proj_tune, height_sampler,
                             pstate, laser_active && fire_held,
                             origin, aim, kFixedStep);
+                    }
+                    // Spec 16/09 — script $thePlayer.fire() triggers a
+                    // single shot through the same code path as a left
+                    // mouse click. Latch is cleared after consumption.
+                    if (pstate.script_fire_latch) {
+                        pstate.script_fire_latch = false;
+                        auto& w = dts_viewer::active_weapon(pstate.inventory);
+                        const bool beam_weapon =
+                            (w.projectile == dts_viewer::ProjType::ELF) ||
+                            (w.projectile == dts_viewer::ProjType::Laser);
+                        if (!beam_weapon && w.equipped &&
+                            w.cooldown <= 0.0f && w.ammo > 0) {
+                            glm::vec3 origin =
+                                dts_viewer::player_eye(pstate, ptune);
+                            glm::vec3 aim =
+                                dts_viewer::camera_forward(ter_cam);
+                            if (dts_viewer::projectile_fire(
+                                    proj_sys, proj_tune, w.projectile,
+                                    origin, aim, /*owner_id*/0)) {
+                                --w.ammo;
+                                w.cooldown = w.fire_interval;
+                                if (w.ammo == 0) {
+                                    dts_viewer::auto_switch_on_empty(
+                                        pstate.inventory);
+                                }
+                            }
+                        }
                     }
                     dts_viewer::weapons_tick_cooldowns(
                         pstate.inventory, kFixedStep);

@@ -101,6 +101,12 @@ struct PlayerState
     // Spec 12/02: health is exposed for the splash code in projectile.cpp.
     float     health         = 100.0f;
     float     health_max     = 100.0f;
+
+    // Spec 16/09 — script-side bridge. When the Player SimObject's
+    // `fire()` method is invoked, it sets this latch. main.cpp's
+    // fixed-step block treats it the same as a SDL_BUTTON_LEFT
+    // SDL_MOUSEBUTTONDOWN and clears it after consuming.
+    bool      script_fire_latch = false;
 };
 
 struct InputState
