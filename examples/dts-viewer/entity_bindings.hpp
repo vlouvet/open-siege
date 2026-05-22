@@ -34,6 +34,15 @@
 #include "console/engineAPI.h"
 #include "console/simObject.h"
 
+// Forward decls of the live POD state structs. Defined in
+// entity_renderer.hpp; included only by callers that need them.
+namespace dts_viewer {
+struct ItemState;
+struct TurretState;
+struct GeneratorState;
+struct TriggerState;
+}
+
 // All entity SimObject subclasses live at global scope. See
 // player_simobject.hpp for the macro-token-pasting reason.
 
@@ -49,9 +58,13 @@ public:
     static int       sPickupCalls;
     static int       sMountCalls;
 
+    // Spec 16/10 — live state link. pickup() flips mLive->active.
+    dts_viewer::ItemState* mLive = nullptr;
+    void setLiveItemState(dts_viewer::ItemState* p) { mLive = p; }
+
     Item();
     static void initPersistFields();
-    void pickup() { ++sPickupCalls; mActive = false; }
+    void pickup();
     void mount()  { ++sMountCalls; }
     DECLARE_CONOBJECT(Item);
 };
@@ -70,9 +83,14 @@ public:
     static int       sFireCalls;
     static int       sAimAtCalls;
 
+    // Spec 16/10 — live state link. fire() flips a latch consumed by
+    // tick_turrets; aimAt() is still a stub pending target tracking.
+    dts_viewer::TurretState* mLive = nullptr;
+    void setLiveTurretState(dts_viewer::TurretState* p) { mLive = p; }
+
     Turret();
     static void initPersistFields();
-    void fire()  { ++sFireCalls; }
+    void fire();
     void aimAt(const char* /*target*/) { ++sAimAtCalls; }
     DECLARE_CONOBJECT(Turret);
 };
@@ -118,6 +136,11 @@ public:
     bool             mDestroyed;
     bool             mIsPortable;
 
+    // Spec 16/10 — live state link. Reads of health / destroyed
+    // reflect the live POD when bound.
+    dts_viewer::GeneratorState* mLive = nullptr;
+    void setLiveGeneratorState(dts_viewer::GeneratorState* p);
+
     Generator();
     static void initPersistFields();
     DECLARE_CONOBJECT(Generator);
@@ -132,6 +155,11 @@ public:
     StringTableEntry mBounds;     // "x_min y_min z_min x_max y_max z_max"
     bool             mIsSphere;
     bool             mActive;
+
+    // Spec 16/10 — live state link. tick_triggers fires `onEnter` on
+    // this SimObject via Con::executef when the player crosses in.
+    dts_viewer::TriggerState* mLive = nullptr;
+    void setLiveTriggerState(dts_viewer::TriggerState* p) { mLive = p; }
 
     Trigger();
     static void initPersistFields();
@@ -226,8 +254,11 @@ public:
 
     Sensor();
     static void initPersistFields();
-    // v1 stub — real sensor scan logic is a future spec.
-    S32 scan() { ++sScanCalls; return 0; }
+    // Spec 16/10 — walks the MissionGroup and returns a
+    // space-separated list of SimObject IDs whose pos field is
+    // within `mRange` metres of this sensor. Replaces the spec
+    // 16/06 stub that always returned 0.
+    const char* scan();
     DECLARE_CONOBJECT(Sensor);
 };
 

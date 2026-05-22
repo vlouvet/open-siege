@@ -63,6 +63,12 @@ struct TurretState
     float fire_cooldown = 0.0f;
     float scan_range = 200.0f;
     bool  destroyed = false;
+
+    // Spec 16/10 — script-side fire request. When the Turret SimObject's
+    // fire() method is called from script, this latch is set; the next
+    // tick_turrets consumes it and emits a forced fire even if the
+    // player is out of range / LoS is blocked.
+    bool  script_fire_latch = false;
 };
 
 std::vector<TurretState> collect_turrets(
@@ -83,6 +89,11 @@ void tick_turrets(std::vector<TurretState>& turrets,
                   float dt,
                   DamageBearingCallback on_damage = nullptr,
                   const HeightSampler* terrain = nullptr);
+
+// Spec 16/10 — script callback hooks. Caller wires these to
+// Con::executef so engine events flow back into the VM. `entity_idx`
+// is the position of the entity in the corresponding vector.
+using EntityIndexCallback = void(*)(int entity_idx);
 
 // ---- Moveables (spec 14/04) -----------------------------------------------
 
@@ -134,7 +145,11 @@ struct GeneratorState
 std::vector<GeneratorState> collect_generators(
     const studio::content::mission::scene_graph& scene);
 
-void apply_damage_generator(GeneratorState& g, float dmg);
+// Spec 16/10 — `on_destroyed` (optional) is invoked when this call
+// transitions `g.destroyed` from false to true. Lets the host wire
+// the `Generator::onDestroyed` script callback.
+void apply_damage_generator(GeneratorState& g, float dmg,
+                            void (*on_destroyed)(const GeneratorState&) = nullptr);
 
 bool team_has_power(int team_id, const std::vector<GeneratorState>& gens);
 
@@ -154,10 +169,15 @@ struct TriggerState
 std::vector<TriggerState> collect_triggers(
     const studio::content::mission::scene_graph& scene);
 
+// Spec 16/10 — `on_enter` is invoked on the rising edge of player ->
+// trigger bbox membership. `entity_idx` is the position in `triggers`,
+// so the host can look up the matching script SimObject and run its
+// `onEnter` callback.
 void tick_triggers(std::vector<TriggerState>& triggers,
                    const PlayerState& player,
                    std::deque<std::string>& feed,
-                   float dt);
+                   float dt,
+                   EntityIndexCallback on_enter = nullptr);
 
 // ---- Vehicle placeholders (spec 14/08, driving in spec 14/13) ------------
 

@@ -2,13 +2,37 @@
 // / Moveable / Generator / Trigger / VehiclePlaceholder / Door /
 // MissionMarker / SimLight / Sky / Planet / Sensor.
 //
-// All follow the same pattern as `class Player` (spec 16/05). Storage
-// is the SimObject's own member fields; gameplay-side wiring is a
-// follow-up spec.
+// All follow the same pattern as `class Player` (spec 16/05). Spec 16/10
+// extended this with mLive / setLive*State() pointers so script-side
+// method calls reach the live POD state structs in entity_renderer.hpp.
 
 #include "entity_bindings.hpp"
+#include "entity_renderer.hpp"
 
 #include "console/sim.h"
+#include "console/simSet.h"
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
+#include <string>
+
+namespace {
+// Parse a "x y z" stringtable entry into a vec3-shaped tuple. Missing
+// trailing components default to 0.
+void parsePos(const char* xyz, float out[3])
+{
+    out[0] = out[1] = out[2] = 0.0f;
+    if (!xyz) return;
+    const char* p = xyz;
+    for (int i = 0; i < 3; ++i) {
+        while (*p == ' ' || *p == '\t') ++p;
+        if (!*p) break;
+        out[i] = static_cast<float>(std::strtod(p, const_cast<char**>(&p)));
+    }
+}
+}
 
 // ---- Item -----------------------------------------------------------------
 int Item::sPickupCalls = 0;
@@ -30,6 +54,13 @@ void Item::initPersistFields()
     addField("active",      TypeBool,   Offset(mActive,      Item));
     addField("respawnTime", TypeF32,    Offset(mRespawnTime, Item));
     Parent::initPersistFields();
+}
+
+void Item::pickup()
+{
+    ++sPickupCalls;
+    mActive = false;
+    if (mLive) mLive->active = false;
 }
 
 IMPLEMENT_CONOBJECT(Item);
@@ -58,6 +89,12 @@ void Turret::initPersistFields()
     addField("scanRange", TypeF32,    Offset(mScanRange, Turret));
     addField("destroyed", TypeBool,   Offset(mDestroyed, Turret));
     Parent::initPersistFields();
+}
+
+void Turret::fire()
+{
+    ++sFireCalls;
+    if (mLive) mLive->script_fire_latch = true;
 }
 
 IMPLEMENT_CONOBJECT(Turret);
@@ -125,6 +162,17 @@ void Generator::initPersistFields()
     addField("destroyed",  TypeBool,   Offset(mDestroyed,  Generator));
     addField("isPortable", TypeBool,   Offset(mIsPortable, Generator));
     Parent::initPersistFields();
+}
+
+void Generator::setLiveGeneratorState(dts_viewer::GeneratorState* p)
+{
+    mLive = p;
+    if (mLive) {
+        mHealth    = mLive->health;
+        mHealthMax = mLive->health_max;
+        mTeam      = mLive->team;
+        mDestroyed = mLive->destroyed;
+    }
 }
 
 IMPLEMENT_CONOBJECT(Generator);
@@ -274,10 +322,55 @@ void Sensor::initPersistFields()
     Parent::initPersistFields();
 }
 
+const char* Sensor::scan()
+{
+    ++sScanCalls;
+    SimObject* mg = Sim::findObject("MissionGroup");
+    if (!mg) return StringTable->insert("");
+    auto* group = dynamic_cast<SimGroup*>(mg);
+    if (!group) return StringTable->insert("");
+
+    float center[3]; parsePos(mPos, center);
+    const float range_sq = mRange * mRange;
+
+    std::string out;
+    char buf[32];
+
+    std::function<void(SimGroup*)> walk = [&](SimGroup* g) {
+        for (auto it = g->begin(); it != g->end(); ++it) {
+            SimObject* obj = *it;
+            // Recurse into nested groups (the MissionGroup tree is flat in
+            // practice but defensive coding is cheap).
+            if (auto* sub = dynamic_cast<SimGroup*>(obj)) {
+                walk(sub);
+                continue;
+            }
+            // Skip self.
+            if (obj == this) continue;
+            // Find a `pos` data-field. Per spec 16/06 every reflected
+            // entity carries `pos = "x y z"`.
+            const char* posField = obj->getDataField(
+                StringTable->insert("pos"), nullptr);
+            if (!posField || !*posField) continue;
+            float p[3]; parsePos(posField, p);
+            const float dx = p[0] - center[0];
+            const float dy = p[1] - center[1];
+            const float dz = p[2] - center[2];
+            const float d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 > range_sq) continue;
+            if (!out.empty()) out += ' ';
+            std::snprintf(buf, sizeof(buf), "%u", obj->getId());
+            out += buf;
+        }
+    };
+    walk(group);
+    return StringTable->insert(out.c_str());
+}
+
 IMPLEMENT_CONOBJECT(Sensor);
-ConsoleDocClass(Sensor, "@brief Spec 16/06 Sensor binding (script). scan() is a stub.");
-DefineEngineMethod(Sensor, scan, S32, (), ,
-    "Spec 16/06 stub: scan for nearby objects. Returns 0 for now.")
+ConsoleDocClass(Sensor, "@brief Spec 16/06/10 Sensor — scan() walks MissionGroup.");
+DefineEngineMethod(Sensor, scan, const char*, (), ,
+    "Spec 16/10: return space-separated SimObject IDs within mRange.")
 {
     return object->scan();
 }

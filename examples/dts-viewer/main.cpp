@@ -63,9 +63,12 @@
 #include "asset_cache.hpp"
 #include "cscript_host.hpp"
 #include "player_simobject.hpp"
+#include "entity_bindings.hpp"
 #include "console/console.h"
 #include "console/sim.h"
+#include "console/simSet.h"
 #include "console/script.h"
+#include <functional>
 #include "mission.hpp"
 #include "hud_bindings.hpp"
 #include "imgui_layer.hpp"
@@ -1489,6 +1492,52 @@ static bool load_terrain_from_ted(
     return true;
 }
 
+// Spec 16/10 — script-callback bridge tables. Populated after
+// mission_load by matching MissionGroup members back to the entity-state
+// arrays via position. The callback function-pointer signatures used by
+// entity_renderer can't capture state, so we expose the lookups as file
+// statics. Indexing matches the layout of the corresponding ent_*
+// vectors in main().
+namespace {
+std::vector<unsigned int> g_trigger_sim_ids;
+std::vector<unsigned int> g_generator_sim_ids;
+unsigned int              g_player_sim_id = 0;
+
+void on_trigger_enter_callback(int trigger_idx)
+{
+    if (trigger_idx < 0 ||
+        static_cast<std::size_t>(trigger_idx) >= g_trigger_sim_ids.size())
+        return;
+    SimObject* trigger = Sim::findObject(g_trigger_sim_ids[trigger_idx]);
+    if (!trigger) return;
+    SimObject* who = g_player_sim_id
+        ? Sim::findObject(g_player_sim_id) : nullptr;
+    // Per spec 16/07 callback shape: trigger.onEnter(who).
+    Con::executef(trigger, "onEnter", who ? who->getIdString() : "0");
+}
+
+void on_generator_destroyed_callback(const dts_viewer::GeneratorState& g)
+{
+    // Find this generator's SimObject by linear scan — small N (<=32),
+    // avoids holding a per-generator pointer-back-to-pointer.
+    for (std::size_t i = 0; i < g_generator_sim_ids.size(); ++i) {
+        SimObject* obj = Sim::findObject(g_generator_sim_ids[i]);
+        if (!obj) continue;
+        // Match by pos field equality.
+        const char* posField = obj->getDataField(
+            StringTable->insert("pos"), nullptr);
+        if (!posField) continue;
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%g %g %g",
+            g.xf.position[0], g.xf.position[1], g.xf.position[2]);
+        if (std::strcmp(posField, buf) == 0) {
+            Con::executef(obj, "onDestroyed");
+            return;
+        }
+    }
+}
+} // anonymous namespace
+
 int main(int argc, char** argv)
 {
     // Spec 23/03 — strip --tribes-dir before any other arg parsing so it
@@ -1997,7 +2046,10 @@ int main(int argc, char** argv)
                 "}\n", false, "spec-16-09-bridge");
             if (SimObject* o = Sim::findObject("thePlayer")) {
                 g_thePlayer = dynamic_cast<Player*>(o);
-                if (g_thePlayer) g_thePlayer->setLivePlayerState(&pstate);
+                if (g_thePlayer) {
+                    g_thePlayer->setLivePlayerState(&pstate);
+                    g_player_sim_id = o->getId();
+                }
             }
             if (!g_thePlayer) {
                 std::fprintf(stderr,
@@ -2101,6 +2153,100 @@ int main(int argc, char** argv)
                 ent_statics.size(), ent_items.size(), ent_turrets.size(),
                 ent_moveables.size(), ent_generators.size(),
                 ent_triggers.size(), ent_vehicles.size());
+        }
+
+        // Spec 16/10 — link mission-spawned SimObjects back to the live
+        // entity-state PODs. mission_load() emitted one
+        // `instant <Type>(<name>)` per scene entity earlier; we walk
+        // MissionGroup and, for every Item / Turret / Generator /
+        // Trigger we find, match by position to the corresponding entry
+        // in the ent_* vector and call setLive*State(). Sim IDs for
+        // triggers + generators are stashed in the file-static tables
+        // so the engine-side callbacks (on_trigger_enter /
+        // on_generator_destroyed) can route back into the VM.
+        {
+            g_trigger_sim_ids.assign(ent_triggers.size(), 0);
+            g_generator_sim_ids.assign(ent_generators.size(), 0);
+
+            SimObject* mg = Sim::findObject("MissionGroup");
+            auto* group = dynamic_cast<SimGroup*>(mg);
+            auto positions_match =
+                [](const char* a, float bx, float by, float bz) {
+                if (!a) return false;
+                char buf[96];
+                std::snprintf(buf, sizeof(buf), "%g %g %g", bx, by, bz);
+                return std::strcmp(a, buf) == 0;
+            };
+            if (group) {
+                std::function<void(SimGroup*)> walk = [&](SimGroup* g) {
+                    for (auto it = g->begin(); it != g->end(); ++it) {
+                        SimObject* obj = *it;
+                        if (auto* sub = dynamic_cast<SimGroup*>(obj)) {
+                            walk(sub);
+                            continue;
+                        }
+                        const char* posField = obj->getDataField(
+                            StringTable->insert("pos"), nullptr);
+                        const char* cls = obj->getClassName();
+                        if (!cls) continue;
+                        if (std::strcmp(cls, "Trigger") == 0) {
+                            for (std::size_t i = 0;
+                                 i < ent_triggers.size(); ++i) {
+                                const auto& tr = ent_triggers[i];
+                                if (positions_match(posField,
+                                    tr.xf.position[0], tr.xf.position[1],
+                                    tr.xf.position[2]))
+                                {
+                                    if (auto* t = dynamic_cast<Trigger*>(obj))
+                                        t->setLiveTriggerState(&ent_triggers[i]);
+                                    g_trigger_sim_ids[i] = obj->getId();
+                                    break;
+                                }
+                            }
+                        }
+                        else if (std::strcmp(cls, "Turret") == 0) {
+                            for (auto& tt : ent_turrets) {
+                                if (positions_match(posField,
+                                    tt.xf.position[0], tt.xf.position[1],
+                                    tt.xf.position[2]))
+                                {
+                                    if (auto* t = dynamic_cast<Turret*>(obj))
+                                        t->setLiveTurretState(&tt);
+                                    break;
+                                }
+                            }
+                        }
+                        else if (std::strcmp(cls, "Generator") == 0) {
+                            for (std::size_t i = 0;
+                                 i < ent_generators.size(); ++i) {
+                                auto& gn = ent_generators[i];
+                                if (positions_match(posField,
+                                    gn.xf.position[0], gn.xf.position[1],
+                                    gn.xf.position[2]))
+                                {
+                                    if (auto* gobj = dynamic_cast<Generator*>(obj))
+                                        gobj->setLiveGeneratorState(&gn);
+                                    g_generator_sim_ids[i] = obj->getId();
+                                    break;
+                                }
+                            }
+                        }
+                        else if (std::strcmp(cls, "Item") == 0) {
+                            for (auto& itm : ent_items) {
+                                if (positions_match(posField,
+                                    itm.xf.position[0], itm.xf.position[1],
+                                    itm.xf.position[2]))
+                                {
+                                    if (auto* iobj = dynamic_cast<Item*>(obj))
+                                        iobj->setLiveItemState(&itm);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                };
+                walk(group);
+            }
         }
 
         // Spec 14/09 — DTS prop loading + textured rendering for entities.
@@ -2700,7 +2846,8 @@ int main(int argc, char** argv)
                         height_sampler.valid() ? &height_sampler : nullptr);
                     dts_viewer::tick_moveables(ent_moveables, pstate, kFixedStep);
                     dts_viewer::tick_triggers(ent_triggers, pstate,
-                        message_feed, kFixedStep);
+                        message_feed, kFixedStep,
+                        &on_trigger_enter_callback);
 
                     // Spec 14/13 — when piloted, the player's WASD/jet
                     // physics are suspended and the vehicle integrator

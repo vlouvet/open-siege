@@ -344,6 +344,22 @@ void tick_turrets(std::vector<TurretState>& turrets,
 {
     for (auto& t : turrets) {
         if (t.destroyed) continue;
+        // Spec 16/10 — script-driven fire bypasses team-power + range + LoS.
+        // Forces an immediate shot at the player no matter where they are.
+        if (t.script_fire_latch) {
+            t.script_fire_latch = false;
+            player.health = std::max(0.0f, player.health - 15.0f);
+            t.fire_cooldown = 2.5f;
+            feed.push_back("turret fire (script): " + t.data_block_name);
+            if (feed.size() > 100) feed.pop_front();
+            if (on_damage) {
+                glm::vec3 pos{ t.xf.position[0], t.xf.position[2], t.xf.position[1] };
+                glm::vec3 d = pos - player.pos;
+                float bearing_world = std::atan2(d.x, d.z);
+                on_damage(bearing_world - player.yaw);
+            }
+            continue;
+        }
         if (!team_has_power_flag) {
             t.fire_cooldown = std::max(0.0f, t.fire_cooldown - dt);
             continue;
@@ -470,11 +486,16 @@ glm::vec3 moveable_position(const MoveableState& m)
     return glm::mix(m.endpoint_a, m.endpoint_b, m.t);
 }
 
-void apply_damage_generator(GeneratorState& g, float dmg)
+void apply_damage_generator(GeneratorState& g, float dmg,
+                            void (*on_destroyed)(const GeneratorState&))
 {
     if (g.destroyed) return;
     g.health = std::max(0.0f, g.health - dmg);
-    if (g.health <= 0.0f) g.destroyed = true;
+    if (g.health <= 0.0f) {
+        g.destroyed = true;
+        // Spec 16/10 — fire the script-side callback on the transition.
+        if (on_destroyed) on_destroyed(g);
+    }
 }
 
 bool team_has_power(int team_id, const std::vector<GeneratorState>& gens)
@@ -490,9 +511,11 @@ bool team_has_power(int team_id, const std::vector<GeneratorState>& gens)
 void tick_triggers(std::vector<TriggerState>& triggers,
                    const PlayerState& player,
                    std::deque<std::string>& feed,
-                   float /*dt*/)
+                   float /*dt*/,
+                   EntityIndexCallback on_enter)
 {
-    for (auto& tr : triggers) {
+    for (std::size_t i = 0; i < triggers.size(); ++i) {
+        auto& tr = triggers[i];
         if (!tr.active) continue;
         bool inside = false;
         if (!tr.is_sphere) {
@@ -516,6 +539,9 @@ void tick_triggers(std::vector<TriggerState>& triggers,
             feed.push_back("trigger enter: " + tr.data_block_name);
             if (feed.size() > 100) feed.pop_front();
             ++tr.fire_count;
+            // Spec 16/10 — fire the script-side onEnter callback on
+            // the rising edge.
+            if (on_enter) on_enter(static_cast<int>(i));
         } else if (!inside && tr.was_inside) {
             feed.push_back("trigger exit: " + tr.data_block_name);
             if (feed.size() > 100) feed.pop_front();
