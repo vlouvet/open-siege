@@ -58,6 +58,8 @@
 #include "projectile.hpp"
 #include "inv_station.hpp"
 #include "entity_renderer.hpp"
+#include "text_renderer.hpp"
+#include "vehicle.hpp"
 #include "asset_cache.hpp"
 #include "cscript_host.hpp"
 #include "mission.hpp"
@@ -1931,6 +1933,12 @@ int main(int argc, char** argv)
         dts_viewer::ProjectileTuning proj_tune;
         pstate.inventory = dts_viewer::default_loadout();
 
+        // Spec 14/13 — vehicle driving. -1 means "on foot"; once mounted,
+        // points into ent_vehicles. Tuning is shared across all vehicles
+        // for v1 (Wildcat / Beowulf share the same arcade hover feel).
+        int piloted_vehicle_idx = -1;
+        dts_viewer::VehicleTuning vtune;
+
         // Inventory stations (spec 12/04).
         dts_viewer::InvStationSystem inv_sys;
         if (ter_mission) {
@@ -2462,6 +2470,50 @@ int main(int argc, char** argv)
                                     "teleport: no DropPointMarker found\n");
                             }
                         }
+                        // Spec 14/13 — E mounts the nearest vehicle, R ejects.
+                        if (ev.key.keysym.sym == SDLK_e) {
+                            if (piloted_vehicle_idx >= 0) {
+                                std::fprintf(stderr,
+                                    "vehicle: already piloting slot %d\n",
+                                    piloted_vehicle_idx);
+                            } else {
+                                glm::vec3 here = dts_viewer::player_eye(pstate, ptune);
+                                int idx = dts_viewer::vehicle_find_mountable(
+                                    ent_vehicles, here, vtune.mount_radius);
+                                if (idx >= 0) {
+                                    piloted_vehicle_idx = idx;
+                                    ent_vehicles[idx].piloted = true;
+                                    // Seed vehicle yaw from the current camera so
+                                    // the first tick doesn't snap the chassis.
+                                    ent_vehicles[idx].yaw = ter_cam.yaw;
+                                    std::fprintf(stderr,
+                                        "vehicle: mounted %s (slot %d)\n",
+                                        ent_vehicles[idx].vehicle_dts.c_str(),
+                                        idx);
+                                } else {
+                                    std::fprintf(stderr,
+                                        "vehicle: no vehicle within %.1fm\n",
+                                        vtune.mount_radius);
+                                }
+                            }
+                        }
+                        if (ev.key.keysym.sym == SDLK_r &&
+                            piloted_vehicle_idx >= 0) {
+                            auto& v = ent_vehicles[piloted_vehicle_idx];
+                            v.piloted = false;
+                            // Drop the player at the vehicle side; clear
+                            // velocity so they don't inherit the chassis
+                            // momentum (causes hilarious launches).
+                            glm::vec3 drop = dts_viewer::vehicle_dismount_pos(v, vtune);
+                            pstate.pos = drop - glm::vec3(0.0f, ptune.eye_height, 0.0f);
+                            pstate.vel = glm::vec3(0.0f);
+                            pstate.on_ground = false;
+                            ter_cam.position = drop;
+                            std::fprintf(stderr,
+                                "vehicle: dismount @ (%.1f,%.1f,%.1f)\n",
+                                drop.x, drop.y, drop.z);
+                            piloted_vehicle_idx = -1;
+                        }
                         break;
                     case SDL_MOUSEBUTTONDOWN:
                         if (!ter_cam.mouse_captured) {
@@ -2594,7 +2646,33 @@ int main(int argc, char** argv)
                     dts_viewer::tick_triggers(ent_triggers, pstate,
                         message_feed, kFixedStep);
 
-                    if (cam_mode == dts_viewer::CameraMode::Walk) {
+                    // Spec 14/13 — when piloted, the player's WASD/jet
+                    // physics are suspended and the vehicle integrator
+                    // owns the inputs instead.
+                    if (piloted_vehicle_idx >= 0 &&
+                        piloted_vehicle_idx <
+                            static_cast<int>(ent_vehicles.size()))
+                    {
+                        auto& v = ent_vehicles[piloted_vehicle_idx];
+                        dts_viewer::VehicleInput vin;
+                        vin.fwd   = in.fwd;
+                        vin.back  = in.back;
+                        vin.left  = in.left;
+                        vin.right = in.right;
+                        vin.up    = in.jump;     // Space ascends
+                        vin.down  = in.sprint;   // Shift descends
+                        vin.target_yaw = ter_cam.yaw;
+                        dts_viewer::vehicle_tick(
+                            v, vtune, vin, height_sampler, kFixedStep);
+                        // Pin the player to the chassis so the rest of
+                        // the world (audio listener, splash damage)
+                        // tracks the vehicle without separate plumbing.
+                        pstate.pos = v.dyn_pos_gl
+                            - glm::vec3(0.0f, ptune.eye_height, 0.0f);
+                        pstate.vel = v.vel;
+                        pstate.on_ground = false;
+                    }
+                    else if (cam_mode == dts_viewer::CameraMode::Walk) {
                         dts_viewer::player_update(
                             pstate, ptune, in, height_sampler, &bounds, kFixedStep);
 
@@ -2626,6 +2704,15 @@ int main(int argc, char** argv)
                     ter_cam.position.x = pstate.pos.x;
                     ter_cam.position.y = pstate.pos.y + ptune.eye_height;
                     ter_cam.position.z = pstate.pos.z;
+                }
+                // Spec 14/13 — piloting overrides the camera position
+                // (first-person from the chassis centre). Camera yaw/pitch
+                // are still mouse-driven; vehicle yaw tracks the camera.
+                if (piloted_vehicle_idx >= 0 &&
+                    piloted_vehicle_idx < static_cast<int>(ent_vehicles.size()))
+                {
+                    const auto& v = ent_vehicles[piloted_vehicle_idx];
+                    ter_cam.position = v.dyn_pos_gl + glm::vec3(0.0f, 0.8f, 0.0f);
                 }
 
                 // Audio listener tracks the camera every frame (spec 11/03).
@@ -2803,23 +2890,39 @@ int main(int argc, char** argv)
                     // Vehicle pad first (the ground patch under the vehicle).
                     draw_shape_or_cube(v.pad_xf, v.pad_data_block, 4.0f,
                         { 0.9f, 0.7f, 0.1f });
-                    // The vehicle DTS itself, lifted slightly above the pad.
-                    std::array<float,3> vpos = v.pad_xf.position;
-                    vpos[2] += 1.5f;  // Tribes Z is up
-                    studio::content::mission::transform vxf = v.pad_xf;
-                    vxf.position = vpos;
+                    // Spec 14/13 — once the vehicle has been mounted at
+                    // least once it's `dynamic`: render at its live
+                    // position + yaw instead of the static pad transform.
                     const dts_viewer::AssetShape* sh =
                         asset_cache.try_load_by_filename(v.vehicle_dts);
-                    if (sh) {
-                        glm::mat4 M = dts_viewer::mis_world_matrix(
-                            vxf.position, vxf.rotation);
-                        asset_cache.render(*sh, M, V, P, lit);
+                    if (v.dynamic) {
+                        glm::mat4 M = glm::translate(glm::mat4(1.0f),
+                            v.dyn_pos_gl);
+                        M = glm::rotate(M, v.yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+                        if (sh) {
+                            asset_cache.render(*sh, M, V, P, lit);
+                        } else {
+                            glUseProgram(flat_prog);
+                            dts_viewer::render_entity_cube(v.dyn_pos_gl, 4.0f,
+                                { 0.1f, 0.8f, 0.9f },
+                                u_flat_mvp, u_flat_color, MVP);
+                        }
                     } else {
-                        glm::vec3 wp = dts_viewer::mis_pos_to_gl(vxf.position);
-                        glUseProgram(flat_prog);
-                        dts_viewer::render_entity_cube(wp, 4.0f,
-                            { 0.1f, 0.8f, 0.9f },
-                            u_flat_mvp, u_flat_color, MVP);
+                        std::array<float,3> vpos = v.pad_xf.position;
+                        vpos[2] += 1.5f;  // Tribes Z is up
+                        studio::content::mission::transform vxf = v.pad_xf;
+                        vxf.position = vpos;
+                        if (sh) {
+                            glm::mat4 M = dts_viewer::mis_world_matrix(
+                                vxf.position, vxf.rotation);
+                            asset_cache.render(*sh, M, V, P, lit);
+                        } else {
+                            glm::vec3 wp = dts_viewer::mis_pos_to_gl(vxf.position);
+                            glUseProgram(flat_prog);
+                            dts_viewer::render_entity_cube(wp, 4.0f,
+                                { 0.1f, 0.8f, 0.9f },
+                                u_flat_mvp, u_flat_color, MVP);
+                        }
                     }
                 }
             }
@@ -2927,6 +3030,21 @@ int main(int argc, char** argv)
                         ? (proj_sys.laser.charge_t / proj_tune.laser_charge_seconds)
                         : 0.0f;
                     dts_viewer::hud2d_render(pstate, ptune, w, h, lcf);
+                }
+                // Spec 14/13 — top-center vehicle speed readout while piloting.
+                if (piloted_vehicle_idx >= 0 &&
+                    piloted_vehicle_idx < static_cast<int>(ent_vehicles.size()))
+                {
+                    const auto& v = ent_vehicles[piloted_vehicle_idx];
+                    const float h_speed = std::sqrt(
+                        v.vel.x * v.vel.x + v.vel.z * v.vel.z);
+                    const float v_speed = v.vel.y;
+                    char buf[96];
+                    std::snprintf(buf, sizeof(buf),
+                        "PILOTING %s | %.0f m/s | vert %+.0f m/s | R: eject",
+                        v.vehicle_dts.c_str(), h_speed, v_speed);
+                    dts_viewer::text_draw(
+                        16.0f, 36.0f, buf, {1.0f, 0.95f, 0.5f}, 16.0f);
                 }
                 dts_viewer::hud2d_render_compass(
                     pstate.yaw, compass_team_ticks, pstate.pos, w, h);

@@ -55,6 +55,7 @@ add_executable(dts-viewer
     mission_sounds.cpp
     projectile.cpp
     weapons.cpp
+    vehicle.cpp
     inv_station.cpp
     entity_renderer.cpp
     asset_cache.cpp

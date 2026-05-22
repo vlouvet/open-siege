@@ -159,7 +159,7 @@ void tick_triggers(std::vector<TriggerState>& triggers,
                    std::deque<std::string>& feed,
                    float dt);
 
-// ---- Vehicle placeholders (spec 14/08) ------------------------------------
+// ---- Vehicle placeholders (spec 14/08, driving in spec 14/13) ------------
 
 struct VehiclePlaceholderState
 {
@@ -167,6 +167,16 @@ struct VehiclePlaceholderState
     std::string pad_data_block;       // "vehiclePad"
     std::string vehicle_dts;          // "hover_apc.dts" placeholder
     bool visible = true;
+
+    // Spec 14/13 — driving state. `dynamic` flips true on the first
+    // mount; once dynamic, the renderer uses `dyn_pos_gl` + `yaw`
+    // instead of the static pad transform. `piloted` toggles the
+    // input routing in main.cpp.
+    bool       dynamic     = false;
+    bool       piloted     = false;
+    glm::vec3  dyn_pos_gl  { 0.0f };  // GL world coords (Y up)
+    glm::vec3  vel         { 0.0f };  // m/s, GL coords
+    float      yaw         = 0.0f;    // radians (rotation around world Y)
 };
 
 std::vector<VehiclePlaceholderState> collect_vehicle_placeholders(
