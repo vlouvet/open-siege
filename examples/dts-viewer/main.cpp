@@ -79,6 +79,7 @@
 #include "help_menu.hpp"
 #include "asset_resolver.hpp"
 #include "mis_axes.hpp"
+#include "net_client.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
 #include <unistd.h>
@@ -1610,6 +1611,71 @@ int main(int argc, char** argv)
         }
     }
 
+    // Spec 20/15 — remote-ghost integration. Both `--replay PATH` and
+    // `--net-host HOST [--net-port N]` are stripped here so they work
+    // regardless of how the mission mode is invoked (auto-discovery,
+    // explicit --mission, or via the no-arg fallback below).
+    static std::string s_net_replay_path;
+    static std::string s_net_host;
+    static std::uint16_t s_net_port = 28000;
+    static bool s_net_use_groove = true;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--replay" && i + 1 < argc) {
+            s_net_replay_path = argv[i + 1];
+            for (int j = i; j < argc - 2; ++j) argv[j] = argv[j + 2];
+            argc -= 2; --i;
+        } else if (a == "--net-host" && i + 1 < argc) {
+            s_net_host = argv[i + 1];
+            for (int j = i; j < argc - 2; ++j) argv[j] = argv[j + 2];
+            argc -= 2; --i;
+        } else if (a == "--net-port" && i + 1 < argc) {
+            s_net_port = static_cast<std::uint16_t>(std::atoi(argv[i + 1]));
+            for (int j = i; j < argc - 2; ++j) argv[j] = argv[j + 2];
+            argc -= 2; --i;
+        } else if (a == "--net-vanilla") {
+            s_net_use_groove = false;
+            for (int j = i; j < argc - 1; ++j) argv[j] = argv[j + 1];
+            --argc; --i;
+        }
+    }
+
+    // If `--replay PATH` (or `--net-host`) was supplied but `--mission`
+    // was not, fall through to the no-arg auto-launch path: pick the
+    // first .ted under the resolved Tribes dir so the viewer comes up
+    // and the net layer can publish ghosts into it.
+    const bool want_net = !s_net_replay_path.empty() || !s_net_host.empty();
+    if (want_net && argc < 2) {
+        // The original `argc < 2` block at the top of main() already ran
+        // before we stripped --replay / --net-host. Re-do its auto-launch
+        // step so the viewer can come up with the default mission and
+        // pick up the now-stripped net args below.
+        fs::path tribes_dir = dts_viewer::resolveTribesDir();
+        fs::path missions_dir = tribes_dir / "base" / "missions";
+        fs::path first_ted;
+        if (fs::is_directory(missions_dir)) {
+            for (const auto& e : fs::directory_iterator(missions_dir)) {
+                if (e.path().extension() == ".ted") { first_ted = e.path(); break; }
+            }
+        }
+        if (!first_ted.empty()) {
+            s_tribes_dir_storage = tribes_dir.string();
+            s_default_vol_storage = first_ted.string();
+            s_injected[0] = argv[0];
+            s_injected[1] = const_cast<char*>("--mission");
+            s_injected[2] = s_default_vol_storage.data();
+            s_injected[3] = nullptr;
+            argc = 3;
+            argv = s_injected;
+        } else {
+            std::fprintf(stderr,
+                "[net] --replay/--net-host requires a resolvable Tribes "
+                "install (run with --tribes-dir PATH first, or pass "
+                "--mission PATH alongside)\n");
+            return 1;
+        }
+    }
+
     // ---- --run-script <path> mode: bring up cscript VM, eval file, exit
     if (argc >= 3 && std::string(argv[1]) == "--run-script") {
         dts_viewer::cscript::init();
@@ -2153,6 +2219,30 @@ int main(int argc, char** argv)
                 ent_statics.size(), ent_items.size(), ent_turrets.size(),
                 ent_moveables.size(), ent_generators.size(),
                 ent_triggers.size(), ent_vehicles.size());
+        }
+
+        // Spec 20/15 — remote-ghost integration. Spawn a background net
+        // thread that maintains a `net20::GhostRegistry` snapshot for the
+        // render path. Replay path is offline (reads a capture JSON);
+        // live path drives the Groove handshake against a real server.
+        dts_viewer::NetClient net_client;
+        if (!s_net_replay_path.empty()) {
+            std::fprintf(stderr, "[net] replay path: %s\n",
+                s_net_replay_path.c_str());
+            if (!net_client.start_replay(s_net_replay_path)) {
+                std::fprintf(stderr, "[net] start_replay failed: %s\n",
+                    net_client.last_error().c_str());
+            }
+        } else if (!s_net_host.empty()) {
+            std::fprintf(stderr,
+                "[net] live connect: %s:%u (groove=%d)\n",
+                s_net_host.c_str(), static_cast<unsigned>(s_net_port),
+                static_cast<int>(s_net_use_groove));
+            if (!net_client.start_live(s_net_host, s_net_port,
+                                       s_net_use_groove)) {
+                std::fprintf(stderr, "[net] start_live failed: %s\n",
+                    net_client.last_error().c_str());
+            }
         }
 
         // Spec 16/10 — link mission-spawned SimObjects back to the live
@@ -3132,6 +3222,132 @@ int main(int argc, char** argv)
                 }
             }
 
+            // Spec 20/15 — remote-ghost render pass. Snapshot the live
+            // GhostRegistry under the net thread's lock once per frame
+            // and walk each typed table. StaticShape ghosts are the
+            // primary v1 dataset (135 records in the canned capture);
+            // Player / Projectile / Item / Vehicle paths render the
+            // typed structs from spec 20/14 when those classes appear.
+            //
+            // Coordinate convention: per spec 13 §15.0, decoded
+            // positions live in Tribes-Z-up space, so the GL conversion
+            // is the same axis swap (X, Z, Y) used by mis_pos_to_gl.
+            //
+            // Ghost name-tag billboards are emitted by projecting the
+            // world position to NDC and dispatching text_draw() once
+            // the ImGui frame is open (a few hundred lines below). To
+            // avoid threading a snapshot through that block we stash
+            // the player list in a frame-scoped vector and replay it
+            // in the HUD pass below.
+            static std::vector<std::pair<glm::vec3, std::string>>
+                ghost_name_tags;
+            ghost_name_tags.clear();
+            {
+                const auto reg = net_client.snapshot_registry();
+                auto lit = dts_viewer::masked_lighting(lighting, lighting_mode);
+
+                auto tribes_to_gl = [](float x, float y, float z) {
+                    return glm::vec3(x, z, y);
+                };
+
+                // StaticShape — flat yellow cube. Most of the canned
+                // capture lives here. We don't gate on
+                // `transform_changed` because the position survives
+                // across deltas; we only reject obvious garbage
+                // (NaN / inf) to dodge byte-level decode mishaps.
+                for (const auto& [gid, s] : reg.statics) {
+                    if (!std::isfinite(s.pos_x)
+                        || !std::isfinite(s.pos_y)
+                        || !std::isfinite(s.pos_z)) continue;
+                    if (std::abs(s.pos_x) > 1e4f
+                        || std::abs(s.pos_y) > 1e4f
+                        || std::abs(s.pos_z) > 1e4f) continue;
+                    glm::vec3 wp = tribes_to_gl(s.pos_x, s.pos_y, s.pos_z);
+                    glUseProgram(flat_prog);
+                    dts_viewer::render_entity_cube(wp, 2.5f,
+                        { 0.85f, 0.85f, 0.4f },
+                        u_flat_mvp, u_flat_color, MVP);
+                }
+
+                // Player ghosts — larmor.dts at ghost yaw + name-tag.
+                // Yaw is around Tribes Z (the up axis); mis_world_matrix
+                // takes Tribes-space pos + (rot_x, rot_y, rot_z, 1.0)
+                // and emits a GL-world matrix, so we feed yaw via the
+                // rot_z slot.
+                for (const auto& [gid, p] : reg.players) {
+                    if (!p.has_pos_block) continue;
+                    if (!std::isfinite(p.pos_x) || !std::isfinite(p.pos_y)
+                        || !std::isfinite(p.pos_z)) continue;
+                    glm::vec3 wp = tribes_to_gl(p.pos_x, p.pos_y, p.pos_z);
+                    const dts_viewer::AssetShape* sh =
+                        asset_cache.try_load_by_filename("larmor.dts");
+                    if (sh) {
+                        std::array<float, 3> tpos = { p.pos_x, p.pos_y, p.pos_z };
+                        std::array<float, 4> trot = { 0.0f, 0.0f, p.yaw, 1.0f };
+                        glm::mat4 M = dts_viewer::mis_world_matrix(tpos, trot);
+                        asset_cache.render(*sh, M, V, P, lit);
+                    } else {
+                        glUseProgram(flat_prog);
+                        const std::array<float, 3> col =
+                            p.dead ? std::array<float, 3>{0.4f, 0.4f, 0.4f}
+                                   : std::array<float, 3>{0.2f, 0.9f, 0.3f};
+                        dts_viewer::render_entity_cube(wp, 2.0f, col,
+                            u_flat_mvp, u_flat_color, MVP);
+                    }
+                    // Cache for name-tag billboard (drawn later in
+                    // the HUD/ImGui pass while a frame is open).
+                    char nbuf[32];
+                    std::snprintf(nbuf, sizeof(nbuf), "P#%u", gid);
+                    ghost_name_tags.emplace_back(
+                        wp + glm::vec3(0.0f, 2.2f, 0.0f), nbuf);
+                }
+
+                // Projectile ghosts — small bright cube; rendered at
+                // either the initial-update position (for steady-state
+                // deltas we cache pos_x..z on apply_update) or zero if
+                // no position has come in yet.
+                for (const auto& [gid, pr] : reg.projectiles) {
+                    glm::vec3 wp;
+                    if (pr.position_changed) {
+                        wp = tribes_to_gl(pr.pos_x, pr.pos_y, pr.pos_z);
+                    } else if (pr.initial_update) {
+                        wp = tribes_to_gl(pr.init_pos_x, pr.init_pos_y,
+                                           pr.init_pos_z);
+                    } else {
+                        continue;
+                    }
+                    glUseProgram(flat_prog);
+                    dts_viewer::render_entity_cube(wp, 0.6f,
+                        { 1.0f, 0.7f, 0.1f },
+                        u_flat_mvp, u_flat_color, MVP);
+                }
+
+                // Item ghosts — red or blue cube based on team_id.
+                for (const auto& [gid, it] : reg.items) {
+                    if (!it.position_changed) continue;
+                    glm::vec3 wp = tribes_to_gl(it.pos_x, it.pos_y, it.pos_z);
+                    std::array<float, 3> col = { 0.7f, 0.7f, 0.7f };
+                    switch (it.base.team_id) {
+                        case 1: col = { 0.9f, 0.2f, 0.2f }; break;  // red
+                        case 2: col = { 0.2f, 0.4f, 0.95f }; break; // blue
+                        default: break;
+                    }
+                    glUseProgram(flat_prog);
+                    dts_viewer::render_entity_cube(wp, 1.0f, col,
+                        u_flat_mvp, u_flat_color, MVP);
+                }
+
+                // Vehicle ghosts — cyan placeholder cube at pos/yaw.
+                for (const auto& [gid, vh] : reg.vehicles) {
+                    if (!vh.orientation_changed) continue;
+                    glm::vec3 wp = tribes_to_gl(vh.pos_x, vh.pos_y, vh.pos_z);
+                    glUseProgram(flat_prog);
+                    dts_viewer::render_entity_cube(wp, 3.5f,
+                        { 0.1f, 0.8f, 0.9f },
+                        u_flat_mvp, u_flat_color, MVP);
+                }
+            }
+
             // Spec 12/07 — beam-weapon world-space visuals.
             // ELF: a coloured line from the muzzle to the beam end.
             // Laser: a single-pixel marker cube where the player painted.
@@ -3267,6 +3483,26 @@ int main(int argc, char** argv)
                         terrain_origin.x, terrain_origin.y);
                 }
             }
+
+            // Spec 20/15 — project each cached player-ghost world
+            // position to screen-space and emit a name-tag billboard.
+            // Cull anything behind the camera or off-screen so the
+            // text doesn't smear across the viewport.
+            if (!ghost_name_tags.empty()) {
+                for (const auto& [wp, tag] : ghost_name_tags) {
+                    glm::vec4 clip = MVP * glm::vec4(wp, 1.0f);
+                    if (clip.w <= 0.0f) continue;
+                    glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                    if (ndc.x < -1.0f || ndc.x > 1.0f
+                        || ndc.y < -1.0f || ndc.y > 1.0f
+                        || ndc.z < -1.0f || ndc.z > 1.0f) continue;
+                    const float sx = (ndc.x * 0.5f + 0.5f) * w;
+                    const float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * h;
+                    dts_viewer::text_draw(sx - 10.0f, sy - 18.0f, tag,
+                        { 1.0f, 1.0f, 0.4f }, 14.0f);
+                }
+            }
+
             dts_viewer::hud2d_tick(dt_ter);
 
             // Update window-title HUD once a second.

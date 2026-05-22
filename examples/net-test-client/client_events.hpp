@@ -65,4 +65,14 @@ struct ClientReadyInputs {
 // Encode the spec 20/22 client-ready packet. Returns the wire bytes.
 std::vector<std::uint8_t> encode_client_ready(const ClientReadyInputs& inputs);
 
+// Spec 20/23 follow-up — the "any guaranteed event unblocks" theory in
+// §16.5 turned out to be wrong empirically; the server kept resending
+// AcceptConnect after our 1-byte-'A' ready. As a fallback that doesn't
+// require fully reverse-engineering the Huffman table + input
+// sub-stream, this encoder takes the body bytes from a captured
+// working Groove session (the 55 bytes after the 4-byte VC header of
+// `groove-session-20260522-124329.json` packet i=4) and prepends a
+// fresh 4-byte VC header built from `inputs`. Sends 59 bytes total.
+std::vector<std::uint8_t> encode_client_ready_verbatim(const ClientReadyInputs& inputs);
+
 }  // namespace net20

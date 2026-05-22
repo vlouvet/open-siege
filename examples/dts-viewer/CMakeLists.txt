@@ -70,6 +70,15 @@ add_executable(dts-viewer
     inspector.cpp
     open_url.cpp
     help_menu.cpp
+    # spec 20/15 — remote-ghost rendering. The four .cpp files below live
+    # under examples/net-test-client/ (their original home from specs
+    # 20/10, 20/12, 20/14, 20/22). We share the sources rather than
+    # duplicating them so net-test-client and dts-viewer stay in lock-step.
+    net_client.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client/ghost_stream.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client/ghost_types.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client/reliable_acks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client/client_events.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
@@ -87,6 +96,7 @@ target_include_directories(dts-viewer PRIVATE
     ${THREESPACE_DIR}/cscript/math/impl
     ${THREESPACE_DIR}/cscript/lib
     ${THREESPACE_DIR}/cscript/lib/tinyxml2
+    ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${SDL2_INCLUDE_DIRS})

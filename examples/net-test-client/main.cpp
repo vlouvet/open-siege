@@ -213,13 +213,16 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     if (use_groove) {
         pkt_vec.assign(std::begin(kGrooveRequestConnectTemplate),
                        std::end(kGrooveRequestConnectTemplate));
-        // Verbatim send: the 18-byte auth trailer (offsets 27..44) is
-        // almost certainly a hash/HMAC over the head of the packet, so
-        // randomizing the nonce-looking head bytes without recomputing
-        // the trailer will silently fail. Worth a verbatim attempt to
-        // confirm the captured template still works against the live
-        // server; if the server dedupes on nonce we'll need a fresh
-        // capture each session.
+        // Spec 20/23 finding — cross-referencing two captures, the
+        // per-session nonce in the 45-byte Groove RequestConnect
+        // lives at offsets 10..12 (NOT 7..9 like vanilla). Server
+        // echoes those same bytes back at reply offsets 4..6 of
+        // AcceptConnect. Bytes 2..9 and the 18-byte auth trailer at
+        // offsets 27..44 are auth-protected; randomizing them
+        // results in silent rejection.
+        pkt_vec[10] = static_cast<std::uint8_t>(rd() & 0xff);
+        pkt_vec[11] = static_cast<std::uint8_t>(rd() & 0xff);
+        pkt_vec[12] = static_cast<std::uint8_t>(rd() & 0xff);
     } else {
         pkt_vec.assign(std::begin(kRealRequestConnectTemplate),
                        std::end(kRealRequestConnectTemplate));
@@ -251,8 +254,17 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     // Phase 1: wait for AcceptConnect. Vanilla expects 16B with nonce
     // echo at offset 4..6; Groove just an 18B reply (nonce offset
     // unverified). Anything else = RejectConnect with ASCII reason.
+    //
+    // Spec 20/23 finding: the server picks its own connect-handle
+    // parity at AcceptConnect time (varies per session). We MUST
+    // echo that exact parity bit on every subsequent VC datagram, or
+    // the server rejects us silently and stays in the
+    // AcceptConnect-retransmit loop. Capture the parity bit (bit 1 of
+    // reply byte 0) here so the phase-2 ack + the ready packet + every
+    // pure-ack use it.
     const std::uint64_t accept_deadline = now_ms() + 3000;
     bool got_accept = false;
+    bool server_connect_parity = false;
     const std::size_t accept_len = use_groove ? 18 : 16;
     while (now_ms() < accept_deadline) {
         std::vector<std::uint8_t> buf;
@@ -260,8 +272,11 @@ int run_template_paste(const std::string& host, std::uint16_t port,
         if (sock.try_recv(buf, src)) {
             hex_dump("recv", buf.data(), buf.size());
             if (buf.size() == accept_len) {
+                server_connect_parity = (buf[0] & 0x02) != 0;
                 std::fprintf(stderr,
-                    "[net-test] phase-1: AcceptConnect received\n");
+                    "[net-test] phase-1: AcceptConnect received "
+                    "(server parity=%d)\n",
+                    server_connect_parity ? 1 : 0);
                 got_accept = true;
             } else {
                 // ASCII reason starts after the 8-byte server header.
@@ -282,16 +297,44 @@ int run_template_paste(const std::string& host, std::uint16_t port,
         return 4;
     }
 
-    // Phase 2: send the first DataPacket. This is the implicit "handshake
-    // complete" signal. Bytes captured from a live session were 07 08 09 80;
-    // re-using them here as a literal until we decode the bit layout.
-    static const std::uint8_t kFirstDataPacket[4] = { 0x07, 0x08, 0x09, 0x80 };
-    if (!sock.send_to(*dst, kFirstDataPacket, sizeof(kFirstDataPacket))) {
+    // Phase 2: send the first DataPacket — a 4-byte pure-ack at
+    // send-seq=1 acking the AcceptConnect (server-seq=1).
+    //
+    // Wire (LSB-first): bit 0 VC=1, bit 1 parity=server_connect_parity,
+    // bits 2..10 send_seq=1, bits 11..15 high_ack=1, bits 16..18 ack
+    // run len=1, bits 19..23 ack start=1, bits 24..26 ack terminator=0,
+    // bits 27..31 type=16 (Ack).
+    //
+    // Spec 20/23 finding: parity MUST match the server's
+    // AcceptConnect byte-0 bit 1, which varies per session. The old
+    // hardcoded `07 08 09 80` only worked by coincidence when the
+    // server happened to pick parity=1.
+    std::uint8_t phase2_packet[4];
+    {
+        net20::BitWriter w;
+        w.write_flag(true);                          // VC
+        w.write_flag(server_connect_parity);          // parity
+        w.write_bits(1u, 9);                          // send_seq = 1
+        w.write_bits(1u, 5);                          // highest_acked_of_mine = 1
+        w.write_bits(1u, 3);                          // ack run length = 1
+        w.write_bits(1u, 5);                          // ack run start = 1
+        w.write_bits(0u, 3);                          // ack-list terminator
+        w.write_bits(16u, 5);                         // type = 16 (Ack)
+        const auto& wb = w.bytes;
+        if (wb.size() != 4) {
+            std::fprintf(stderr,
+                "[net-test] phase-2 encoder bug: got %zu bytes\n",
+                wb.size());
+            return 2;
+        }
+        std::memcpy(phase2_packet, wb.data(), 4);
+    }
+    if (!sock.send_to(*dst, phase2_packet, sizeof(phase2_packet))) {
         std::fprintf(stderr, "[net-test] phase-2: send failed: %s\n",
             sock.last_error().c_str());
         return 2;
     }
-    hex_dump("phase-2 send", kFirstDataPacket, sizeof(kFirstDataPacket));
+    hex_dump("phase-2 send", phase2_packet, sizeof(phase2_packet));
 
     // Phase 3: server should now start streaming ghost data. Accumulate
     // every packet so a --ghost-dump path can emit a JSON file the
@@ -308,9 +351,9 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     // the counter). Our phase-2 first emit was a 4-byte pure-ack with
     // send-seq = 1 (the same seq RequestConnect occupied), so we keep
     // sending pure-acks at send-seq = 1 throughout phase-3. Parity
-    // bit is the LSB of the connect-handle — we read it back out of
-    // the AcceptConnect-driven phase-2 template (bit 1 of byte 0).
-    const bool connect_parity = (kFirstDataPacket[0] & 0x02) != 0;
+    // bit is the server-chosen connect-handle parity from the
+    // AcceptConnect reply (spec 20/23 finding).
+    const bool connect_parity = server_connect_parity;
     const std::uint16_t our_send_seq = 1;  // see comment above
     // Spec 20/22: the connection-progression DataPacket (sent once,
     // immediately after the first ghost-stream packet arrives) carries
@@ -394,7 +437,11 @@ int run_template_paste(const std::string& host, std::uint16_t port,
         in.ack_runs = net20::build_ack_runs(ack.received,
                                              ack.highest_recv_mod32);
         in.arg_byte = 'A';
-        const auto wire = net20::encode_client_ready(in);
+        // Spec 20/23 — empirically the "any 1-byte event" theory from
+        // §16.5 doesn't unblock the server. Use the verbatim-replay
+        // path which prepends our VC header to the body bytes from a
+        // known-working captured session.
+        const auto wire = net20::encode_client_ready_verbatim(in);
         if (!sock.send_to(*dst, wire.data(), wire.size())) {
             std::fprintf(stderr, "[ready] send failed: %s\n",
                 sock.last_error().c_str());

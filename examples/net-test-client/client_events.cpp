@@ -87,4 +87,53 @@ std::vector<std::uint8_t> encode_client_ready(const ClientReadyInputs& inputs)
     return std::move(w.bytes);
 }
 
+// Captured 59-byte working client-ready packet from
+// captures/real-tribes/groove-session-20260522-124329.json (packet i=4,
+// the first c→s 59-byte DataPacket sent ≈210 ms after AcceptConnect in
+// a session that successfully transitioned to gameplay).
+//
+// Bytes 0..3 are the VC header (overwritten per call); bytes 4..58 are
+// the event sub-stream + input sub-stream payload that the server
+// requires. We're replaying these verbatim because the function-name
+// Huffman encoding and the input PSC payload are not yet decoded.
+static const std::uint8_t kCapturedReadyBody[55] = {
+    0x85, 0x80, 0xac, 0x10, 0x90, 0x5d, 0x00, 0x22,
+    0x84, 0x88, 0xb6, 0x33, 0x20, 0xa6, 0x4e, 0x0c,
+    0x2c, 0xbd, 0x57, 0xc3, 0x1f, 0xa1, 0x26, 0x4c,
+    0x1f, 0xd6, 0x93, 0x8f, 0xa2, 0x4d, 0x13, 0xec,
+    0xb2, 0x3d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+    0x20, 0xb3, 0x60, 0xcb, 0xd1, 0xbe, 0x40, 0x74,
+    0x51, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x0a,
+};
+
+std::vector<std::uint8_t> encode_client_ready_verbatim(const ClientReadyInputs& inputs)
+{
+    // Build the 4-byte VC header into a small BitWriter, then concat
+    // the captured body. Per §14.2: bit 0 VC, bit 1 parity, bits 2..10
+    // send-seq, bits 11..15 highest-acked-of-mine, then ack-run list
+    // terminated by a 3-bit zero + 5-bit type=0 (DataPacket).
+    BitWriter w;
+    w.write_flag(true);
+    w.write_flag(inputs.connect_parity);
+    w.write_bits(inputs.send_seq & 0x1FFu, 9);
+    w.write_bits(inputs.highest_acked_of_mine & 0x1Fu, 5);
+    for (const AckRun& r : inputs.ack_runs) {
+        const std::uint8_t len = r.length == 0 ? 1
+            : (r.length > 7 ? 7 : r.length);
+        w.write_bits(len, 3);
+        w.write_bits(r.start_seq & 0x1Fu, 5);
+    }
+    w.write_bits(0u, 3);  // ack-list terminator
+    w.write_bits(static_cast<std::uint32_t>(pkt_type::kDataPacket) & 0x1Fu, 5);
+
+    // Header should be exactly 4 bytes for a VC packet with one ack-run.
+    // If callers pass weird ack lists the header may grow; we still
+    // append the body, but the resulting packet won't match the capture
+    // shape and probably won't work.
+    std::vector<std::uint8_t> out = std::move(w.bytes);
+    out.insert(out.end(),
+        std::begin(kCapturedReadyBody), std::end(kCapturedReadyBody));
+    return out;
+}
+
 }  // namespace net20
