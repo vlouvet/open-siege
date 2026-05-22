@@ -114,10 +114,21 @@ Add this export to `~/.bashrc` or repeat it each UCRT64 session.
 ```sh
 cd ~/src/open-siege/3space   # or wherever you cloned the repo
 
-# Fetch dependencies (first run: ~15-25 minutes — builds boost, openssl, etc.)
+# Bootstrap: fetch cmake 3.22.0 into the Conan cache before building packages.
+# The system CMake 4.x breaks transitive recipes (bzip2, etc.) so Conan's own
+# cmake 3.22 must be on PATH when packages are compiled.
+conan install cmake/3.22.0@ --build=missing
+
+# Put cmake 3.22.0 first on PATH for this shell session
+export CMAKE322="$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)"
+export PATH="$CMAKE322:$PATH"
+cmake --version   # should print "cmake version 3.22.0"
+
+# Fetch and build all 3space dependencies (~15-25 min on first run)
+mkdir -p build
 conan install . --install-folder=build --build=missing
 
-# Configure (use Conan-managed cmake 3.22)
+# Configure (use cmake 3.22 from PATH)
 cmake -S . -B build -DCMAKE_MODULE_PATH=$(pwd)/build/cmake -DCMAKE_BUILD_TYPE=Release
 
 # Build lib3space.a and the cscript VM (~5 min on 4 cores)
