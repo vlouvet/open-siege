@@ -22,6 +22,9 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
+#if defined(_WIN32)
+#  include <direct.h>
+#endif
 
 #include "core/crc.h"
 #include "core/frameAllocator.h"
@@ -82,31 +85,30 @@ static bool isDirectory(const String& file)
 
 //-----------------------------------------------------------------------------
 
-static uid_t _Uid;                     // Current user id
-static int _GroupCount;                // Number of groups in the table
-static gid_t _Groups[NGROUPS_UMAX+1];  // Table of all the user groups
+#if !defined(_WIN32)
+static uid_t _Uid;
+static int _GroupCount;
+static gid_t _Groups[NGROUPS_UMAX+1];
+#endif
 
 static void copyStatAttributes(const struct stat& info, FileNode::Attributes* attr)
 {
-   // We need to user and group id's in order to determin file
-   // read-only access permission. This information is only retrieved
-   // once per execution.
+   attr->flags = 0;
+   if (S_ISDIR(info.st_mode))
+      attr->flags |= FileNode::Directory;
+   if (S_ISREG(info.st_mode))
+      attr->flags |= FileNode::File;
+
+#if defined(_WIN32)
+   if (!(info.st_mode & S_IWRITE))
+      attr->flags |= FileNode::ReadOnly;
+#else
    if (!_Uid)
    {
       _Uid = getuid();
       _GroupCount = getgroups(NGROUPS_UMAX,_Groups);
       _Groups[_GroupCount++] = getegid();
    }
-
-   // Fill in the return struct. The read-only flag is determined
-   // by comparing file user and group ownership.
-   attr->flags = 0;
-   if (S_ISDIR(info.st_mode))
-      attr->flags |= FileNode::Directory;
-      
-   if (S_ISREG(info.st_mode))
-      attr->flags |= FileNode::File;
-      
    if (info.st_uid == _Uid)
    {
       if (!(info.st_mode & S_IWUSR))
@@ -131,6 +133,7 @@ static void copyStatAttributes(const struct stat& info, FileNode::Attributes* at
             attr->flags |= FileNode::ReadOnly;
       }
    }
+#endif
 
    attr->size = info.st_size;
    attr->mtime = UnixTimeToTime(info.st_mtime);
@@ -197,7 +200,11 @@ FileNodeRef PosixFileSystem::create(const Path& path, FileNode::Mode mode)
    {
       String file = buildFileName(_volume,path);
       
+#if defined(_WIN32)
+      if (_mkdir(file.c_str()) == 0)
+#else
       if (mkdir(file.c_str(),S_IRWXU | S_IRWXG | S_IRWXO) == 0)
+#endif
          return new PosixDirectory(path,file);
    }
    
