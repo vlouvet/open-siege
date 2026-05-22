@@ -56,16 +56,40 @@ struct GhostBaseState {
     std::uint16_t owner_client_id = 0;   // raw + 2048
 };
 
+// §15.0.2 shape-layer block (every Player / Vehicle / Projectile-derived /
+// Item / StaticShape update emits this block immediately after §15.0.1).
+// In the scope-always burst the typical wire pattern is 3 zero bits
+// (shield/thread/fade all unchanged); deltas may carry sub-payloads.
+struct GhostShapeLayer {
+    bool shield_changed = false;
+    float shield_dir_x = 0.0f, shield_dir_y = 0.0f, shield_dir_z = 0.0f;
+    float shield_z_offset = 0.0f;        // 8-bit normalised, decoded m
+
+    bool thread_changed = false;
+    struct ThreadSlot {
+        bool present = false;
+        std::uint8_t sequence_id = 0;    // SeqW (provisional 6 bits per §15.0.2)
+        std::uint8_t state = 0;          // 2 bits — 0 stop / 1 play / 2 pause
+        bool forward = false;
+        bool at_end = false;
+    };
+    std::array<ThreadSlot, 4> threads{};
+
+    bool fade_changed = false;
+    bool fade_in = false;
+};
+
 // §15.5 StaticShape per-class payload.
 struct GhostStaticShape {
     std::uint16_t ghost_id = 0;
     std::uint32_t object_id = 0;
     std::uint16_t class_tag = 0;
     GhostBaseState base;
+    GhostShapeLayer shape;                              // §15.0.2
 
     bool transform_changed = false;
-    float pos_x = 0.0f, pos_y = 0.0f, pos_z = 0.0f;     // §15.5: 32-bit IEEE-754 byte-aligned floats
-    float rot_x = 0.0f, rot_y = 0.0f, rot_z = 0.0f;     // Euler radians
+    float pos_x = 0.0f, pos_y = 0.0f, pos_z = 0.0f;     // §15.5: bit-packed IEEE-754 floats (NOT byte-aligned per §6.9 corrected)
+    float rot_x = 0.0f, rot_y = 0.0f, rot_z = 0.0f;     // Euler radians, same bit-packed form
 
     bool damage_changed = false;
     bool state_enabled = false;
@@ -75,7 +99,8 @@ struct GhostStaticShape {
     bool info_changed = false;
     bool is_target = false;
 
-    // Shape-info sub-block (only when this is a "shape" variant of static).
+    // Shape-info sub-block (always emitted; the previous "variant" branch
+    // was incorrect per §15.5 — there is one wire layout for every static).
     bool shape_info_changed = false;
     std::uint8_t shape_data_file_id = 0;
     bool has_sensor_key = false;
@@ -89,6 +114,7 @@ struct GhostPlayer {
     std::uint32_t object_id = 0;
     std::uint16_t class_tag = 0;
     GhostBaseState base;
+    GhostShapeLayer shape;                              // §15.0.2
 
     bool initial_update = false;
     std::uint8_t datafile_id = 0;
@@ -151,6 +177,7 @@ struct GhostProjectile {
     std::uint32_t object_id = 0;
     std::uint16_t class_tag = 0;
     GhostBaseState base;
+    GhostShapeLayer shape;                              // §15.0.2
 
     bool initial_update = false;
     // Introduction (initial_update = 1):
@@ -179,6 +206,7 @@ struct GhostItem {
     std::uint32_t object_id = 0;
     std::uint16_t class_tag = 0;
     GhostBaseState base;
+    GhostShapeLayer shape;                              // §15.0.2
 
     bool info_changed = false;
     std::uint8_t item_data_file_id = 0;
@@ -205,6 +233,7 @@ struct GhostVehicle {
     std::uint32_t object_id = 0;
     std::uint16_t class_tag = 0;
     GhostBaseState base;
+    GhostShapeLayer shape;                              // §15.0.2
 
     bool suppress_update = false;
 

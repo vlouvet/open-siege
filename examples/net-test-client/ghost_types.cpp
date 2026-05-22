@@ -62,16 +62,17 @@ struct BitReader {
         if (rem != 0) pos += (8 - rem);
     }
 
-    // Read a 32-bit IEEE-754 LE float, byte-aligned (per §15 conventions:
-    // "32-bit float byte-aligned" = align then read 4 LE bytes).
-    float read_float_aligned() noexcept {
-        align_to_byte();
+    // Read a 32-bit IEEE-754 LE float, bit-packed at the current bit cursor
+    // with NO byte alignment (per §6.9 corrected and §15.5 critical note:
+    // the raw bit-stream `write(n, ptr)` primitive is just "write n*8 bits
+    // at the current bit position"). Spec 24's audit traced every "96-bit
+    // position" field in §15 to this primitive, so the receiver must NEVER
+    // align before reading float-3 tuples — doing so desynchronises the
+    // walker on every record whose upstream flags leave the cursor at a
+    // non-byte-aligned position.
+    float read_float_unaligned() noexcept {
         if (pos + 32 > bit_length) { overrun = true; return 0.0f; }
-        std::uint32_t bits = 0;
-        for (int i = 0; i < 4; ++i) {
-            bits |= static_cast<std::uint32_t>(data[(pos >> 3) + i]) << (i * 8);
-        }
-        pos += 32;
+        const std::uint32_t bits = read_bits(32);
         float out;
         std::memcpy(&out, &bits, sizeof(out));
         return out;
@@ -97,27 +98,102 @@ GhostBaseState read_base_state(BitReader& br) {
     return s;
 }
 
-// §15.5 StaticShape per-class payload (post-base-state). Returns true on a
-// clean decode; false on overrun.
+// Decode the §15.0.2 shape-layer block.
 //
-// Per §15.5 the StaticShape body is laid out as:
-//   transform-changed flag, optional 96+96-bit position+rotation
+// The block opens with three 1-bit "changed" flags (shield / thread / fade);
+// each gates its own sub-payload. In the scope-always burst the common
+// case is a 3-bit run of zeros — but the receiver MUST consume those three
+// bits unconditionally, because every shape-bearing class emits them
+// (Player, Vehicle, Projectile-derived, Item, static-shape). Skipping
+// this block desynchronises the walker by 3 bits per record and corrupts
+// every record after the first one in a packet (spec 24's root cause).
+//
+// Sub-payload layout:
+//   shield-changed = 1 -> 15-bit shield direction (writeSignedFloat(x,7)
+//     + writeSignedFloat(y,7) + 1-bit z-sign) followed by 8-bit z-offset.
+//   thread-changed = 1 -> for each of 4 thread slots: 1-bit per-slot
+//     present; if present, SeqW-bit sequence id + 2-bit state +
+//     1-bit direction + 1-bit at-end. SeqW is build-dependent and not
+//     directly verifiable from this capture (§15.0.2 open question);
+//     we use 6 bits provisionally (see open question in spec).
+//   fade-changed = 1 -> 1-bit fade direction.
+GhostShapeLayer read_shape_layer_block(BitReader& br) {
+    GhostShapeLayer s;
+
+    s.shield_changed = br.read_flag();
+    if (s.shield_changed) {
+        // 15-bit shield direction: 7-bit signed x + 7-bit signed y + 1-bit
+        // z-sign. Reconstruct z = sqrt(1 - x*x - y*y), then negate iff sign.
+        auto read_signed_float = [&](unsigned width) {
+            if (br.overrun || width < 2) return 0.0f;
+            const std::int32_t raw = br.read_signed(width);
+            const float scale = static_cast<float>((1 << (width - 1)) - 1);
+            return scale == 0.0f ? 0.0f
+                                 : static_cast<float>(raw) / scale;
+        };
+        const float x = read_signed_float(7);
+        const float y = read_signed_float(7);
+        const bool z_neg = br.read_flag();
+        const float zsq = 1.0f - x * x - y * y;
+        const float zmag = zsq > 0.0f ? std::sqrt(zsq) : 0.0f;
+        s.shield_dir_x = x;
+        s.shield_dir_y = y;
+        s.shield_dir_z = z_neg ? -zmag : zmag;
+        // 8-bit z-offset, recovered metric value = (wire * 10) - 5 in
+        // [-5, +5] m. Spec uses normalised float of width 8.
+        const std::uint32_t zoff_bits = br.read_bits(8);
+        const float zoff_norm = static_cast<float>(zoff_bits) / 255.0f;
+        s.shield_z_offset = (zoff_norm * 10.0f) - 5.0f;
+    }
+
+    s.thread_changed = br.read_flag();
+    if (s.thread_changed) {
+        // Provisional SeqW: 6 bits per §15.0.2 open question.
+        constexpr unsigned kSeqW = 6;
+        for (auto& slot : s.threads) {
+            slot.present = br.read_flag();
+            if (!slot.present) continue;
+            slot.sequence_id = static_cast<std::uint8_t>(br.read_bits(kSeqW));
+            slot.state = static_cast<std::uint8_t>(br.read_bits(2));
+            slot.forward = br.read_flag();
+            slot.at_end = br.read_flag();
+        }
+    }
+
+    s.fade_changed = br.read_flag();
+    if (s.fade_changed) {
+        s.fade_in = br.read_flag();
+    }
+
+    return s;
+}
+
+// §15.5 StaticShape per-class payload (post-base-state, post-shape-layer).
+// Returns true on a clean decode; false on overrun.
+//
+// Per the 2026-05-22 revision of §15.5 the StaticShape body is laid out as:
+//   transform-changed flag, optional bit-packed 96+96-bit position+rotation
 //   damage-changed flag, optional 1+1+8 bits
 //   info-changed flag, optional 1-bit is-target
-//   shape-info-changed flag, optional 8-bit data-file id + sensor-key block
+//   shape-info-changed flag, optional DfW-bit data-file id + sensor-key
 //
-// This function decodes the union of "plain static + shape variant" — i.e.
-// it always reads the shape-info block. The scope-always burst's static
-// objects in the 2026-05-22 capture are all shape-bearing variants.
+// Every concrete static-shape class emits the same wire format — there is
+// no "plain static" vs. "shape-bearing static" branch. The previous
+// spec-14 implementer's per-variant conditional was incorrect (§15.5).
+//
+// Position and rotation floats are bit-packed (NOT byte-aligned) per §6.9
+// corrected. A byte-aligned read produces visually-correct results only
+// when the upstream flags happen to leave the cursor byte-aligned and
+// garbage in any other case.
 bool read_static_shape_body(BitReader& br, GhostStaticShape& s) {
     s.transform_changed = br.read_flag();
     if (s.transform_changed) {
-        s.pos_x = br.read_float_aligned();
-        s.pos_y = br.read_float_aligned();
-        s.pos_z = br.read_float_aligned();
-        s.rot_x = br.read_float_aligned();
-        s.rot_y = br.read_float_aligned();
-        s.rot_z = br.read_float_aligned();
+        s.pos_x = br.read_float_unaligned();
+        s.pos_y = br.read_float_unaligned();
+        s.pos_z = br.read_float_unaligned();
+        s.rot_x = br.read_float_unaligned();
+        s.rot_y = br.read_float_unaligned();
+        s.rot_z = br.read_float_unaligned();
     }
     if (br.overrun) return false;
 
@@ -198,10 +274,10 @@ bool read_player_body(BitReader& br, GhostPlayer& p,
         constexpr float kMaxPitch = 88.0f * 3.14159265358979323846f / 180.0f;
         p.view_pitch = (static_cast<float>(signed5) / 15.0f) * kMaxPitch;
 
-        // Full IEEE-754 position (96 bits byte-aligned).
-        p.pos_x = br.read_float_aligned();
-        p.pos_y = br.read_float_aligned();
-        p.pos_z = br.read_float_aligned();
+        // Full IEEE-754 position (96 bits bit-packed per §6.9 corrected).
+        p.pos_x = br.read_float_unaligned();
+        p.pos_y = br.read_float_unaligned();
+        p.pos_z = br.read_float_unaligned();
 
         p.has_velocity = br.read_flag();
         if (p.has_velocity) {
@@ -252,7 +328,7 @@ bool read_player_body(BitReader& br, GhostPlayer& p,
 
     p.recharge_changed = br.read_flag();
     if (p.recharge_changed) {
-        p.recharge_rate = br.read_float_aligned();
+        p.recharge_rate = br.read_float_unaligned();
     }
 
     p.pda_mode = br.read_flag();
@@ -311,17 +387,17 @@ bool read_item_body(BitReader& br, GhostItem& it,
     }
     it.position_changed = br.read_flag();
     if (it.position_changed) {
-        it.pos_x = br.read_float_aligned();
-        it.pos_y = br.read_float_aligned();
-        it.pos_z = br.read_float_aligned();
+        it.pos_x = br.read_float_unaligned();
+        it.pos_y = br.read_float_unaligned();
+        it.pos_z = br.read_float_unaligned();
     }
     it.at_rest_or_rotates = br.read_flag();
     if (!it.at_rest_or_rotates) {
         it.velocity_changed = br.read_flag();
         if (it.velocity_changed) {
-            it.velocity_x = br.read_float_aligned();
-            it.velocity_y = br.read_float_aligned();
-            it.velocity_z = br.read_float_aligned();
+            it.velocity_x = br.read_float_unaligned();
+            it.velocity_y = br.read_float_unaligned();
+            it.velocity_z = br.read_float_unaligned();
         }
     }
     return !br.overrun;
@@ -340,24 +416,24 @@ bool read_projectile_body(BitReader& br, GhostProjectile& pr,
             pr.shooter_ghost = static_cast<std::uint16_t>(br.read_bits(10));
         }
         // Grenade-style: 96-bit init pos + 96-bit init velocity (per §15.2).
-        pr.init_pos_x = br.read_float_aligned();
-        pr.init_pos_y = br.read_float_aligned();
-        pr.init_pos_z = br.read_float_aligned();
-        pr.init_vel_x = br.read_float_aligned();
-        pr.init_vel_y = br.read_float_aligned();
-        pr.init_vel_z = br.read_float_aligned();
+        pr.init_pos_x = br.read_float_unaligned();
+        pr.init_pos_y = br.read_float_unaligned();
+        pr.init_pos_z = br.read_float_unaligned();
+        pr.init_vel_x = br.read_float_unaligned();
+        pr.init_vel_y = br.read_float_unaligned();
+        pr.init_vel_z = br.read_float_unaligned();
     } else {
         pr.position_changed = br.read_flag();
         if (pr.position_changed) {
-            pr.pos_x = br.read_float_aligned();
-            pr.pos_y = br.read_float_aligned();
-            pr.pos_z = br.read_float_aligned();
+            pr.pos_x = br.read_float_unaligned();
+            pr.pos_y = br.read_float_unaligned();
+            pr.pos_z = br.read_float_unaligned();
         }
         pr.velocity_full = br.read_flag();
         if (pr.velocity_full) {
-            pr.velocity_x = br.read_float_aligned();
-            pr.velocity_y = br.read_float_aligned();
-            pr.velocity_z = br.read_float_aligned();
+            pr.velocity_x = br.read_float_unaligned();
+            pr.velocity_y = br.read_float_unaligned();
+            pr.velocity_z = br.read_float_unaligned();
         } else {
             // Compressed velocity direction (9,9 normal-vector).
             const std::int32_t z_signed = br.read_signed(9);
@@ -385,12 +461,12 @@ bool read_vehicle_body(BitReader& br, GhostVehicle& v) {
 
     v.orientation_changed = br.read_flag();
     if (v.orientation_changed) {
-        v.rot_x = br.read_float_aligned();
-        v.rot_y = br.read_float_aligned();
-        v.rot_z = br.read_float_aligned();
-        v.pos_x = br.read_float_aligned();
-        v.pos_y = br.read_float_aligned();
-        v.pos_z = br.read_float_aligned();
+        v.rot_x = br.read_float_unaligned();
+        v.rot_y = br.read_float_unaligned();
+        v.rot_z = br.read_float_unaligned();
+        v.pos_x = br.read_float_unaligned();
+        v.pos_y = br.read_float_unaligned();
+        v.pos_z = br.read_float_unaligned();
         v.has_move = br.read_flag();
         if (v.has_move) {
             v.move_redundant = br.read_flag();
@@ -404,7 +480,7 @@ bool read_vehicle_body(BitReader& br, GhostVehicle& v) {
                 v.crouch_held = br.read_flag();
             }
             v.speed_fraction = static_cast<float>(br.read_bits(10)) / 1023.0f;
-            v.lift = br.read_float_aligned();
+            v.lift = br.read_float_unaligned();
             v.skip_count = static_cast<std::uint8_t>(br.read_bits(4));
         }
     }
@@ -704,6 +780,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     s.object_id = obj_id;
                     s.class_tag = class_tag;
                     s.base = read_base_state(br);
+                    s.shape = read_shape_layer_block(br);
                     ok = !br.overrun && read_static_shape_body(br, s);
                     if (ok) registry.statics[rec.ghost_id] = std::move(s);
                     break;
@@ -714,6 +791,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     p.object_id = obj_id;
                     p.class_tag = class_tag;
                     p.base = read_base_state(br);
+                    p.shape = read_shape_layer_block(br);
                     ok = !br.overrun && read_player_body(br, p, kDataFileWidth);
                     if (ok) registry.players[rec.ghost_id] = std::move(p);
                     break;
@@ -724,6 +802,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     it.object_id = obj_id;
                     it.class_tag = class_tag;
                     it.base = read_base_state(br);
+                    it.shape = read_shape_layer_block(br);
                     ok = !br.overrun && read_item_body(br, it, kDataFileWidth);
                     if (ok) registry.items[rec.ghost_id] = std::move(it);
                     break;
@@ -734,6 +813,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     pr.object_id = obj_id;
                     pr.class_tag = class_tag;
                     pr.base = read_base_state(br);
+                    pr.shape = read_shape_layer_block(br);
                     ok = !br.overrun
                          && read_projectile_body(br, pr, kDataFileWidth);
                     if (ok) registry.projectiles[rec.ghost_id] = std::move(pr);
@@ -745,6 +825,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     v.object_id = obj_id;
                     v.class_tag = class_tag;
                     v.base = read_base_state(br);
+                    v.shape = read_shape_layer_block(br);
                     ok = !br.overrun && read_vehicle_body(br, v);
                     if (ok) registry.vehicles[rec.ghost_id] = std::move(v);
                     break;
@@ -786,6 +867,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     auto& s = registry.statics[rec.ghost_id];
                     s.ghost_id = rec.ghost_id;
                     s.base = read_base_state(br);
+                    s.shape = read_shape_layer_block(br);
                     ok = !br.overrun && read_static_shape_body(br, s);
                     break;
                 }
@@ -793,6 +875,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     auto& p = registry.players[rec.ghost_id];
                     p.ghost_id = rec.ghost_id;
                     p.base = read_base_state(br);
+                    p.shape = read_shape_layer_block(br);
                     ok = !br.overrun && read_player_body(br, p, kDataFileWidth);
                     break;
                 }
@@ -800,6 +883,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     auto& it = registry.items[rec.ghost_id];
                     it.ghost_id = rec.ghost_id;
                     it.base = read_base_state(br);
+                    it.shape = read_shape_layer_block(br);
                     ok = !br.overrun && read_item_body(br, it, kDataFileWidth);
                     break;
                 }
@@ -807,6 +891,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     auto& pr = registry.projectiles[rec.ghost_id];
                     pr.ghost_id = rec.ghost_id;
                     pr.base = read_base_state(br);
+                    pr.shape = read_shape_layer_block(br);
                     ok = !br.overrun
                          && read_projectile_body(br, pr, kDataFileWidth);
                     break;
@@ -815,6 +900,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     auto& v = registry.vehicles[rec.ghost_id];
                     v.ghost_id = rec.ghost_id;
                     v.base = read_base_state(br);
+                    v.shape = read_shape_layer_block(br);
                     ok = !br.overrun && read_vehicle_body(br, v);
                     break;
                 }

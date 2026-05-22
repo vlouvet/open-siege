@@ -22,6 +22,7 @@
 #include "client_events.hpp"
 #include "ghost_stream.hpp"
 #include "ghost_types.hpp"
+#include "movecommand.hpp"
 #include "reliable_acks.hpp"
 
 #include <algorithm>
@@ -85,7 +86,14 @@ void usage(const char* argv0)
         "  --no-send-ready      disable the spec 20/22 emit even with --ack.\n"
         "  --ready-selftest     offline: encode a sample client-ready packet\n"
         "                       and dump its bytes + per-field decode for\n"
-        "                       inspection.\n",
+        "                       inspection.\n"
+        "  --send-moves         after --send-ready completes, emit one\n"
+        "                       move-command DataPacket per ~33 ms per\n"
+        "                       spec 20/19 §17. Synthetic inputs (no\n"
+        "                       buttons, FOV=90, zero mouse) by default.\n"
+        "  --move-selftest      offline: encode the §17.8 worked example\n"
+        "                       from documented inputs and confirm the\n"
+        "                       resulting bytes match the captured packet.\n",
         argv0, (int)std::strlen(argv0), "");
 }
 
@@ -191,7 +199,8 @@ int run_template_paste(const std::string& host, std::uint16_t port,
                        bool decode_ghosts,
                        bool send_acks,
                        bool use_groove,
-                       bool send_ready)
+                       bool send_ready,
+                       bool send_moves)
 {
     const char* tmpl_name = use_groove ? "Groove (45B)" : "vanilla Wine (27B)";
     std::fprintf(stderr,
@@ -363,6 +372,18 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     bool ready_sent = false;
     int ready_send_count = 0;
     std::uint64_t ready_sent_ms = 0;
+    // Spec 20/19 §17 — move-command emit state.
+    // send_seq for c->s DataPackets continues to increment past the
+    // ready packet. Our first move command rides seq=3.
+    std::uint16_t move_send_seq = 3;
+    std::uint32_t move_seq_counter = 0;   // §17.6 monotonic per-tick counter
+    int moves_emitted = 0;
+    std::size_t move_bytes_sent = 0;
+    std::uint64_t last_move_emit_ms = 0;
+    std::uint64_t first_move_emit_ms = 0;
+    // §17.6 — engine-level per-peer min interval is 32 ms; we send at
+    // ≈30 Hz (33 ms) which matches the median capture cadence.
+    constexpr std::uint64_t kMoveIntervalMs = 33;
     net20::AckTracker ack;
     // Spec 14: typed-ghost registry, populated lazily by --decode-ghosts.
     net20::GhostRegistry typed_registry;
@@ -465,6 +486,65 @@ int run_template_paste(const std::string& host, std::uint16_t port,
             static_cast<int>(connect_parity));
     };
 
+    // Spec 20/19 §17 — emit one move-command DataPacket. We don't have
+    // a real input source in this CLI; the moves we send carry zero
+    // axes / no buttons / no mouse-look. This is enough for the server
+    // to count us as active and start mirroring our control object back
+    // in the s->c ghost stream (the "our player" entry).
+    //
+    // Send cadence: one packet per ≈33 ms, each carrying exactly one
+    // tick (which is itself the §17.6 / capture median). The 32-bit
+    // move-sequence counter advances by 1 per emit.
+    auto emit_move = [&](const char* trigger) {
+        const std::uint64_t now = now_ms();
+        if (last_move_emit_ms != 0
+            && now < last_move_emit_ms + kMoveIntervalMs) {
+            return;
+        }
+        net20::MoveCommandInputs in;
+        in.send_seq = move_send_seq;
+        in.connect_parity = connect_parity;
+        in.highest_acked_of_mine =
+            static_cast<std::uint8_t>(ack.highest_recv_mod32 & 0x1Fu);
+        in.ack_runs = net20::build_ack_runs(ack.received,
+                                             ack.highest_recv_mod32);
+        in.fov_degrees = 90.0f;
+        in.first_move_seq = move_seq_counter;
+        net20::MoveInput m;   // all zero — idle player
+        in.moves.push_back(m);
+        const auto wire = net20::encode_movecommand(in);
+        if (!sock.send_to(*dst, wire.data(), wire.size())) {
+            std::fprintf(stderr, "[move] send failed: %s\n",
+                sock.last_error().c_str());
+            return;
+        }
+        if (moves_emitted == 0) {
+            first_move_emit_ms = now;
+        }
+        ++moves_emitted;
+        move_bytes_sent += wire.size();
+        ++move_seq_counter;
+        // Each move-command DataPacket consumes one slot of the 9-bit
+        // VC send-seq counter (§14.2). Wrap at 512.
+        move_send_seq = static_cast<std::uint16_t>(
+            (move_send_seq + 1) & 0x1FFu);
+        last_move_emit_ms = now;
+        // The packet carries our piggybacked acks; clear the pending
+        // window so the next pure-ack / move-emit doesn't re-advertise
+        // the same slot list.
+        ack.clear_pending();
+        last_emit_ms = now;  // keep the §14.5 rate-window aligned
+        if (moves_emitted <= 5) {
+            std::fprintf(stderr,
+                "[move] #%d seq=%u move_seq=%u size=%zuB trigger=%s\n",
+                moves_emitted,
+                static_cast<unsigned>(in.send_seq),
+                static_cast<unsigned>(move_seq_counter - 1),
+                wire.size(),
+                trigger);
+        }
+    };
+
     while (now_ms() < deadline) {
         std::vector<std::uint8_t> buf;
         Endpoint src;
@@ -519,19 +599,35 @@ int run_template_paste(const std::string& host, std::uint16_t port,
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        // §14.5 rule 2: steady-state emit at ~28 Hz when acks are pending.
-        if (send_acks && ack.pending_count() > 0
+        // Spec 20/19 §17 — once the ready packet is out, start
+        // emitting one move-command DataPacket per ≈33 ms. The
+        // move-emit lambda piggybacks any pending acks onto the
+        // outgoing packet so pure-acks effectively become redundant
+        // while moves are flowing.
+        if (send_moves && ready_sent
+            && now_ms() >= last_move_emit_ms + kMoveIntervalMs) {
+            emit_move("cadence");
+        } else if (send_acks && ack.pending_count() > 0
             && now_ms() >= last_emit_ms + kAckIntervalMs) {
+            // §14.5 rule 2: steady-state emit at ~28 Hz when acks
+            // are pending. Only fall through to pure-acks when we
+            // are not already sending move-commands (which carry
+            // their own piggyback acks).
             emit_pure_ack("cadence");
         }
     }
     std::fprintf(stderr,
         "[net-test] phase-3: %d ghost packets, %zu bytes total"
-        "; acks_sent=%d (%zuB); ready_sent=%d at t=%llums\n",
+        "; acks_sent=%d (%zuB); ready_sent=%d at t=%llums;"
+        " moves_sent=%d (%zuB) first@t=%llums move_seq_counter=%u\n",
         ghost_packets, ghost_bytes, acks_emitted, ack_bytes,
         ready_send_count,
         static_cast<unsigned long long>(
-            ready_sent_ms == 0 ? 0 : ready_sent_ms - phase3_start));
+            ready_sent_ms == 0 ? 0 : ready_sent_ms - phase3_start),
+        moves_emitted, move_bytes_sent,
+        static_cast<unsigned long long>(
+            first_move_emit_ms == 0 ? 0 : first_move_emit_ms - phase3_start),
+        static_cast<unsigned>(move_seq_counter));
 
     if (!ghost_dump_path.empty() && !captured.empty()) {
         std::FILE* f = std::fopen(ghost_dump_path.c_str(), "wb");
@@ -1050,6 +1146,132 @@ int run_ready_selftest()
     return 0;
 }
 
+// Spec 20/19 offline self-test: reproduce the §17.8 capture packet
+// i=400 from documented inputs and verify the resulting bytes match.
+//
+// The original 23-byte packet is:
+//   07 fc 59 00 88 d9 28 00 00 20 00 00 60 98 5e d1 76 bc 0f 3a 72 79 14
+//
+// Bits 0..177 encode the VC header + R0/R1 + E + P + input sub-stream
+// (FOV + first-move-seq + 3 moves) + move-loop terminator. Our encoder
+// emits these 178 bits, then a 0 bit for the ghost-sub-stream-present
+// flag, then zero-pad. The original packet differs from our output at
+// bit 178 onward (it carries a ghost record); bytes 0..21 should match
+// exactly, and byte 22's low bit will differ (1 in the original, 0 in
+// ours since we elide the ghost sub-stream).
+int run_move_selftest()
+{
+    const std::uint8_t expected[23] = {
+        0x07, 0xfc, 0x59, 0x00, 0x88, 0xd9, 0x28, 0x00,
+        0x00, 0x20, 0x00, 0x00, 0x60, 0x98, 0x5e, 0xd1,
+        0x76, 0xbc, 0x0f, 0x3a, 0x72, 0x79, 0x14,
+    };
+    const auto wire = net20::encode_movecommand_worked_example();
+
+    auto to_hex = [](const std::uint8_t* p, std::size_t n) {
+        std::string s;
+        char buf[4];
+        for (std::size_t i = 0; i < n; ++i) {
+            std::snprintf(buf, sizeof(buf), "%02x ", p[i]);
+            s += buf;
+        }
+        if (!s.empty()) s.pop_back();
+        return s;
+    };
+
+    std::fprintf(stderr, "[move-selftest] §17.8 worked example\n");
+    std::fprintf(stderr, "[move-selftest] expected (23B): %s\n",
+        to_hex(expected, 23).c_str());
+    std::fprintf(stderr, "[move-selftest] actual   (%zuB): %s\n",
+        wire.size(), to_hex(wire.data(), wire.size()).c_str());
+
+    if (wire.size() < 22) {
+        std::fprintf(stderr,
+            "[move-selftest] FAIL: encoder produced %zu bytes (<22)\n",
+            wire.size());
+        return 7;
+    }
+    // Bytes 0..21 must match exactly. Byte 22's low bit is the
+    // ghost-sub-stream-present flag — in the §17.8 packet it is 1 and
+    // is followed by 5 ghost bits + pad; our encoder emits 0 here
+    // because we don't author ghosts, so we can't compare byte 22.
+    for (std::size_t i = 0; i < 22; ++i) {
+        if (wire[i] != expected[i]) {
+            std::fprintf(stderr,
+                "[move-selftest] FAIL: byte %zu got 0x%02x want 0x%02x\n",
+                i, wire[i], expected[i]);
+            // Bit-level diff for the failing byte.
+            for (unsigned b = 0; b < 8; ++b) {
+                unsigned got  = (wire[i]     >> b) & 1u;
+                unsigned want = (expected[i] >> b) & 1u;
+                if (got != want) {
+                    std::fprintf(stderr,
+                        "                bit %zu (file bit %zu): got=%u want=%u\n",
+                        (std::size_t)b, i * 8 + b, got, want);
+                }
+            }
+            return 7;
+        }
+    }
+    // Byte 22 — confirm low bit (the ghost-present flag) differs as
+    // expected; bits 1..7 of byte 22 in the original carry ghost data
+    // so we cannot constrain them.
+    const unsigned actual_g = wire.size() >= 23 ? (wire[22] & 1u) : 0u;
+    const unsigned expected_g = expected[22] & 1u;   // 1 in §17.8
+    if (actual_g != 0 || expected_g != 1) {
+        std::fprintf(stderr,
+            "[move-selftest] FAIL: ghost-present flag mismatch:"
+            " actual=%u expected_in_capture=%u\n",
+            actual_g, expected_g);
+        return 7;
+    }
+
+    // Round-trip sanity: parse the VC header back out of our wire and
+    // verify send_seq + type.
+    net20::ParsedIncomingHeader p;
+    if (!net20::parse_incoming_header(wire.data(), wire.size(), p)) {
+        std::fprintf(stderr,
+            "[move-selftest] FAIL: parse_incoming_header rejected own emit\n");
+        return 7;
+    }
+    if (p.send_seq != 257 || p.type_word != 0) {
+        std::fprintf(stderr,
+            "[move-selftest] FAIL: parsed seq=%u type=%u\n",
+            (unsigned)p.send_seq, (unsigned)p.type_word);
+        return 7;
+    }
+
+    // FOV quantization spot-checks per §17.5.
+    if (net20::quantize_fov(90.0f) != 170) {
+        std::fprintf(stderr,
+            "[move-selftest] FAIL: quantize_fov(90) = %u, want 170\n",
+            (unsigned)net20::quantize_fov(90.0f));
+        return 7;
+    }
+    if (net20::quantize_fov(108.0f) != 204) {
+        std::fprintf(stderr,
+            "[move-selftest] FAIL: quantize_fov(108) = %u, want 204\n",
+            (unsigned)net20::quantize_fov(108.0f));
+        return 7;
+    }
+    if (net20::quantize_fov(5.625f) != 11) {
+        std::fprintf(stderr,
+            "[move-selftest] FAIL: quantize_fov(5.625) = %u, want 11\n",
+            (unsigned)net20::quantize_fov(5.625f));
+        return 7;
+    }
+    if (net20::quantize_fov(45.0f) != 85) {
+        std::fprintf(stderr,
+            "[move-selftest] FAIL: quantize_fov(45) = %u, want 85\n",
+            (unsigned)net20::quantize_fov(45.0f));
+        return 7;
+    }
+
+    std::fprintf(stderr, "[move-selftest] PASS — bytes 0..21 match §17.8;"
+        " VC header round-trips; FOV quantization correct\n");
+    return 0;
+}
+
 int run_client(const std::string& host, std::uint16_t port,
                const std::string& name, const std::string& password,
                int duration_s)
@@ -1121,6 +1343,8 @@ int main(int argc, char** argv)
     bool send_acks = false;          // spec 20/12 — off by default
     bool ack_selftest = false;
     bool ready_selftest = false;     // spec 20/22 — offline encoder check
+    bool move_selftest = false;      // spec 20/19 — offline encoder check
+    bool send_moves = false;         // spec 20/19 — emit move-command frames
     bool use_groove = false;         // spec 20/12 follow-up — 45B Groove template
     // Spec 20/22 — emit the c→s connection-progression event after
     // the first ghost-stream packet arrives. Tri-state to track whether
@@ -1154,6 +1378,8 @@ int main(int argc, char** argv)
         if (a == "--no-acks") { send_acks = false; continue; }
         if (a == "--ack-selftest") { ack_selftest = true; continue; }
         if (a == "--ready-selftest") { ready_selftest = true; continue; }
+        if (a == "--move-selftest") { move_selftest = true; continue; }
+        if (a == "--send-moves") { send_moves = true; continue; }
         if (a == "--groove") { use_groove = true; continue; }
         if (a == "--send-ready") { send_ready_opt = 1; continue; }
         if (a == "--no-send-ready") { send_ready_opt = 0; continue; }
@@ -1164,6 +1390,7 @@ int main(int argc, char** argv)
 
     if (ack_selftest) return run_ack_selftest();
     if (ready_selftest) return run_ready_selftest();
+    if (move_selftest) return run_move_selftest();
     if (!replay_path.empty()) return run_replay(replay_path);
     if (loopback_self) return run_loopback_self(duration_s);
     // Resolve the spec 20/22 default: --send-ready defaults to on whenever
@@ -1174,6 +1401,6 @@ int main(int argc, char** argv)
     if (template_paste) return run_template_paste(host, port, duration_s,
                                                   ghost_dump_path, decode_ghosts,
                                                   send_acks, use_groove,
-                                                  send_ready);
+                                                  send_ready, send_moves);
     return run_client(host, port, name, password, duration_s);
 }
