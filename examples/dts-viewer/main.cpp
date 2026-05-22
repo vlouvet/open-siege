@@ -82,7 +82,12 @@
 #include "net_client.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
-#include <unistd.h>
+#if defined(_WIN32)
+#  include <process.h>
+#  define execv _execv
+#else
+#  include <unistd.h>
+#endif
 #include <cstdint>
 
 namespace fs = std::filesystem;

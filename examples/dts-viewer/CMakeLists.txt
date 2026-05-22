@@ -17,7 +17,7 @@ endif()
 
 find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE OR WIN32)
     find_package(GLEW REQUIRED)
 endif()
 
@@ -121,5 +121,9 @@ if(APPLE)
         "-framework IOKit")
 elseif(UNIX AND NOT APPLE)
     target_link_libraries(dts-viewer PRIVATE dl pthread m GLEW::GLEW)
+    target_compile_definitions(dts-viewer PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
+elseif(WIN32)
+    target_link_libraries(dts-viewer PRIVATE
+        ws2_32 winmm gdi32 user32 shell32 shlwapi psapi GLEW::GLEW)
     target_compile_definitions(dts-viewer PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
 endif()

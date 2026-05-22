@@ -1,0 +1,104 @@
+name: Windows build
+
+on:
+  push:
+    branches: [macos-arm64, windows-build]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-glew
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-pip
+
+      - name: Create venv + install Conan 1.66
+        run: |
+          python -m venv ~/.conan-venv
+          ~/.conan-venv/bin/pip install 'conan==1.66'
+          echo "$HOME/.conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Patch Conan settings.yml for GCC 15
+        run: |
+          ~/.conan-venv/bin/conan profile new default --detect --force
+          ~/.conan-venv/bin/conan profile update settings.compiler.libcxx=libstdc++11 default
+          python - <<'PY'
+          import sys, yaml, pathlib
+          sys.path.insert(0, str(pathlib.Path.home() / '.conan-venv/lib/python3.14/site-packages'))
+          import conans.client.conf
+          s = yaml.safe_load(conans.client.conf.get_default_settings_yml())
+          v = s['compiler']['gcc']['version']
+          for x in ('15', '15.1', '15.2'):
+              if x not in v: v.append(x)
+          p = pathlib.Path.home() / '.conan/settings.yml'
+          p.write_text(yaml.safe_dump(s, sort_keys=False))
+          PY
+
+      - name: Restore Conan package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan/data
+          key: conan-windows-${{ hashFiles('3space/conanfile.py') }}
+          restore-keys: |
+            conan-windows-
+
+      - name: Conan install (fetch + build missing packages)
+        working-directory: 3space
+        run: |
+          mkdir -p build
+          ~/.conan-venv/bin/conan install . --install-folder=build --build=missing
+
+      - name: Configure + build 3space
+        working-directory: 3space
+        run: |
+          CMAKE322=$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)
+          export PATH="$CMAKE322:$PATH"
+          cmake -S . -B build \
+            -DCMAKE_MODULE_PATH="$(pwd)/build/cmake" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target 3space -j$(nproc)
+          cmake --build build --target cscript_core -j$(nproc)
+
+      - name: Configure + build dts-viewer
+        working-directory: examples/dts-viewer
+        run: |
+          CMAKE322=$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)
+          export PATH="$CMAKE322:$PATH"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j$(nproc)
+
+      - name: Smoke test (--help)
+        working-directory: examples/dts-viewer
+        run: ./build/dts-viewer.exe --help || true
+
+      - name: Build portable zip
+        shell: pwsh
+        run: packaging\windows\build-zip.ps1
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-Siege-win64
+          path: packaging/windows/build/Open-Siege-win64.zip
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/windows/build/Open-Siege-win64.zip

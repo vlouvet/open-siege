@@ -66,6 +66,8 @@ file(GLOB CSCRIPT_PLATFORM_CPP CONFIGURE_DEPENDS
         ${CSCRIPT_ROOT}/platform/*.cpp)
 file(GLOB CSCRIPT_POSIX_CPP CONFIGURE_DEPENDS
         ${CSCRIPT_ROOT}/platformPOSIX/*.cpp)
+file(GLOB CSCRIPT_WIN32_CPP CONFIGURE_DEPENDS
+        ${CSCRIPT_ROOT}/platformWin32/*.cpp)
 file(GLOB CSCRIPT_MAC_MM CONFIGURE_DEPENDS
         ${CSCRIPT_ROOT}/platformMac/*.mm)
 file(GLOB CSCRIPT_SDLTHREADS_CPP CONFIGURE_DEPENDS
@@ -106,12 +108,21 @@ if(NOT APPLE)
     set(CSCRIPT_MAC_MM "")
 endif()
 
+# Platform shim selection: macOS uses platformMac + platformPOSIX,
+# Linux uses platformPOSIX, Windows uses platformWin32 if vendored
+# (falls back to platformPOSIX with MinGW's POSIX shims otherwise).
+if(WIN32 AND CSCRIPT_WIN32_CPP)
+    set(CSCRIPT_ACTIVE_PLATFORM_CPP ${CSCRIPT_WIN32_CPP})
+else()
+    set(CSCRIPT_ACTIVE_PLATFORM_CPP ${CSCRIPT_POSIX_CPP})
+endif()
+
 set(CSCRIPT_VM_SOURCES
         ${CSCRIPT_TORQUESCRIPT_CPP}
         ${CSCRIPT_CONSOLE_CPP}
         ${CSCRIPT_CORE_CPP}
         ${CSCRIPT_PLATFORM_CPP}
-        ${CSCRIPT_POSIX_CPP}
+        ${CSCRIPT_ACTIVE_PLATFORM_CPP}
         ${CSCRIPT_MAC_MM}
         ${CSCRIPT_SDLTHREADS_CPP}
         ${CSCRIPT_MATH_CPP}
@@ -152,6 +163,9 @@ if(APPLE)
             "-framework Foundation"
             "-framework CoreFoundation"
             "-framework IOKit")
+elseif(WIN32)
+    target_link_libraries(cscript_core PUBLIC
+            ws2_32 winmm dbghelp opengl32 gdi32 user32 psapi)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR

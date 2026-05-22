@@ -8,9 +8,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <sys/stat.h>
 
 namespace studio { namespace content { namespace cscript { namespace ScriptResolver {
 
@@ -30,8 +30,7 @@ std::vector<std::string>& dirStack()
 
 bool fileExists(const std::string& path)
 {
-    struct stat st;
-    return ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    return std::filesystem::is_regular_file(path);
 }
 
 std::string parentDir(const std::string& path)

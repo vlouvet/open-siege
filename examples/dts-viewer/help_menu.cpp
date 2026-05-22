@@ -8,7 +8,9 @@
 #if defined(__APPLE__)
 #  include <mach-o/dyld.h>
 #endif
-#include <unistd.h>
+#if !defined(_WIN32)
+#  include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
