@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cstring>
 #include <cstdlib>
 #include <sstream>
 #include <stdexcept>
