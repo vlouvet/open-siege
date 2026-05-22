@@ -1,5 +1,7 @@
 #include "hud.hpp"
+#include "hud_bindings.hpp"
 #include "player_controller.hpp"
+#include "text_renderer.hpp"
 
 #include <SDL.h>
 #include <cstdio>
@@ -388,6 +390,33 @@ void hud2d_render(const PlayerState& ps,
                   pxY(abar_y - bar_h),
                   0.95f, 0.80f, 0.10f);
 
+    // ---- Spec 13/07 — numeric labels overlaid on bars ----
+    // y_base is the BOTTOM of the bar; ImGui text origin is top-left, so
+    // place labels a few pixels above the bar baseline.
+    char buf[64];
+    const float text_size = 13.0f;
+    const float label_dy  = bar_h + 1.0f;
+    std::snprintf(buf, sizeof(buf), "HEALTH  %3d / %3d",
+                  static_cast<int>(ps.health), static_cast<int>(ps.health_max));
+    text_draw(bar_x + 4.0f, bar_y_base - label_dy, buf,
+              {1.0f, 0.85f, 0.85f}, text_size);
+    std::snprintf(buf, sizeof(buf), "ENERGY  %3d / %3d",
+                  static_cast<int>(ps.jet_fuel),
+                  static_cast<int>(tune.jet_fuel_max));
+    text_draw(bar_x + 4.0f, ebar_y - label_dy, buf,
+              {0.80f, 0.90f, 1.00f}, text_size);
+    const char* wname = "AMMO";
+    switch (w.projectile) {
+        case ProjType::Disc:        wname = "DISC";    break;
+        case ProjType::Grenade:     wname = "GRENADE"; break;
+        case ProjType::ChainBullet: wname = "CHAIN";   break;
+        case ProjType::Plasma:      wname = "PLASMA";  break;
+        case ProjType::Mortar:      wname = "MORTAR";  break;
+    }
+    std::snprintf(buf, sizeof(buf), "%-7s  %3d / %3d", wname, w.ammo, w.max_ammo);
+    text_draw(bar_x + 4.0f, abar_y - label_dy, buf,
+              {1.00f, 0.95f, 0.70f}, text_size);
+
     // ---- Slot indicator squares (one per equipped weapon) ----
     const float slot_size = 12.0f;
     const float slot_y    = abar_y - bar_h - 8.0f;
@@ -527,39 +556,88 @@ void hud2d_render_sensor(float yaw,
     glEnable(GL_DEPTH_TEST);
 }
 
-// ---- Message feed (spec 13/04) — coloured bars, no font ----
+// ---- Spec 13/07 — text overlays from script-side bindings ----
+void hud2d_render_script_text(const HudBindingsState& s,
+                              int viewport_w,
+                              int viewport_h)
+{
+    if (viewport_w <= 0 || viewport_h <= 0) return;
+
+    // Objectives in the top-right corner: green = complete, red = failed,
+    // white = in-progress.
+    const float obj_size = 14.0f;
+    const float obj_w_estimate = 320.0f;
+    const float obj_x = static_cast<float>(viewport_w) - obj_w_estimate - 16.0f;
+    float obj_y = 40.0f;
+    if (!s.objectives.empty()) {
+        text_draw(obj_x, obj_y, "OBJECTIVES", {0.95f, 0.95f, 0.65f}, obj_size);
+        obj_y += 18.0f;
+        for (const auto& o : s.objectives) {
+            TextColor c {1.0f, 1.0f, 1.0f, 1.0f};
+            char prefix = '*';
+            if (o.state == "complete") { c = {0.4f, 1.0f, 0.5f}; prefix = '+'; }
+            else if (o.state == "failed") { c = {1.0f, 0.4f, 0.4f}; prefix = 'x'; }
+            std::string line; line.reserve(o.text.size() + 4);
+            line.push_back(prefix); line.push_back(' '); line.append(o.text);
+            text_draw(obj_x, obj_y, line, c, obj_size);
+            obj_y += 17.0f;
+        }
+    }
+
+    // centerPrint banner — large text in the center of the screen, fading
+    // out in the last 0.4s.
+    if (!s.center_print_text.empty() && s.center_print_remaining > 0.0f) {
+        const float cp_size = 28.0f;
+        const float fade = std::min(1.0f, s.center_print_remaining / 0.4f);
+        const float text_w = text_measure_width(s.center_print_text, cp_size);
+        const float cx = (viewport_w - text_w) * 0.5f;
+        const float cy = viewport_h * 0.40f;
+        text_draw(cx, cy, s.center_print_text,
+                  {1.0f, 0.95f, 0.8f, fade}, cp_size);
+    }
+
+    // bottomPrint band — small message bar just above the health bar.
+    if (!s.bottom_print_text.empty() && s.bottom_print_remaining > 0.0f) {
+        const float bp_size = 14.0f;
+        const float fade = std::min(1.0f, s.bottom_print_remaining / 0.4f);
+        const float text_w = text_measure_width(s.bottom_print_text, bp_size);
+        const float cx = (viewport_w - text_w) * 0.5f;
+        const float cy = viewport_h - 110.0f;
+        text_draw(cx, cy, s.bottom_print_text,
+                  {0.9f, 0.95f, 1.0f, fade}, bp_size);
+    }
+
+    // Mission win/loss banner — sticky until restart.
+    if (s.mission_state == "Won" || s.mission_state == "Lost") {
+        const float size = 36.0f;
+        const std::string text = (s.mission_state == "Won")
+            ? "MISSION COMPLETE" : "MISSION FAILED";
+        const TextColor c = (s.mission_state == "Won")
+            ? TextColor{0.4f, 1.0f, 0.5f} : TextColor{1.0f, 0.4f, 0.4f};
+        const float text_w = text_measure_width(text, size);
+        const float cx = (viewport_w - text_w) * 0.5f;
+        const float cy = viewport_h * 0.25f;
+        text_draw(cx, cy, text, c, size);
+    }
+}
+
+// ---- Message feed (spec 13/04 -> 13/07) — real text via ImGui foreground ----
 void hud2d_render_message_feed(const std::deque<std::string>& msgs,
                                int viewport_w,
                                int viewport_h)
 {
+    (void)viewport_w; (void)viewport_h;
     if (msgs.empty()) return;
-    ensure_init();
-    if (!g_hud2d_prog) return;
-    glUseProgram(g_hud2d_prog);
-    glDisable(GL_DEPTH_TEST);
-
-    auto pxX = [&](float x){ return (x / viewport_w) * 2.0f - 1.0f; };
-    auto pxY = [&](float y){ return 1.0f - (y / viewport_h) * 2.0f; };
-
-    const float x  = 16.0f;
-    const float w  = 360.0f;
-    const float h  = 8.0f;
-    const float gap = 4.0f;
+    const float x = 16.0f;
+    const float row_h = 16.0f;
     const std::size_t n = std::min<std::size_t>(msgs.size(), 6);
     for (std::size_t i = 0; i < n; ++i) {
-        // Newer messages first; fade older ones.
         float age_frac = static_cast<float>(i) / static_cast<float>(n);
         float alpha = 1.0f - age_frac * 0.7f;
-        const float y = 60.0f + i * (h + gap);
+        const float y = 60.0f + i * row_h;
         const std::string& m = msgs[msgs.size() - 1 - i];
-        const float bar_w = std::min(w, static_cast<float>(m.size()) * 4.0f);
-        draw_quad_ndc(pxX(x),         pxY(y),
-                      pxX(x + bar_w), pxY(y + h),
-                      0.3f * alpha, 0.5f * alpha, 0.9f * alpha);
+        text_draw(x, y, m, {0.85f, 0.92f, 1.00f, alpha}, 13.0f);
     }
-
-    glBindVertexArray(0);
-    glEnable(GL_DEPTH_TEST);
 }
 
 // ---- Damage reticle (spec 13/05) ----
