@@ -30,10 +30,12 @@
 
 //--------------------------------------
 // Types
-#if defined(TORQUE_X86)
+#if defined(TORQUE_X86) || defined(_WIN32)
+// On Windows, 'long' is 32-bit even in 64-bit mode (MSVC and MinGW-w64 ABI).
 typedef signed long long    S64;
 typedef unsigned long long  U64;
 #else
+// On macOS/Linux 64-bit, 'long' is 64-bit and matches platform ABI.
 typedef signed long    S64;
 typedef unsigned long  U64;
 #endif
