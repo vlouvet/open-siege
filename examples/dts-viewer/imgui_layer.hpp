@@ -60,6 +60,17 @@ struct MenuActions
     std::function<void()> help_online_docs;
     std::function<void()> help_report_issue;
     std::function<void()> help_about;
+
+    // Net (spec 20/16) — connection status + disconnect. The connect
+    // path is currently driven by --net-host CLI; the menu just lets
+    // the user see the live state + tear down cleanly.
+    std::function<bool()>        net_is_connected;
+    std::function<std::string()> net_status_label;   // e.g. "Connected to 192.168.1.89:28001 (live)"
+    std::function<void()>        net_disconnect;
+    // Spectator (spec 20/17) integration.
+    std::function<bool()> spectator_is_active;
+    std::function<void()> spectator_toggle;
+    std::function<void()> spectator_next_ghost;
 };
 
 void set_menu_actions(const MenuActions& a);

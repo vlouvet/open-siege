@@ -2510,6 +2510,32 @@ int main(int argc, char** argv)
             a.help_online_docs  = []{ dts_viewer::open_url(dts_viewer::kOnlineDocsUrl); };
             a.help_report_issue = []{ dts_viewer::open_url(dts_viewer::kReportIssueUrl); };
             a.help_about        = []{ dts_viewer::about_modal_open(); };
+
+            // Spec 20/16 — Net menu wires status / disconnect.
+            a.net_is_connected = [&]{ return net_client.running(); };
+            a.net_status_label = [&]{
+                if (!net_client.running()) {
+                    if (!net_client.last_error().empty())
+                        return std::string("error: ") + net_client.last_error();
+                    return std::string("idle");
+                }
+                char buf[160];
+                std::snprintf(buf, sizeof(buf),
+                    "%s | %u packets, %u records",
+                    !s_net_replay_path.empty()
+                        ? "replay"
+                        : (s_net_host + ":" + std::to_string(s_net_port)).c_str(),
+                    static_cast<unsigned>(net_client.packets_seen()),
+                    static_cast<unsigned>(net_client.typed_records()));
+                return std::string(buf);
+            };
+            a.net_disconnect = [&]{ net_client.stop(); };
+
+            // Spec 20/17 — spectator follow-cam bindings.
+            a.spectator_is_active   = [&]{ return spectator_follow; };
+            a.spectator_toggle      = [&]{ spectator_follow = !spectator_follow; };
+            a.spectator_next_ghost  = [&]{ spectator_followed_index++; };
+
             dts_viewer::set_menu_actions(a);
         }
 

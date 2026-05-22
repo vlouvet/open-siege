@@ -208,6 +208,30 @@ void draw_menu_bar()
         ImGui::EndMenu();
     }
 
+    if (ImGui::BeginMenu("Net")) {
+        std::string status = g_actions.net_status_label
+            ? g_actions.net_status_label() : std::string("idle");
+        ImGui::TextDisabled("%s", status.c_str());
+        ImGui::Separator();
+        const bool connected = g_actions.net_is_connected
+            && g_actions.net_is_connected();
+        if (ImGui::MenuItem("Disconnect", nullptr, false, connected)) {
+            call_or_log(g_actions.net_disconnect, "Net > Disconnect");
+        }
+        ImGui::Separator();
+        const bool spec_on = g_actions.spectator_is_active
+            && g_actions.spectator_is_active();
+        if (ImGui::MenuItem("Spectator follow-cam", "F8", spec_on,
+                            (bool)g_actions.spectator_toggle)) {
+            call_or_log(g_actions.spectator_toggle, "Net > Spectator follow-cam");
+        }
+        if (ImGui::MenuItem("Next ghost", "F9", false,
+                            spec_on && (bool)g_actions.spectator_next_ghost)) {
+            call_or_log(g_actions.spectator_next_ghost, "Net > Next ghost");
+        }
+        ImGui::EndMenu();
+    }
+
     if (ImGui::BeginMenu("Help")) {
         if (ImGui::MenuItem("User Guide", "F1"))
             call_or_log(g_actions.help_user_guide, "Help > User Guide");
