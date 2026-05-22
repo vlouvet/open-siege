@@ -4,7 +4,6 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
-   using ssize_t = int;
    static void ensure_winsock() {
        static const int _ = []{ WSADATA w; return WSAStartup(MAKEWORD(2,2), &w); }();
        (void)_;
@@ -14,7 +13,7 @@
        std::snprintf(buf, sizeof(buf), "wsa:%d", ::WSAGetLastError());
        return buf;
    }
-#  define close(s)  ::closesocket(static_cast<SOCKET>(s))
+   static inline void sock_close_fd(int fd) { ::closesocket(static_cast<SOCKET>(fd)); }
 #  ifndef EINTR
 #    define EINTR WSAEINTR
 #  endif
@@ -27,6 +26,7 @@
 #  include <unistd.h>
    static void ensure_winsock() {}
    static const char* sock_strerror() { return std::strerror(errno); }
+   static inline void sock_close_fd(int fd) { ::close(fd); }
 #endif
 
 #include <cerrno>
@@ -104,7 +104,7 @@ bool tcp_connect(const std::string& host, std::uint16_t port,
     }
     if (::connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
         err = sock_strerror();
-        ::close(fd);
+        sock_close_fd(fd);
         freeaddrinfo(res);
         return false;
     }
@@ -177,7 +177,7 @@ bool http_request(const std::string& url,
     const std::string req_str = req.str();
 
     if (!send_all(fd, req_str.data(), req_str.size(), err)) {
-        ::close(fd);
+        sock_close_fd(fd);
         return false;
     }
     const std::string resp = recv_all(fd);

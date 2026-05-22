@@ -4,8 +4,7 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
-   using ssize_t = int;
-   using socklen_t = int;
+   // MinGW-w64 already typedefs ssize_t and socklen_t in corecrt.h / sys/types.h
    static void ensure_winsock() {
        static const int _ = []{ WSADATA w; return WSAStartup(MAKEWORD(2,2), &w); }();
        (void)_;
@@ -15,7 +14,7 @@
        std::snprintf(buf, sizeof(buf), "wsa:%d", ::WSAGetLastError());
        return buf;
    }
-#  define close(s)    ::closesocket(static_cast<SOCKET>(s))
+   static inline void sock_close_fd(int fd) { ::closesocket(static_cast<SOCKET>(fd)); }
 #  define SOCK_WOULD_BLOCK (::WSAGetLastError() == WSAEWOULDBLOCK)
 #else
 #  include <arpa/inet.h>
@@ -27,6 +26,7 @@
 #  include <unistd.h>
    static void ensure_winsock() {}
    static const char* sock_strerror() { return std::strerror(errno); }
+   static inline void sock_close_fd(int fd) { ::close(fd); }
 #  define SOCK_WOULD_BLOCK (errno == EAGAIN || errno == EWOULDBLOCK)
 #endif
 
@@ -117,7 +117,7 @@ UdpSocket& UdpSocket::operator=(UdpSocket&& o) noexcept
 void UdpSocket::close()
 {
     if (fd_ >= 0) {
-        ::close(fd_);
+        sock_close_fd(fd_);
         fd_ = -1;
     }
     local_port_ = 0;
@@ -141,7 +141,7 @@ bool UdpSocket::bind(std::uint16_t local_port)
     sa.sin_port = htons(local_port);
     if (::bind(fd_, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
         last_error_ = sock_strerror();
-        ::close(fd_);
+        sock_close_fd(fd_);
         fd_ = -1;
         return false;
     }
