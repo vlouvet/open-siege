@@ -17,11 +17,13 @@
 #include "content/net/reliable_channel.hpp"
 #include "content/net/event_channel.hpp"
 #include "content/net/ghost_manager.hpp"
+#include "content/net/udp_socket.hpp"
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <random>
 #include <string>
 #include <thread>
 
@@ -47,7 +49,9 @@ void usage(const char* argv0)
         "  --name NAME          player name (default OpenSiege)\n"
         "  --password PW        server password (default \"\")\n"
         "  --duration SECONDS   total run time (default 5)\n"
-        "  --loopback-self      run a local server in-process for smoke test\n",
+        "  --loopback-self      run a local server in-process for smoke test\n"
+        "  --template-paste     send a captured-real RequestConnect template\n"
+        "                       (verified to elicit AcceptConnect from real Tribes)\n",
         argv0, (int)std::strlen(argv0), "");
 }
 
@@ -109,6 +113,86 @@ int run_loopback_self(int duration_s)
     server.tick(now_ms());
     // Exit OK if we reached Connected (or beyond) at any point in the run.
     // The disconnect path naturally leaves us in Disconnecting or Unbound.
+    return 0;
+}
+
+// 2026-05-21 — verified working RequestConnect template captured from a
+// live Wine Tribes 1.41 client -> vanilla Tribes 1.41 dedicated server
+// loopback handshake. The three bytes at offset 7..9 are a per-session
+// random nonce that the server echoes back in its AcceptConnect at offset
+// 4..6. The remaining 23 bytes encode the static client identity (game id,
+// protocol version, player slot) in a bit-packed form we have not yet
+// fully reverse-engineered. See captures/real-tribes/BREAKTHROUGH.md.
+const std::uint8_t kRealRequestConnectTemplate[27] = {
+    0x07, 0x00, 0x13, 0x44, 0xa7, 0xe5, 0x18,
+    0xad, 0xa7, 0x81,                            // <- nonce slot (bytes 7..9)
+    0x12, 0x01, 0x00, 0x0d, 0x56, 0xc6, 0xbb, 0x6f, 0x07, 0xc4, 0x52,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+int run_template_paste(const std::string& host, std::uint16_t port,
+                       int duration_s)
+{
+    std::fprintf(stderr,
+        "[net-test] template-paste mode -> %s:%u (sends captured-real Tribes\n"
+        "[net-test] RequestConnect template, listens for AcceptConnect)\n",
+        host.c_str(), port);
+
+    UdpSocket sock;
+    if (!sock.bind(0)) {
+        std::fprintf(stderr, "bind failed: %s\n", sock.last_error().c_str());
+        return 2;
+    }
+
+    // Fresh random nonce per run so the server can't dedupe.
+    std::random_device rd;
+    std::uint8_t pkt[27];
+    std::memcpy(pkt, kRealRequestConnectTemplate, sizeof(pkt));
+    pkt[7] = static_cast<std::uint8_t>(rd() & 0xff);
+    pkt[8] = static_cast<std::uint8_t>(rd() & 0xff);
+    pkt[9] = static_cast<std::uint8_t>(rd() & 0xff);
+
+    const auto dst = resolve_endpoint(host, port);
+    if (!dst) {
+        std::fprintf(stderr, "resolve %s:%u failed\n", host.c_str(), port);
+        return 2;
+    }
+    std::fprintf(stderr, "[net-test] sending nonce=%02x %02x %02x\n",
+        pkt[7], pkt[8], pkt[9]);
+    if (!sock.send_to(*dst, pkt, sizeof(pkt))) {
+        std::fprintf(stderr, "send failed: %s\n", sock.last_error().c_str());
+        return 2;
+    }
+
+    const std::uint64_t deadline = now_ms() + 1000ULL * duration_s;
+    bool saw_reply = false;
+    while (now_ms() < deadline) {
+        std::vector<std::uint8_t> buf;
+        Endpoint src;
+        if (sock.try_recv(buf, src)) {
+            saw_reply = true;
+            std::fprintf(stderr, "[net-test] reply: %zu bytes from %s:%u\n",
+                buf.size(), src.host.c_str(), src.port);
+            std::fputs("[net-test] hex: ", stderr);
+            for (auto b : buf) std::fprintf(stderr, "%02x", b);
+            std::fputc('\n', stderr);
+            // Hunt for our nonce in the reply.
+            for (std::size_t i = 0; i + 3 <= buf.size(); ++i) {
+                if (buf[i] == pkt[7] && buf[i+1] == pkt[8] && buf[i+2] == pkt[9]) {
+                    std::fprintf(stderr,
+                        "[net-test] nonce echoed at reply offset %zu\n", i);
+                    break;
+                }
+            }
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!saw_reply) {
+        std::fprintf(stderr, "[net-test] no reply within %ds — server silent\n",
+            duration_s);
+        return 4;
+    }
     return 0;
 }
 
@@ -178,6 +262,7 @@ int main(int argc, char** argv)
     std::string password;
     int duration_s = 5;
     bool loopback_self = false;
+    bool template_paste = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -189,6 +274,7 @@ int main(int argc, char** argv)
         };
         if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
         if (a == "--loopback-self") { loopback_self = true; continue; }
+        if (a == "--template-paste") { template_paste = true; continue; }
         if (a == "--host" && i + 1 < argc) { host = argv[++i]; continue; }
         if (a == "--port" && i + 1 < argc) { port = static_cast<std::uint16_t>(std::atoi(argv[++i])); continue; }
         if (take(name, "--name")) continue;
@@ -200,5 +286,6 @@ int main(int argc, char** argv)
     }
 
     if (loopback_self) return run_loopback_self(duration_s);
+    if (template_paste) return run_template_paste(host, port, duration_s);
     return run_client(host, port, name, password, duration_s);
 }
