@@ -52,6 +52,7 @@ add_executable(dts-viewer
     weapons.cpp
     inv_station.cpp
     entity_renderer.cpp
+    asset_cache.cpp
     cscript_host.cpp
     player_simobject.cpp
     entity_bindings.cpp

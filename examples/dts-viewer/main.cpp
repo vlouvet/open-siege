@@ -58,6 +58,7 @@
 #include "projectile.hpp"
 #include "inv_station.hpp"
 #include "entity_renderer.hpp"
+#include "asset_cache.hpp"
 #include "cscript_host.hpp"
 #include "mission.hpp"
 #include "hud_bindings.hpp"
@@ -2030,6 +2031,63 @@ int main(int argc, char** argv)
                 ent_triggers.size(), ent_vehicles.size());
         }
 
+        // Spec 14/09 — DTS prop loading + textured rendering for entities.
+        // Resolves each entity's datablock to a DTS shape across the mission's
+        // mounted VOLs. Memoised: the 20 turrets sharing one TurretBase load
+        // the mesh once.
+        dts_viewer::AssetCache asset_cache;
+        if (ter_mission) {
+            asset_cache.init(&ter_resolver,
+                             by_index(ter_palettes),
+                             ter_mission->mounted_vols);
+            std::size_t resolved = 0, missed = 0;
+            auto warm = [&](const std::string& name) {
+                if (name.empty()) return;
+                if (asset_cache.try_load_for_datablock(name)) ++resolved;
+                else ++missed;
+            };
+            for (const auto& s  : ent_statics)    warm(s.data_block_name);
+            for (const auto& it : ent_items)      warm(it.data_block_name);
+            for (const auto& t  : ent_turrets)    warm(t.data_block_name);
+            for (const auto& m  : ent_moveables)  warm(m.data_block_name);
+            for (const auto& g  : ent_generators) warm(g.data_block_name);
+            for (const auto& v  : ent_vehicles) { (void)v; warm("vehiclePad"); }
+            const auto& cs = asset_cache.stats();
+            std::fprintf(stderr,
+                "asset_cache: %zu unique shapes loaded, %zu missed datablocks; "
+                "%zu textures, %zu tris (per-entity lookups: %zu resolved, "
+                "%zu unmapped)\n",
+                cs.shapes_loaded, cs.shapes_missed,
+                cs.textures_uploaded, cs.triangles_total,
+                resolved, missed);
+
+            // Diagnostic: list unique datablock names that fell through.
+            // These render as the Tier-B wireframe cube fallback and are
+            // candidates for the asset_cache datablock_table().
+            std::set<std::string> unmapped;
+            auto note_unmapped = [&](const std::string& name) {
+                if (name.empty()) return;
+                if (!asset_cache.try_load_for_datablock(name)) {
+                    unmapped.insert(name);
+                }
+            };
+            for (const auto& s  : ent_statics)    note_unmapped(s.data_block_name);
+            for (const auto& it : ent_items)      note_unmapped(it.data_block_name);
+            for (const auto& t  : ent_turrets)    note_unmapped(t.data_block_name);
+            for (const auto& m  : ent_moveables)  note_unmapped(m.data_block_name);
+            for (const auto& g  : ent_generators) note_unmapped(g.data_block_name);
+            if (!unmapped.empty()) {
+                std::string line;
+                for (const auto& n : unmapped) {
+                    if (!line.empty()) line += ", ";
+                    line += n;
+                }
+                std::fprintf(stderr,
+                    "asset_cache: unmapped datablocks (fall back to cube): %s\n",
+                    line.c_str());
+            }
+        }
+
         // Pre-collect entity positions for compass/sensor/map (specs
         // 13/02, 13/03, 13/06).  For v1 we just enumerate the scene's
         // generators + inventory stations as static blips.
@@ -2594,17 +2652,45 @@ int main(int argc, char** argv)
                 }
             }
 
-            // Track 14 — render entity cubes (placeholder until DTS pipe
-            // is wired in --mission mode).
+            // Spec 14/09 — render entity DTS shapes when the datablock
+            // resolves to a known shape in the mission's mounted VOLs;
+            // otherwise fall back to the Tier-B coloured wireframe cube so
+            // missing-asset cases stay visible rather than vanishing.
             if (ter_mission) {
-                glUseProgram(flat_prog);
-                auto draw = [&](const glm::vec3& p, float s,
-                                const std::array<float,3>& col) {
-                    dts_viewer::render_entity_cube(p, s, col,
-                        u_flat_mvp, u_flat_color, MVP);
+                auto lit = dts_viewer::masked_lighting(lighting, lighting_mode);
+
+                auto draw_shape_or_cube =
+                    [&](const studio::content::mission::transform& xf,
+                        const std::string& datablock,
+                        float fallback_size,
+                        const std::array<float,3>& fallback_col,
+                        const glm::vec3* override_pos = nullptr)
+                {
+                    const dts_viewer::AssetShape* sh =
+                        asset_cache.try_load_for_datablock(datablock);
+                    if (sh) {
+                        std::array<float,3> pos = xf.position;
+                        if (override_pos) {
+                            // moveable: position is in GL coords already, but
+                            // mis_world_matrix wants Tribes coords. Convert
+                            // back: GL (x, y, z) <- Tribes (x, z, y).
+                            pos = { override_pos->x,
+                                    override_pos->z,
+                                    override_pos->y };
+                        }
+                        glm::mat4 M = dts_viewer::mis_world_matrix(pos, xf.rotation);
+                        asset_cache.render(*sh, M, V, P, lit);
+                    } else {
+                        glm::vec3 wp = override_pos
+                            ? *override_pos
+                            : dts_viewer::mis_pos_to_gl(xf.position);
+                        glUseProgram(flat_prog);
+                        dts_viewer::render_entity_cube(wp, fallback_size,
+                            fallback_col, u_flat_mvp, u_flat_color, MVP);
+                    }
                 };
+
                 for (auto& ss : ent_statics) {
-                    glm::vec3 wp = dts_viewer::mis_pos_to_gl(ss.xf.position);
                     std::array<float,3> col{ 0.6f, 0.6f, 0.6f };
                     if (ss.data_block_name == "Generator" ||
                         ss.data_block_name == "PortGenerator")
@@ -2613,26 +2699,46 @@ int main(int argc, char** argv)
                         col = { 0.2f, 0.6f, 0.95f };
                     else if (ss.data_block_name == "vehiclePad")
                         col = { 0.9f, 0.7f, 0.1f };
-                    draw(wp, 3.0f, col);
+                    draw_shape_or_cube(ss.xf, ss.data_block_name, 3.0f, col);
                 }
                 for (auto& it : ent_items) {
                     if (!it.active) continue;
-                    glm::vec3 wp = dts_viewer::mis_pos_to_gl(it.xf.position);
-                    draw(wp, 1.0f, { 1.0f, 0.4f, 1.0f });
+                    draw_shape_or_cube(it.xf, it.data_block_name, 1.0f,
+                        { 1.0f, 0.4f, 1.0f });
                 }
                 for (auto& tu : ent_turrets) {
                     if (tu.destroyed) continue;
-                    glm::vec3 wp = dts_viewer::mis_pos_to_gl(tu.xf.position);
-                    draw(wp, 2.0f, { 0.95f, 0.1f, 0.1f });
+                    draw_shape_or_cube(tu.xf, tu.data_block_name, 2.0f,
+                        { 0.95f, 0.1f, 0.1f });
                 }
                 for (auto& m : ent_moveables) {
-                    draw(dts_viewer::moveable_position(m), 4.0f, { 0.4f, 0.7f, 1.0f });
+                    glm::vec3 wp = dts_viewer::moveable_position(m);
+                    draw_shape_or_cube(m.xf, m.data_block_name, 4.0f,
+                        { 0.4f, 0.7f, 1.0f }, &wp);
                 }
                 for (auto& v : ent_vehicles) {
                     if (!v.visible) continue;
-                    glm::vec3 wp = dts_viewer::mis_pos_to_gl(v.pad_xf.position);
-                    wp.y += 1.5f;
-                    draw(wp, 4.0f, { 0.1f, 0.8f, 0.9f });
+                    // Vehicle pad first (the ground patch under the vehicle).
+                    draw_shape_or_cube(v.pad_xf, v.pad_data_block, 4.0f,
+                        { 0.9f, 0.7f, 0.1f });
+                    // The vehicle DTS itself, lifted slightly above the pad.
+                    std::array<float,3> vpos = v.pad_xf.position;
+                    vpos[2] += 1.5f;  // Tribes Z is up
+                    studio::content::mission::transform vxf = v.pad_xf;
+                    vxf.position = vpos;
+                    const dts_viewer::AssetShape* sh =
+                        asset_cache.try_load_by_filename(v.vehicle_dts);
+                    if (sh) {
+                        glm::mat4 M = dts_viewer::mis_world_matrix(
+                            vxf.position, vxf.rotation);
+                        asset_cache.render(*sh, M, V, P, lit);
+                    } else {
+                        glm::vec3 wp = dts_viewer::mis_pos_to_gl(vxf.position);
+                        glUseProgram(flat_prog);
+                        dts_viewer::render_entity_cube(wp, 4.0f,
+                            { 0.1f, 0.8f, 0.9f },
+                            u_flat_mvp, u_flat_color, MVP);
+                    }
                 }
             }
 
