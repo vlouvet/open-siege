@@ -21,9 +21,9 @@ class LocalConanFile(ConanFile):
         self.options["boost"].bzip2 = False
         self.options["boost"].zlib = False
         self.options["boost"].numa = False
-        # libzip supports openssl for encrypted zips; we don't need it.
+        # libzip supports crypto for encrypted zips; we don't need it.
         # openssl/1.1.1o also fails to build against GCC 15 MinGW-w64 headers.
-        self.options["libzip"].with_openssl = False
+        self.options["libzip"].crypto = "off"
 
     def build(self):
         cmake = CMake(self)
