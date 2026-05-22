@@ -10,7 +10,7 @@ find_package(span-lite REQUIRED)
 find_package(pegtl REQUIRED)
 find_package(libzip REQUIRED)
 
-add_executable(net-test-client main.cpp ghost_stream.cpp reliable_acks.cpp)
+add_executable(net-test-client main.cpp ghost_stream.cpp ghost_types.cpp reliable_acks.cpp client_events.cpp)
 set_property(TARGET net-test-client PROPERTY CXX_STANDARD 17)
 
 target_include_directories(net-test-client PRIVATE

@@ -19,11 +19,14 @@
 #include "content/net/ghost_manager.hpp"
 #include "content/net/udp_socket.hpp"
 
+#include "client_events.hpp"
 #include "ghost_stream.hpp"
+#include "ghost_types.hpp"
 #include "reliable_acks.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,6 +35,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using namespace studio::content::net;
@@ -74,7 +78,14 @@ void usage(const char* argv0)
         "  --groove             use the 45B Groove (TribesNext) RequestConnect\n"
         "                       template instead of the 27B vanilla one. Needed\n"
         "                       for servers that reject the vanilla shape with\n"
-        "                       \"requires version 1.40 or higher\".\n",
+        "                       \"requires version 1.40 or higher\".\n"
+        "  --send-ready         after the first ghost-stream packet arrives,\n"
+        "                       emit the c->s connection-progression event per\n"
+        "                       spec 20/22 §16. Default on when --ack is set.\n"
+        "  --no-send-ready      disable the spec 20/22 emit even with --ack.\n"
+        "  --ready-selftest     offline: encode a sample client-ready packet\n"
+        "                       and dump its bytes + per-field decode for\n"
+        "                       inspection.\n",
         argv0, (int)std::strlen(argv0), "");
 }
 
@@ -179,7 +190,8 @@ int run_template_paste(const std::string& host, std::uint16_t port,
                        const std::string& ghost_dump_path,
                        bool decode_ghosts,
                        bool send_acks,
-                       bool use_groove)
+                       bool use_groove,
+                       bool send_ready)
 {
     const char* tmpl_name = use_groove ? "Groove (45B)" : "vanilla Wine (27B)";
     std::fprintf(stderr,
@@ -300,7 +312,18 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     // the AcceptConnect-driven phase-2 template (bit 1 of byte 0).
     const bool connect_parity = (kFirstDataPacket[0] & 0x02) != 0;
     const std::uint16_t our_send_seq = 1;  // see comment above
+    // Spec 20/22: the connection-progression DataPacket (sent once,
+    // immediately after the first ghost-stream packet arrives) carries
+    // real payload and therefore consumes its own send-seq slot per
+    // §14.2. Phase-2 emitted send-seq=1, so the ready packet is seq=2.
+    const std::uint16_t ready_send_seq = 2;
+    bool ready_sent = false;
+    int ready_send_count = 0;
+    std::uint64_t ready_sent_ms = 0;
     net20::AckTracker ack;
+    // Spec 14: typed-ghost registry, populated lazily by --decode-ghosts.
+    net20::GhostRegistry typed_registry;
+    typed_registry.install_default_class_tag_map();
 
     struct CapturedPacket {
         std::uint64_t t_ms;
@@ -351,6 +374,50 @@ int run_template_paste(const std::string& host, std::uint16_t port,
         ack.clear_pending();
     };
 
+    // Spec 20/22 §16.5 — emit the c→s connection-progression DataPacket.
+    // The server stays stuck retransmitting AcceptConnect / first ghost
+    // burst until it sees a guaranteed event on the reliable-event
+    // sub-stream. We send one DataPacket carrying:
+    //   * VC header with our current ack runs piggy-backed (§14.3)
+    //   * R0=1 / R1=1 rate-control prefix (66 ms / 400 B, matching the
+    //     Groove capture) (§3.4)
+    //   * event sub-stream with one guaranteed-ordered event,
+    //     class id wire = 8, seq = 0, argc = 1, single uncompressed
+    //     1-byte ASCII string ('A') (§16.4/§16.5)
+    //   * input + ghost sub-stream present flags both = 0.
+    auto emit_ready = [&](const char* trigger) {
+        net20::ClientReadyInputs in;
+        in.send_seq = ready_send_seq;
+        in.connect_parity = connect_parity;
+        in.highest_acked_of_mine =
+            static_cast<std::uint8_t>(ack.highest_recv_mod32 & 0x1Fu);
+        in.ack_runs = net20::build_ack_runs(ack.received,
+                                             ack.highest_recv_mod32);
+        in.arg_byte = 'A';
+        const auto wire = net20::encode_client_ready(in);
+        if (!sock.send_to(*dst, wire.data(), wire.size())) {
+            std::fprintf(stderr, "[ready] send failed: %s\n",
+                sock.last_error().c_str());
+            return;
+        }
+        const std::uint64_t now = now_ms();
+        ready_sent = true;
+        ++ready_send_count;
+        ready_sent_ms = now;
+        // After a real DataPacket, future pure-acks should bump
+        // highest-acked-of-mine off any of these acks since they rode
+        // this packet. Mirror the pure-ack lambda: clear pending.
+        ack.clear_pending();
+        last_emit_ms = now;
+        std::fprintf(stderr,
+            "[ready] sent %zuB at t=%llums trigger=%s seq=%u parity=%d\n",
+            wire.size(),
+            static_cast<unsigned long long>(now - phase3_start),
+            trigger,
+            static_cast<unsigned>(ready_send_seq),
+            static_cast<int>(connect_parity));
+    };
+
     while (now_ms() < deadline) {
         std::vector<std::uint8_t> buf;
         Endpoint src;
@@ -361,6 +428,8 @@ int run_template_paste(const std::string& host, std::uint16_t port,
                 hex_dump("ghost", buf.data(), std::min<std::size_t>(buf.size(), 32));
             }
             if (decode_ghosts) {
+                // Outer framing summary (one line per packet that contains
+                // at least one ghost record).
                 auto dec = net20::parse_ghost_packet(buf.data(), buf.size());
                 if (!dec.updates.empty()) {
                     std::fprintf(stderr, "[ghost] %s\n",
@@ -369,20 +438,35 @@ int run_template_paste(const std::string& host, std::uint16_t port,
                     std::fprintf(stderr, "[ghost] (no record) %s\n",
                         dec.note.c_str());
                 }
-            }
-            // §14.5 rule 1: mark non-Ping receive in our ack window.
-            if (send_acks) {
-                net20::ParsedIncomingHeader hdr_in;
-                if (net20::parse_incoming_header(buf.data(), buf.size(),
-                                                  hdr_in)) {
-                    if (hdr_in.base_type != net20::pkt_type::kPing) {
-                        ack.on_receive(hdr_in.send_seq);
-                    }
-                    // §14.5 rule 3: 12+ pending → force immediate emit.
-                    if (ack.should_force_ack()) {
-                        emit_pure_ack("force-12");
-                    }
+                // Spec 14: walk every record and dispatch into typed structs.
+                auto td = net20::parse_typed_packet(buf.data(), buf.size(),
+                                                   typed_registry);
+                for (const auto& tr : td.records) {
+                    std::fprintf(stderr, "[ghost-typed] %s\n",
+                        tr.log_line.c_str());
                 }
+            }
+            // Parse the incoming header once; both --ack and --send-ready
+            // care about the server's send-seq for piggybacked ack-runs.
+            net20::ParsedIncomingHeader hdr_in;
+            const bool parsed_hdr = net20::parse_incoming_header(
+                buf.data(), buf.size(), hdr_in);
+            // §14.5 rule 1: mark non-Ping receive in our ack window.
+            if (parsed_hdr && (send_acks || send_ready)
+                && hdr_in.base_type != net20::pkt_type::kPing) {
+                ack.on_receive(hdr_in.send_seq);
+            }
+            // Spec 20/22 §16.5: send the connection-progression event
+            // as soon as we've observed at least one server-side seq
+            // we can ack inside our outgoing VC header. Do this BEFORE
+            // the force-12 emit so the ready packet itself carries
+            // the piggybacked ack runs.
+            if (send_ready && !ready_sent && ack.pending_count() > 0) {
+                emit_ready("first-server-packet");
+            }
+            // §14.5 rule 3: 12+ pending → force immediate emit.
+            if (send_acks && parsed_hdr && ack.should_force_ack()) {
+                emit_pure_ack("force-12");
             }
             captured.push_back({ now_ms() - phase3_start, std::move(buf) });
         } else {
@@ -396,8 +480,11 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     }
     std::fprintf(stderr,
         "[net-test] phase-3: %d ghost packets, %zu bytes total"
-        "; acks_sent=%d (%zuB)\n",
-        ghost_packets, ghost_bytes, acks_emitted, ack_bytes);
+        "; acks_sent=%d (%zuB); ready_sent=%d at t=%llums\n",
+        ghost_packets, ghost_bytes, acks_emitted, ack_bytes,
+        ready_send_count,
+        static_cast<unsigned long long>(
+            ready_sent_ms == 0 ? 0 : ready_sent_ms - phase3_start));
 
     if (!ghost_dump_path.empty() && !captured.empty()) {
         std::FILE* f = std::fopen(ghost_dump_path.c_str(), "wb");
@@ -459,6 +546,30 @@ int run_replay(const std::string& path)
     int total = 0, decoded = 0, with_record = 0;
     std::vector<std::uint16_t> ghost_ids;
 
+    // Spec 14: typed-ghost registry, kept across packets so deltas can
+    // resolve previously-introduced ghost ids back to their classes.
+    net20::GhostRegistry typed_registry;
+    typed_registry.install_default_class_tag_map();
+    int typed_records = 0;
+    int typed_by_kind[6] = {0,0,0,0,0,0};
+    // For quantization verification: track per-object-id first-seen position
+    // so we can compare against subsequent updates of the same object. Note
+    // we use the 32-bit persistent object id (not the ghost_id) because the
+    // capture's "ghost_id 0" reappears across packets representing DIFFERENT
+    // physical objects (the brute-force scanner picks the highest-scoring
+    // candidate per packet — usually that packet's leading record, but the
+    // class_tag differs between packets, confirming these are distinct
+    // objects that happen to share a ghost_id slot). The 32-bit object_id
+    // is stable and unique per physical object.
+    struct FirstPos { float x, y, z; bool seen; };
+    std::unordered_map<std::uint32_t, FirstPos> first_pos;
+    int pos_consistent = 0;
+    int pos_mismatch = 0;
+    // Sanity range for "plausible terrain coordinate" — reject obvious
+    // float-decode garbage (e.g. 1e34 values mean we read the wrong bytes).
+    int pos_plausible = 0;
+    int pos_garbage = 0;
+
     std::size_t pos = 0;
     while (true) {
         const std::size_t hex_key = text.find("\"hex\"", pos);
@@ -518,6 +629,66 @@ int run_replay(const std::string& path)
             std::fprintf(stderr, "[replay] len=%zuB no-record (%s)\n",
                 bytes.size(), dec.note.c_str());
         }
+
+        // Spec 14: dispatch typed records.
+        auto td = net20::parse_typed_packet(bytes.data(), bytes.size(),
+                                             typed_registry);
+        for (const auto& tr : td.records) {
+            ++typed_records;
+            const auto kind_idx = static_cast<std::size_t>(tr.kind);
+            if (kind_idx < 6) typed_by_kind[kind_idx]++;
+            if (typed_records <= 20) {
+                std::fprintf(stderr, "[replay-typed] %s\n",
+                    tr.log_line.c_str());
+            }
+            // Quantization check: for StaticShape records, capture the
+            // first-seen position per ghost_id and confirm subsequent
+            // updates of the same ghost report a bit-identical position
+            // (static shapes never move; consistent positions => the
+            // 96-bit byte-aligned float decode is correct).
+            if (tr.kind == net20::GhostClassKind::StaticShape && !tr.kill
+                && tr.full_update) {
+                auto it = typed_registry.statics.find(tr.ghost_id);
+                if (it != typed_registry.statics.end()
+                    && it->second.transform_changed) {
+                    const auto& s = it->second;
+                    // Plausibility: Tribes missions span ~±2000m horizontally
+                    // and ~±500m vertically; we use a generous ±10000 m
+                    // window to reject obvious float-decode garbage.
+                    auto plausible = [](float v) {
+                        return std::isfinite(v) && std::abs(v) <= 10000.0f;
+                    };
+                    if (plausible(s.pos_x) && plausible(s.pos_y)
+                        && plausible(s.pos_z)) {
+                        ++pos_plausible;
+                    } else {
+                        ++pos_garbage;
+                    }
+                    // Per-object-id consistency: if the same object_id
+                    // re-appears (server retransmits the same record),
+                    // every decoded position must be bit-identical.
+                    auto& fp = first_pos[s.object_id];
+                    if (!fp.seen) {
+                        fp = { s.pos_x, s.pos_y, s.pos_z, true };
+                    } else {
+                        if (fp.x == s.pos_x && fp.y == s.pos_y
+                            && fp.z == s.pos_z) {
+                            ++pos_consistent;
+                        } else {
+                            ++pos_mismatch;
+                            if (pos_mismatch <= 4) {
+                                std::fprintf(stderr,
+                                    "[replay-qcheck] obj=0x%08x POS MISMATCH "
+                                    "first=(%.4f,%.4f,%.4f) now=(%.4f,%.4f,%.4f)\n",
+                                    s.object_id,
+                                    fp.x, fp.y, fp.z,
+                                    s.pos_x, s.pos_y, s.pos_z);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Distinct ghost-id count for acceptance criterion.
@@ -537,6 +708,25 @@ int run_replay(const std::string& path)
         if (ghost_ids.size() > 20) std::fprintf(stderr, " ...");
         std::fprintf(stderr, "\n");
     }
+
+    std::fprintf(stderr,
+        "[replay-typed] total typed records: %d "
+        "(player=%d proj=%d item=%d vehicle=%d static=%d unknown=%d)\n",
+        typed_records,
+        typed_by_kind[(int)net20::GhostClassKind::Player],
+        typed_by_kind[(int)net20::GhostClassKind::Projectile],
+        typed_by_kind[(int)net20::GhostClassKind::Item],
+        typed_by_kind[(int)net20::GhostClassKind::Vehicle],
+        typed_by_kind[(int)net20::GhostClassKind::StaticShape],
+        typed_by_kind[(int)net20::GhostClassKind::Unknown]);
+    std::fprintf(stderr,
+        "[replay-qcheck] StaticShape position decode:"
+        " plausible=%d garbage=%d (range check |coord| <= 10000m)\n",
+        pos_plausible, pos_garbage);
+    std::fprintf(stderr,
+        "[replay-qcheck] StaticShape per-object_id consistency:"
+        " ok=%d mismatch=%d (same object_id seen across packets)\n",
+        pos_consistent, pos_mismatch);
 
     // Acceptance: at least 1 ghost record across the capture.
     return with_record > 0 ? 0 : 6;
@@ -629,6 +819,190 @@ int run_ack_selftest()
     return 0;
 }
 
+// Spec 20/22 offline self-test: build a client-ready packet and dump
+// it for byte-level inspection. The expected layout per §16.5 with our
+// minimal sub-stream choices (input=0, ghost=0):
+//   bytes 0..3   VC header (send_seq=2, parity=0, ack run (1,2),
+//                terminator + type=DataPacket)
+//   bits  32..73 rate-control prefix (R0=1 d=66 sz=400, R1=1 d=66 sz=400)
+//   bits  74..97 event-sub-stream-present(1) + event header (guaranteed,
+//                explicit seq=0, class id wire = 8) + argc=1
+//   bits  98..106 compression flag(0) + length=1
+//   bits 107..(byte-aligned) + ASCII 'A' = 0x41
+//   then event-present=0, input-present=0, ghost-present=0
+int run_ready_selftest()
+{
+    net20::ClientReadyInputs in;
+    in.send_seq = 2;
+    in.connect_parity = false;
+    in.highest_acked_of_mine = 1;
+    in.ack_runs.push_back({1, 2});  // ack server seq 2
+    in.arg_byte = 'A';
+    const auto wire = net20::encode_client_ready(in);
+
+    std::fprintf(stderr, "[ready-selftest] encoded %zu bytes:\n  ",
+        wire.size());
+    for (std::size_t i = 0; i < wire.size(); ++i) {
+        std::fprintf(stderr, "%02x", wire[i]);
+        if ((i & 0x0f) == 0x0f) std::fprintf(stderr, "\n  ");
+        else std::fprintf(stderr, " ");
+    }
+    std::fputc('\n', stderr);
+
+    // Spot-check: byte 0 should be 0x09 (VC=1, parity=0, send_seq=2).
+    if (wire.size() < 4) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: too short\n");
+        return 7;
+    }
+    auto bit = [&](std::size_t p) -> unsigned {
+        if ((p >> 3) >= wire.size()) return 0;
+        return (wire[p >> 3] >> (p & 7)) & 1u;
+    };
+    auto bits = [&](std::size_t p, unsigned w) -> std::uint32_t {
+        std::uint32_t v = 0;
+        for (unsigned i = 0; i < w; ++i) v |= bit(p + i) << i;
+        return v;
+    };
+    // Bit 0: VC=1
+    if (bit(0) != 1u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: VC bit\n");
+        return 7;
+    }
+    // Bits 2..10: send_seq=2
+    const std::uint32_t seq = bits(2, 9);
+    if (seq != 2u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: send_seq=%u\n", seq);
+        return 7;
+    }
+    // Walk ack list to find terminator + type word.
+    std::size_t pos = 16;  // start of ack list
+    for (;;) {
+        const std::uint32_t len = bits(pos, 3); pos += 3;
+        if (len == 0) break;
+        pos += 5;
+    }
+    const std::uint32_t type_word = bits(pos, 5);
+    if (type_word != 0u) {
+        std::fprintf(stderr,
+            "[ready-selftest] FAIL: type_word=%u (want 0=DataPacket)\n",
+            type_word);
+        return 7;
+    }
+    pos += 5;
+
+    // Rate-control prefix.
+    if (bit(pos) != 1u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: R0 flag\n");
+        return 7;
+    }
+    ++pos;
+    const std::uint32_t cur_d = bits(pos, 10); pos += 10;
+    const std::uint32_t cur_sz = bits(pos, 10); pos += 10;
+    if (cur_d != 66u || cur_sz != 400u) {
+        std::fprintf(stderr,
+            "[ready-selftest] FAIL: cur d=%u sz=%u\n", cur_d, cur_sz);
+        return 7;
+    }
+    if (bit(pos) != 1u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: R1 flag\n");
+        return 7;
+    }
+    ++pos;
+    const std::uint32_t max_d = bits(pos, 10); pos += 10;
+    const std::uint32_t max_sz = bits(pos, 10); pos += 10;
+    if (max_d != 66u || max_sz != 400u) {
+        std::fprintf(stderr,
+            "[ready-selftest] FAIL: max d=%u sz=%u\n", max_d, max_sz);
+        return 7;
+    }
+
+    // Event sub-stream present + first event header.
+    if (bit(pos) != 1u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: ess present\n");
+        return 7;
+    }
+    ++pos;
+    if (bit(pos) != 1u) {  // event-present
+        std::fprintf(stderr, "[ready-selftest] FAIL: event-present\n");
+        return 7;
+    }
+    ++pos;
+    if (bit(pos) != 1u) {  // guaranteed
+        std::fprintf(stderr, "[ready-selftest] FAIL: guaranteed\n");
+        return 7;
+    }
+    ++pos;
+    if (bit(pos) != 0u) {  // seq-continuous = 0
+        std::fprintf(stderr, "[ready-selftest] FAIL: seq-continuous\n");
+        return 7;
+    }
+    ++pos;
+    if (bit(pos) != 1u) {  // has-explicit-seq
+        std::fprintf(stderr, "[ready-selftest] FAIL: has-explicit-seq\n");
+        return 7;
+    }
+    ++pos;
+    const std::uint32_t exseq = bits(pos, 7); pos += 7;
+    if (exseq != 0u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: exseq=%u\n", exseq);
+        return 7;
+    }
+    const std::uint32_t classid = bits(pos, 7); pos += 7;
+    if (classid != 8u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: class=%u\n", classid);
+        return 7;
+    }
+    const std::uint32_t argc = bits(pos, 5); pos += 5;
+    if (argc != 1u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: argc=%u\n", argc);
+        return 7;
+    }
+    // String: compression flag 0, length 1, byte-aligned 'A'.
+    if (bit(pos) != 0u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: compression flag\n");
+        return 7;
+    }
+    ++pos;
+    const std::uint32_t slen = bits(pos, 8); pos += 8;
+    if (slen != 1u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: strlen=%u\n", slen);
+        return 7;
+    }
+    // Byte-align.
+    if (pos & 7u) pos += (8 - (pos & 7u));
+    const std::uint32_t ch = bits(pos, 8); pos += 8;
+    if (ch != 'A') {
+        std::fprintf(stderr, "[ready-selftest] FAIL: char=0x%02x\n", ch);
+        return 7;
+    }
+    // Trailing terminators.
+    if (bit(pos) != 0u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: event term\n");
+        return 7;
+    }
+    ++pos;
+    if (bit(pos) != 0u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: input present\n");
+        return 7;
+    }
+    ++pos;
+    if (bit(pos) != 0u) {
+        std::fprintf(stderr, "[ready-selftest] FAIL: ghost present\n");
+        return 7;
+    }
+    ++pos;
+
+    std::fprintf(stderr,
+        "[ready-selftest] decode OK: send_seq=2 parity=0 type=DataPacket\n"
+        "                R0 d=66 sz=400  R1 d=66 sz=400\n"
+        "                event-class=8 seq=0 argc=1 str=\"A\" "
+        "(uncompressed)\n");
+    std::fprintf(stderr, "[ready-selftest] consumed %zu bits, packet=%zu bytes\n",
+        pos, wire.size());
+    std::fprintf(stderr, "[ready-selftest] PASS\n");
+    return 0;
+}
+
 int run_client(const std::string& host, std::uint16_t port,
                const std::string& name, const std::string& password,
                int duration_s)
@@ -699,7 +1073,13 @@ int main(int argc, char** argv)
     bool decode_ghosts = false;
     bool send_acks = false;          // spec 20/12 — off by default
     bool ack_selftest = false;
+    bool ready_selftest = false;     // spec 20/22 — offline encoder check
     bool use_groove = false;         // spec 20/12 follow-up — 45B Groove template
+    // Spec 20/22 — emit the c→s connection-progression event after
+    // the first ghost-stream packet arrives. Tri-state to track whether
+    // the user explicitly requested a value vs. defaulted (so that
+    // --send-ready defaults on when --ack is set).
+    int send_ready_opt = -1;          // -1 = unset, 0 = off, 1 = on
     std::string ghost_dump_path;
     std::string replay_path;
 
@@ -726,17 +1106,27 @@ int main(int argc, char** argv)
         if (a == "--ack") { send_acks = true; continue; }
         if (a == "--no-acks") { send_acks = false; continue; }
         if (a == "--ack-selftest") { ack_selftest = true; continue; }
+        if (a == "--ready-selftest") { ready_selftest = true; continue; }
         if (a == "--groove") { use_groove = true; continue; }
+        if (a == "--send-ready") { send_ready_opt = 1; continue; }
+        if (a == "--no-send-ready") { send_ready_opt = 0; continue; }
         std::fprintf(stderr, "unknown arg '%s'\n", a.c_str());
         usage(argv[0]);
         return 1;
     }
 
     if (ack_selftest) return run_ack_selftest();
+    if (ready_selftest) return run_ready_selftest();
     if (!replay_path.empty()) return run_replay(replay_path);
     if (loopback_self) return run_loopback_self(duration_s);
+    // Resolve the spec 20/22 default: --send-ready defaults to on whenever
+    // --ack is set (the ready emit requires a live ack stream to be useful).
+    const bool send_ready =
+        (send_ready_opt == 1) ||
+        (send_ready_opt == -1 && send_acks);
     if (template_paste) return run_template_paste(host, port, duration_s,
                                                   ghost_dump_path, decode_ghosts,
-                                                  send_acks, use_groove);
+                                                  send_acks, use_groove,
+                                                  send_ready);
     return run_client(host, port, name, password, duration_s);
 }
