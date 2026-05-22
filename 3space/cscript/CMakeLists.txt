@@ -33,7 +33,8 @@ set(CSCRIPT_PLATFORM_EXCLUDE
         ${CSCRIPT_ROOT}/platformMac/macMain.mm
         ${CSCRIPT_ROOT}/platformMac/macPlatform.mm
         ${CSCRIPT_ROOT}/platformPOSIX/POSIXMain.cpp
-        ${CSCRIPT_ROOT}/platformPOSIX/POSIXGL.client.cpp)
+        ${CSCRIPT_ROOT}/platformPOSIX/POSIXGL.client.cpp
+        ${CSCRIPT_ROOT}/platformPOSIX/POSIXProcessControl.cpp)
 
 # core/ exclusions — ogg/vorbis/theora require external libs we haven't
 # vendored; zip uses a password macro defined in T3D/. Audio + zip aren't
