@@ -46,6 +46,7 @@
 #include "mission_bounds.hpp"
 #include "walk_camera.hpp"
 #include "skybox_renderer.hpp"
+#include "particles.hpp"
 #include "lighting.hpp"
 #include "terrain_textures.hpp"
 #include "hud.hpp"
@@ -1512,6 +1513,16 @@ int main(int argc, char** argv)
         }
     }
 
+    // 14/12 — `--no-particles` disables ambient snow + star-field effects.
+    bool particles_enabled = true;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--no-particles") {
+            particles_enabled = false;
+            for (int j = i; j < argc - 1; ++j) argv[j] = argv[j + 1];
+            --argc; --i;
+        }
+    }
+
     // ---- --run-script <path> mode: bring up cscript VM, eval file, exit
     if (argc >= 3 && std::string(argv[1]) == "--run-script") {
         dts_viewer::cscript::init();
@@ -1779,6 +1790,38 @@ int main(int argc, char** argv)
             }
         }
         bool show_sky = sky_box.has_value();
+
+        // 14/12 — instantiate ambient particle systems from MIS flags.
+        std::optional<dts_viewer::ParticleSystem> snow_sys;
+        std::optional<dts_viewer::ParticleSystem> star_sys;
+        if (particles_enabled && ter_mission) {
+            // Walk the scene to find a node_snowfall (if any) and a
+            // node_star_field (already used by the skybox path — we
+            // additionally render twinkling dots on top).
+            bool has_snow = false;
+            bool has_stars = false;
+            auto scan = [&](auto& self,
+                const studio::content::mission::scene_node& n) -> void {
+                std::visit([&](const auto& p) {
+                    using T = std::decay_t<decltype(p)>;
+                    if constexpr (std::is_same_v<T,
+                        studio::content::mission::node_snowfall>) {
+                        has_snow = true;
+                    } else if constexpr (std::is_same_v<T,
+                        studio::content::mission::node_star_field>) {
+                        has_stars = true;
+                    }
+                }, n.payload);
+                for (auto& c : n.children) self(self, c);
+            };
+            scan(scan, ter_mission->scene.root);
+            if (has_snow) snow_sys = dts_viewer::make_snow();
+            if (has_stars) star_sys = dts_viewer::make_stars();
+            if (has_snow || has_stars) {
+                std::fprintf(stderr,
+                    "particles: snow=%d stars=%d\n", has_snow, has_stars);
+            }
+        }
 
         dts_viewer::HudState hud;
         hud.show_sky = show_sky;
@@ -2484,6 +2527,16 @@ int main(int argc, char** argv)
                 dts_viewer::draw_skybox(*sky_box, V, P);
             }
 
+            // 14/12 — stars sit on a sphere; draw with view matrix that
+            // ignores translation so they stay fixed to the sky dome.
+            if (star_sys) {
+                glm::mat4 Vt = V;
+                Vt[3] = glm::vec4(0, 0, 0, 1);
+                const float t = SDL_GetTicks() * 0.001f;
+                dts_viewer::draw_particles(*star_sys, P * Vt, t,
+                                           glm::vec3(1.0f, 1.0f, 0.95f), 3.0f);
+            }
+
             if (hud.show_terrain) {
                 glUseProgram(terrain_prog);
                 glUniformMatrix4fv(u_ter_mvp, 1, GL_FALSE, glm::value_ptr(MVP));
@@ -2581,6 +2634,16 @@ int main(int argc, char** argv)
                     wp.y += 1.5f;
                     draw(wp, 4.0f, { 0.1f, 0.8f, 0.9f });
                 }
+            }
+
+            // 14/12 — snow steps + draws after world geometry so flakes
+            // occlude properly.
+            if (snow_sys) {
+                dts_viewer::step_snow(*snow_sys,
+                    1.0f / 60.0f, ter_cam.position);
+                const float t = SDL_GetTicks() * 0.001f;
+                dts_viewer::draw_particles(*snow_sys, MVP, t,
+                    glm::vec3(0.95f, 0.97f, 1.0f), 4.0f);
             }
 
             if (hud.visible) {
