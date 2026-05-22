@@ -79,6 +79,7 @@ add_executable(dts-viewer
     ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client/ghost_types.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client/reliable_acks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client/client_events.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../net-test-client/movecommand.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

@@ -16,6 +16,7 @@
 
 #include "../net-test-client/client_events.hpp"
 #include "../net-test-client/ghost_stream.hpp"
+#include "../net-test-client/movecommand.hpp"
 #include "../net-test-client/reliable_acks.hpp"
 
 #include "content/net/udp_socket.hpp"
@@ -412,6 +413,38 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
         std::fprintf(stderr, "[net-client/live] connection-progression event sent\n");
     };
 
+    // Spec 20/19 — send move commands per §17. Once ready has fired,
+    // every ~33 ms we emit a 15-byte input frame at the next available
+    // send-seq. The frame carries an inline ack of any pending server
+    // seqs (so we don't need separate pure-acks while moves flow).
+    std::uint16_t move_send_seq = 3;            // first non-ready seq
+    std::uint32_t move_seq_counter = 0;          // §17 first-move-seq field
+    std::uint64_t last_move_emit_ms = 0;
+    int           moves_sent = 0;
+    constexpr std::uint64_t kMoveIntervalMs = 33;
+    auto emit_move = [&]() {
+        net20::MoveCommandInputs in;
+        in.send_seq = move_send_seq;
+        in.connect_parity = connect_parity;
+        in.highest_acked_of_mine =
+            static_cast<std::uint8_t>(ack.highest_recv_mod32 & 0x1Fu);
+        in.ack_runs = net20::build_ack_runs(ack.received,
+                                             ack.highest_recv_mod32);
+        in.first_move_seq = move_seq_counter;
+        // Single idle move per emit: all axes 0, no flags, no pitch/turn.
+        net20::MoveInput m;
+        in.moves.push_back(m);
+        const auto wire = net20::encode_movecommand(in);
+        if (!sock.send_to(*dst, wire.data(), wire.size())) return;
+        ++move_send_seq;
+        if (move_send_seq > 511) move_send_seq = 0;
+        ++move_seq_counter;
+        ack.clear_pending();
+        last_emit_ms = now_ms();
+        last_move_emit_ms = last_emit_ms;
+        ++moves_sent;
+    };
+
     while (!stop_requested_.load(std::memory_order_acquire)) {
         std::vector<std::uint8_t> buf;
         Endpoint src;
@@ -434,14 +467,20 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        if (ack.pending_count() > 0
-            && now_ms() >= last_emit_ms + kAckIntervalMs) {
+        // Spec 20/19: once ready has fired, emit moves at ~30Hz. Moves
+        // carry inline acks so we don't need separate pure-acks while
+        // moves are flowing.
+        if (ready_sent && now_ms() >= last_move_emit_ms + kMoveIntervalMs) {
+            emit_move();
+        } else if (ack.pending_count() > 0
+                   && now_ms() >= last_emit_ms + kAckIntervalMs) {
             emit_pure_ack();
         }
     }
 
-    std::fprintf(stderr, "[net-client/live] stopped — %d packets, %d records\n",
-        packets_seen_.load(), typed_records_.load());
+    std::fprintf(stderr,
+        "[net-client/live] stopped — %d packets, %d records, %d moves sent\n",
+        packets_seen_.load(), typed_records_.load(), moves_sent);
 
     running_.store(false, std::memory_order_release);
 }
