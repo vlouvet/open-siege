@@ -128,8 +128,12 @@ cmake --version   # should print "cmake version 3.22.0"
 mkdir -p build
 conan install . --install-folder=build --build=missing
 
-# Configure (use cmake 3.22 from PATH)
-cmake -S . -B build -DCMAKE_MODULE_PATH=$(pwd)/build/cmake -DCMAKE_BUILD_TYPE=Release
+# Configure (use cmake 3.22 from PATH; explicit generator required on MSYS2)
+cmake -S . -B build \
+    -G "MinGW Makefiles" \
+    -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/mingw32-make.exe \
+    -DCMAKE_MODULE_PATH=$(pwd)/build/cmake \
+    -DCMAKE_BUILD_TYPE=Release
 
 # Build lib3space.a and the cscript VM (~5 min on 4 cores)
 cmake --build build --target 3space -j$(nproc)
@@ -151,9 +155,10 @@ Files produced:
 ```sh
 cd ~/src/open-siege/examples/dts-viewer
 
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-    -DSDL2_DIR=/ucrt64/lib/cmake/SDL2 \
-    -DGLEW_DIR=/ucrt64/lib/cmake/glew
+cmake -S . -B build \
+    -G "MinGW Makefiles" \
+    -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/mingw32-make.exe \
+    -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 

@@ -81,8 +81,10 @@ jobs:
         working-directory: 3space
         run: |
           CMAKE322=$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)
-          export PATH="$CMAKE322:$PATH"
+          export PATH="$CMAKE322:/ucrt64/bin:$PATH"
           cmake -S . -B build \
+            -G "MinGW Makefiles" \
+            -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/mingw32-make.exe \
             -DCMAKE_MODULE_PATH="$(pwd)/build/cmake" \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target 3space -j$(nproc)
@@ -92,8 +94,11 @@ jobs:
         working-directory: examples/dts-viewer
         run: |
           CMAKE322=$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)
-          export PATH="$CMAKE322:$PATH"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          export PATH="$CMAKE322:/ucrt64/bin:$PATH"
+          cmake -S . -B build \
+            -G "MinGW Makefiles" \
+            -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/mingw32-make.exe \
+            -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j$(nproc)
 
       - name: Smoke test (--help)
