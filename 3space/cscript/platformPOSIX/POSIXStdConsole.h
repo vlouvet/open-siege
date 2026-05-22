@@ -31,7 +31,9 @@
 #include "platform/event.h"
 #endif
 
-#include <termios.h>
+#if !defined(_WIN32)
+#  include <termios.h>
+#endif
 
 class StdConsole
 {
@@ -51,9 +53,12 @@ class StdConsole
    char rgCmds[MAX_CMDS][512];
    S32  iCmdIndex;
 
-   // this holds the original terminal state
-   // before we messed with it
+   // this holds the original terminal state before we messed with it
+#if !defined(_WIN32)
    struct termios *originalTermState;
+#else
+   void *originalTermState;
+#endif
 
    void printf(const char *s, ...);
 

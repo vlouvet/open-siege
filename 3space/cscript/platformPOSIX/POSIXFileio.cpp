@@ -49,7 +49,12 @@
 #if defined(__APPLE__)
 #include <sys/syslimits.h>
 #endif
-#include <utime.h>
+#if defined(_WIN32)
+#  include <io.h>
+#  include <direct.h>
+#else
+#  include <utime.h>
+#endif
 
 /* these are for reading directors, getting stats, etc. */
 #include <dirent.h>
@@ -665,10 +670,15 @@ File::FileStatus File::flush()
     AssertFatal(NULL != handle, "File::flush: invalid file handle");
     AssertFatal(true == hasCapability(FileWrite), "File::flush: cannot flush a read-only file");
 
-    if (fsync(*((int *)handle)) == 0)
-        return currentStatus = Ok;                                // success!
+#if defined(_WIN32)
+    int flushRet = _commit(*((int *)handle));
+#else
+    int flushRet = fsync(*((int *)handle));
+#endif
+    if (flushRet == 0)
+        return currentStatus = Ok;
     else
-        return setStatus();                                       // unsuccessful
+        return setStatus();
 }
 
 //-----------------------------------------------------------------------------
@@ -897,7 +907,11 @@ bool Platform::createPath(const char *file)
     {
         dStrncpy(pathbuf + pathLen, file, dir - file);
         pathbuf[pathLen + dir-file] = 0;
+#if defined(_WIN32)
+        bool ret = (_mkdir(pathbuf) == 0 || errno == EEXIST);
+#else
         bool ret = mkdir(pathbuf, 0700);
+#endif
         pathLen += dir - file;
         pathbuf[pathLen++] = '/';
         file = dir + 1;
@@ -1152,6 +1166,16 @@ bool Platform::hasSubDirectory(const char *pPath)
     while ((d = readdir(dip)))
     {
         bool isDir = false;
+#if defined(_WIN32)
+        {
+            char child[1024];
+            if ((pPath[dStrlen(pPath) - 1] == '/'))
+                dSprintf(child, 1024, "%s%s", pPath, d->d_name);
+            else
+                dSprintf(child, 1024, "%s/%s", pPath, d->d_name);
+            isDir = Platform::isDirectory(child);
+        }
+#else
         if (d->d_type == DT_UNKNOWN)
         {
             char child [1024];
@@ -1163,6 +1187,7 @@ bool Platform::hasSubDirectory(const char *pPath)
         }
         else if (d->d_type & DT_DIR)
             isDir = true;
+#endif
         if( isDir )
         {
             // Skip the . and .. directories
@@ -1272,6 +1297,16 @@ static bool recurseDumpDirectories(const char *basePath, const char *subPath, Ve
     {
         bool	isDir;
         isDir = false;
+#if defined(_WIN32)
+        {
+            char child[1024];
+            if (Path[dStrlen(Path) - 1] == '/')
+                dSprintf(child, 1024, "%s%s", Path, d->d_name);
+            else
+                dSprintf(child, 1024, "%s/%s", Path, d->d_name);
+            isDir = Platform::isDirectory(child);
+        }
+#else
         if (d->d_type == DT_UNKNOWN)
         {
             char child [1024];
@@ -1283,6 +1318,7 @@ static bool recurseDumpDirectories(const char *basePath, const char *subPath, Ve
         }
         else if (d->d_type & DT_DIR)
             isDir = true;
+#endif
 
         if ( isDir )
         {

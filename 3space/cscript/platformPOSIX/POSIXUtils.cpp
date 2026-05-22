@@ -21,15 +21,15 @@
 //-----------------------------------------------------------------------------
 
 #include <unistd.h>
-#include <termios.h>
 #include <stdio.h>
-#include <sys/utsname.h>
-
-// for UnixCommandExecutor
 #include <fcntl.h>
 #include <errno.h>
-#include <sys/wait.h>
 #include <stdlib.h>
+#if !defined(_WIN32)
+#  include <termios.h>
+#  include <sys/utsname.h>
+#  include <sys/wait.h>
+#endif
 
 #include "platformPOSIX/platformPOSIX.h"
 #include "platformPOSIX/POSIXUtils.h"
@@ -41,13 +41,16 @@ UnixUtils::UnixUtils()
 {
    UUtils = this;
 
+#if !defined(_WIN32)
    mUnameInfo = (struct utsname*)dRealMalloc(sizeof(struct utsname));;
    if (uname(mUnameInfo) == -1)
    {
-      // oh well
       dRealFree(mUnameInfo);
       mUnameInfo = NULL;
    }
+#else
+   mUnameInfo = NULL;
+#endif
 }
 
 UnixUtils::~UnixUtils()
@@ -61,20 +64,27 @@ UnixUtils::~UnixUtils()
 
 const char* UnixUtils::getOSName()
 {
+#if defined(_WIN32)
+   return "Windows";
+#else
    if (mUnameInfo == NULL)
       return "";
-
-   return mUnameInfo->sysname;  
+   return mUnameInfo->sysname;
+#endif
 }
 
 bool UnixUtils::inBackground()
 {
+#if defined(_WIN32)
+   return false;
+#else
    int terminalGroupId = tcgetpgrp(fileno(stdin));
    int myPid = getpid();
    if (terminalGroupId != myPid)
       return true;
    else
       return false;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -103,7 +113,8 @@ UnixCommandExecutor::~UnixCommandExecutor()
    cleanup();
 }
 
-int UnixCommandExecutor::exec(char* args[], 
+#if !defined(_WIN32)
+int UnixCommandExecutor::exec(char* args[],
                               char* stdoutCapture, int stdoutCaptureSize)
 {
    // check for shitty parameters
@@ -274,6 +285,10 @@ void UnixCommandExecutor::cleanup()
 
    clearFields();
 }
+#else // _WIN32 stub
+int UnixCommandExecutor::exec(char* [], char* , int ) { return -1; }
+void UnixCommandExecutor::cleanup() { clearFields(); }
+#endif
 
 /* Usage:
    UnixCommandExecutor exec;

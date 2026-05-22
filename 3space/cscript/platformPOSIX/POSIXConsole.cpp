@@ -62,25 +62,29 @@ void StdConsole::destroy()
    stdConsole = NULL;
 }
 
+#if !defined(_WIN32)
 static void signalHandler(int sigtype)
 {
    if (sigtype == SIGCONT && stdConsole != NULL)
       stdConsole->resetTerminal();
 }
+#endif
 
 void StdConsole::resetTerminal()
 {
+#if !defined(_WIN32)
    if (stdConsoleEnabled)
    {
       /* setup the proper terminal modes */
       struct termios termModes;
       tcgetattr(stdIn, &termModes);
-      termModes.c_lflag &= ~ICANON; // enable non-canonical mode
+      termModes.c_lflag &= ~ICANON;
       termModes.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHOKE);
       termModes.c_cc[VMIN] = 0;
       termModes.c_cc[VTIME] = 5;
       tcsetattr(stdIn, TCSAFLUSH, &termModes);
    }
+#endif
 }
 
 void StdConsole::enable(bool enabled)
@@ -89,18 +93,15 @@ void StdConsole::enable(bool enabled)
    {
       stdConsoleEnabled = true;
 
-      // install signal handler for sigcont
+#if !defined(_WIN32)
       signal(SIGCONT, &signalHandler);
-      
-      // save the terminal state
+
       if (originalTermState == NULL)
          originalTermState = new termios;
-
       tcgetattr(stdIn, originalTermState);
-      
-      // put the terminal into our preferred mode
       resetTerminal();
-      
+#endif
+
       printf("%s", Con::getVariable("Con::Prompt"));
      
    }
@@ -108,12 +109,12 @@ void StdConsole::enable(bool enabled)
    {
       stdConsoleEnabled = false;
 
-      // uninstall signal handler
+#if !defined(_WIN32)
       signal(SIGCONT, SIG_DFL);
 
-      // reset the original terminal state
       if (originalTermState != NULL)
          tcsetattr(stdIn, TCSANOW, originalTermState);
+#endif
    }
 }
 
@@ -168,7 +169,9 @@ StdConsole::~StdConsole()
 
    if (originalTermState != NULL)
    {
-      delete originalTermState;
+#if !defined(_WIN32)
+      delete static_cast<struct termios*>(originalTermState);
+#endif
       originalTermState = NULL;
    }
 }
