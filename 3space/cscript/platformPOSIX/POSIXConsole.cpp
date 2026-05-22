@@ -217,24 +217,24 @@ void StdConsole::processConsoleLine(const char *consoleLine)
 
 void StdConsole::process()
 {
+#if defined(_WIN32)
+   // select() on stdin file descriptors is not supported on Windows
+   return;
+#else
    if(stdConsoleEnabled)
    {
-      //U16 key;
-      char typedData[64];  // damn, if you can type this fast... :-D
+      char typedData[64];
 
       if (UUtils->inBackground())
-         // we don't have the terminal
          inBackground = true;
       else
       {
-         // if we were in the background, reset the terminal
          if (inBackground)
             resetTerminal();
          inBackground = false;
-      }   
+      }
 
       // see if stdIn has any input waiting
-      // mojo for select call
       fd_set rfds;
       struct timeval tv;
 
@@ -426,4 +426,5 @@ void StdConsole::process()
         }
       }
    }
+#endif // !_WIN32
 }

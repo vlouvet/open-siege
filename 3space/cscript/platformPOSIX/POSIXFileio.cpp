@@ -831,11 +831,19 @@ bool File::hasCapability(Capability cap) const
 //-----------------------------------------------------------------------------
 S32 Platform::compareFileTimes(const FileTime &a, const FileTime &b)
 {
+#if defined(_WIN32)
+    U64 ta = ((U64)a.v2 << 32) | a.v1;
+    U64 tb = ((U64)b.v2 << 32) | b.v1;
+    if(ta > tb) return 1;
+    if(ta < tb) return -1;
+    return 0;
+#else
     if(a > b)
         return 1;
     if(a < b)
         return -1;
     return 0;
+#endif
 }
 
 //-----------------------------------------------------------------------------
