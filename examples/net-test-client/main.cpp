@@ -51,6 +51,8 @@ void usage(const char* argv0)
         "  --duration SECONDS   total run time (default 5)\n"
         "  --loopback-self      run a local server in-process for smoke test\n"
         "  --template-paste     send a captured-real RequestConnect template\n"
+        "  --listen-seconds N   alias for --duration (used with --template-paste)\n"
+        "  --ghost-dump PATH    write captured phase-3 packets to PATH as JSON\n"
         "                       (verified to elicit AcceptConnect from real Tribes)\n",
         argv0, (int)std::strlen(argv0), "");
 }
@@ -131,7 +133,8 @@ const std::uint8_t kRealRequestConnectTemplate[27] = {
 };
 
 int run_template_paste(const std::string& host, std::uint16_t port,
-                       int duration_s)
+                       int duration_s,
+                       const std::string& ghost_dump_path)
 {
     std::fprintf(stderr,
         "[net-test] template-paste mode -> %s:%u (sends captured-real Tribes\n"
@@ -221,11 +224,18 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     }
     hex_dump("phase-2 send", kFirstDataPacket, sizeof(kFirstDataPacket));
 
-    // Phase 3: server should now start streaming ghost data. We just count
-    // how many further packets arrive in the remaining wall-time budget.
+    // Phase 3: server should now start streaming ghost data. Accumulate
+    // every packet so a --ghost-dump path can emit a JSON file the
+    // ghost-stream parser specs (20/09+) can replay against.
+    struct CapturedPacket {
+        std::uint64_t t_ms;
+        std::vector<std::uint8_t> bytes;
+    };
+    std::vector<CapturedPacket> captured;
     int ghost_packets = 0;
     std::size_t ghost_bytes = 0;
-    const std::uint64_t deadline = now_ms() + 1000ULL * duration_s;
+    const std::uint64_t phase3_start = now_ms();
+    const std::uint64_t deadline = phase3_start + 1000ULL * duration_s;
     while (now_ms() < deadline) {
         std::vector<std::uint8_t> buf;
         Endpoint src;
@@ -235,6 +245,7 @@ int run_template_paste(const std::string& host, std::uint16_t port,
             if (ghost_packets <= 3) {
                 hex_dump("ghost", buf.data(), std::min<std::size_t>(buf.size(), 32));
             }
+            captured.push_back({ now_ms() - phase3_start, std::move(buf) });
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -242,6 +253,42 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     std::fprintf(stderr,
         "[net-test] phase-3: %d ghost packets, %zu bytes total\n",
         ghost_packets, ghost_bytes);
+
+    if (!ghost_dump_path.empty() && !captured.empty()) {
+        std::FILE* f = std::fopen(ghost_dump_path.c_str(), "wb");
+        if (!f) {
+            std::fprintf(stderr, "[net-test] ghost-dump: open '%s' failed\n",
+                ghost_dump_path.c_str());
+        } else {
+            // Hand-roll minimal JSON: { "packets": [ { "i":..., "t_ms":...,
+            // "length":..., "hex":"..." }, ... ] }. Pulling in nlohmann_json
+            // here would bloat the binary; this output is verifiable enough.
+            std::fprintf(f, "{\n  \"server\": \"%s:%u\",\n",
+                host.c_str(), port);
+            std::fprintf(f, "  \"nonce\": \"%02x%02x%02x\",\n",
+                pkt[7], pkt[8], pkt[9]);
+            std::fprintf(f, "  \"phase3_packet_count\": %d,\n", ghost_packets);
+            std::fprintf(f, "  \"phase3_byte_count\": %zu,\n", ghost_bytes);
+            std::fprintf(f, "  \"packets\": [");
+            for (std::size_t i = 0; i < captured.size(); ++i) {
+                const auto& cp = captured[i];
+                std::fprintf(f, "%s\n    { \"i\": %zu, \"t_ms\": %llu, "
+                    "\"length\": %zu, \"hex\": \"",
+                    i == 0 ? "" : ",",
+                    i,
+                    static_cast<unsigned long long>(cp.t_ms),
+                    cp.bytes.size());
+                for (std::uint8_t b : cp.bytes) std::fprintf(f, "%02x", b);
+                std::fprintf(f, "\" }");
+            }
+            std::fprintf(f, "\n  ]\n}\n");
+            std::fclose(f);
+            std::fprintf(stderr,
+                "[net-test] ghost-dump: wrote %zu packets to %s\n",
+                captured.size(), ghost_dump_path.c_str());
+        }
+    }
+
     return ghost_packets > 0 ? 0 : 5;
 }
 
@@ -312,6 +359,7 @@ int main(int argc, char** argv)
     int duration_s = 5;
     bool loopback_self = false;
     bool template_paste = false;
+    std::string ghost_dump_path;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -329,12 +377,14 @@ int main(int argc, char** argv)
         if (take(name, "--name")) continue;
         if (take(password, "--password")) continue;
         if (a == "--duration" && i + 1 < argc) { duration_s = std::atoi(argv[++i]); continue; }
+        if (a == "--listen-seconds" && i + 1 < argc) { duration_s = std::atoi(argv[++i]); continue; }
+        if (a == "--ghost-dump" && i + 1 < argc) { ghost_dump_path = argv[++i]; continue; }
         std::fprintf(stderr, "unknown arg '%s'\n", a.c_str());
         usage(argv[0]);
         return 1;
     }
 
     if (loopback_self) return run_loopback_self(duration_s);
-    if (template_paste) return run_template_paste(host, port, duration_s);
+    if (template_paste) return run_template_paste(host, port, duration_s, ghost_dump_path);
     return run_client(host, port, name, password, duration_s);
 }
