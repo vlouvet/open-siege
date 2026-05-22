@@ -2245,6 +2245,20 @@ int main(int argc, char** argv)
             }
         }
 
+        // Spec 20/17 — spectator-mode follow-cam. When a live or replay
+        // net session is up, F8 toggles a follow-cam mode that pins the
+        // camera to a chosen ghost's position; F9 cycles through the
+        // ghosts in the registry. Local player physics keep running (the
+        // camera override just sits on top); this keeps the audio
+        // listener, weapon HUD, etc. usable so we don't have to gut
+        // half the viewer to spectate.
+        bool spectator_follow = false;
+        std::uint16_t followed_ghost_id = 0;
+        bool followed_ghost_is_static = true;  // false = player ghost
+        // Number of frames since we last refreshed the followed-ghost
+        // selection; bumps every time F9 is pressed.
+        int spectator_followed_index = 0;
+
         // Spec 16/10 — link mission-spawned SimObjects back to the live
         // entity-state PODs. mission_load() emitted one
         // `instant <Type>(<name>)` per scene entity earlier; we walk
@@ -2663,6 +2677,20 @@ int main(int argc, char** argv)
                             std::printf("layer sky: %s\n",
                                 hud.show_sky ? "on" : "off");
                         }
+                        // Spec 20/17 — F8 toggle spectator follow-cam,
+                        // F9 cycle through ghosts in the registry.
+                        if (ev.key.keysym.sym == SDLK_F8) {
+                            spectator_follow = !spectator_follow;
+                            std::fprintf(stderr,
+                                "spectator: follow=%s (F9 cycles ghosts)\n",
+                                spectator_follow ? "on" : "off");
+                        }
+                        if (ev.key.keysym.sym == SDLK_F9) {
+                            spectator_followed_index++;
+                            std::fprintf(stderr,
+                                "spectator: next ghost (index=%d)\n",
+                                spectator_followed_index);
+                        }
                         if (ev.key.keysym.sym == SDLK_F3) {
                             show_bounds_debug = !show_bounds_debug;
                             std::printf("bounds debug: %s\n",
@@ -3008,6 +3036,46 @@ int main(int argc, char** argv)
                 {
                     const auto& v = ent_vehicles[piloted_vehicle_idx];
                     ter_cam.position = v.dyn_pos_gl + glm::vec3(0.0f, 0.8f, 0.0f);
+                }
+                // Spec 20/17 — spectator follow-cam. Snap the camera onto
+                // a selected ghost from the live GhostRegistry. Prefers
+                // Player ghosts when any are present, falls back to
+                // StaticShapes for the canned-capture case where no
+                // PvP players exist. F9 advances the selection index.
+                if (spectator_follow) {
+                    const auto reg = net_client.snapshot_registry();
+                    auto tribes_to_gl = [](float x, float y, float z) {
+                        return glm::vec3(x, z, y);
+                    };
+                    bool placed = false;
+                    if (!reg.players.empty()) {
+                        const int idx = ((spectator_followed_index % static_cast<int>(reg.players.size())) + reg.players.size()) % static_cast<int>(reg.players.size());
+                        auto it = reg.players.begin();
+                        std::advance(it, idx);
+                        const auto& p = it->second;
+                        if (std::isfinite(p.pos_x) && std::isfinite(p.pos_y)
+                            && std::isfinite(p.pos_z)) {
+                            ter_cam.position = tribes_to_gl(p.pos_x, p.pos_y, p.pos_z)
+                                + glm::vec3(0.0f, 2.5f, 0.0f);
+                            followed_ghost_id = it->first;
+                            followed_ghost_is_static = false;
+                            placed = true;
+                        }
+                    }
+                    if (!placed && !reg.statics.empty()) {
+                        const int n = static_cast<int>(reg.statics.size());
+                        const int idx = ((spectator_followed_index % n) + n) % n;
+                        auto it = reg.statics.begin();
+                        std::advance(it, idx);
+                        const auto& s = it->second;
+                        if (std::isfinite(s.pos_x) && std::isfinite(s.pos_y)
+                            && std::isfinite(s.pos_z)) {
+                            ter_cam.position = tribes_to_gl(s.pos_x, s.pos_y, s.pos_z)
+                                + glm::vec3(0.0f, 4.0f, 0.0f);
+                            followed_ghost_id = it->first;
+                            followed_ghost_is_static = true;
+                        }
+                    }
                 }
 
                 // Audio listener tracks the camera every frame (spec 11/03).
@@ -3466,6 +3534,24 @@ int main(int argc, char** argv)
                         v.vehicle_dts.c_str(), h_speed, v_speed);
                     dts_viewer::text_draw(
                         16.0f, 36.0f, buf, {1.0f, 0.95f, 0.5f}, 16.0f);
+                }
+                // Spec 20/17 — spectator-mode status overlay. Shows the
+                // followed ghost id + class + registry totals, mirroring
+                // the vehicle HUD so the player can tell at a glance
+                // what they're watching.
+                if (spectator_follow) {
+                    const auto reg = net_client.snapshot_registry();
+                    char buf[160];
+                    std::snprintf(buf, sizeof(buf),
+                        "SPECTATING %s ghost=%u | %zu players, %zu projs, "
+                        "%zu items, %zu vehicles, %zu statics | F9: next  F8: exit",
+                        followed_ghost_is_static ? "static" : "player",
+                        static_cast<unsigned>(followed_ghost_id),
+                        reg.players.size(), reg.projectiles.size(),
+                        reg.items.size(), reg.vehicles.size(),
+                        reg.statics.size());
+                    dts_viewer::text_draw(
+                        16.0f, 36.0f, buf, {0.6f, 1.0f, 0.6f}, 14.0f);
                 }
                 dts_viewer::hud2d_render_compass(
                     pstate.yaw, compass_team_ticks, pstate.pos, w, h);
