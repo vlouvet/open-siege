@@ -14,7 +14,7 @@
 // +/- FOV). Escape toggles mouse capture.
 
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <SDL.h>

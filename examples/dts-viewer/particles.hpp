@@ -11,7 +11,7 @@
 //            stripped of translation so they stay fixed to the sky.
 
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 

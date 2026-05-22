@@ -8,7 +8,7 @@
 // type == 2).  Pushes the result into a shader's uniforms.
 
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 
 #include <array>
 #include <cstdint>

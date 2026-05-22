@@ -11,7 +11,7 @@
 // influence draws, marker debug viz, fps tracking) are all covered.
 
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 #include <glm/glm.hpp>
 
 #include <array>
@@ -133,6 +133,16 @@ void hud2d_render_command_map(const float* heightmap,    // row-major (size+1)^2
                               int viewport_h,
                               float world_origin_x = 0.0f,
                               float world_origin_z = 0.0f);
+
+// Spec 13/07 — text overlays driven by the script-side bindings
+// (HudBindingsState from spec 17/03). Renders the objective list in
+// the top-right corner, a centerPrint banner in the middle, and a
+// bottomPrint band above the health bar. No bars / no placeholders —
+// all real text via the ImGui draw list.
+struct HudBindingsState;
+void hud2d_render_script_text(const HudBindingsState& s,
+                              int viewport_w,
+                              int viewport_h);
 
 } // namespace dts_viewer
 

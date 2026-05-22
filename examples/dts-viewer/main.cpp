@@ -15,7 +15,7 @@
 
 #include <SDL.h>
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -2759,6 +2759,7 @@ int main(int argc, char** argv)
                 dts_viewer::hud2d_render_sensor(
                     pstate.yaw, pstate.pos, sensor_blips, 200.0f, w, h);
                 dts_viewer::hud2d_render_message_feed(message_feed, w, h);
+                dts_viewer::hud2d_render_script_text(hud_bindings_state, w, h);
                 dts_viewer::hud2d_render_damage_reticle(w, h);
                 if (show_command_map) {
                     dts_viewer::hud2d_render_command_map(

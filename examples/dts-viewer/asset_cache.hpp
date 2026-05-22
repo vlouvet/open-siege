@@ -20,7 +20,7 @@
 // load fall through to the existing wireframe-cube path in entity_renderer.
 
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 
 #include <cstdint>
 #include <filesystem>

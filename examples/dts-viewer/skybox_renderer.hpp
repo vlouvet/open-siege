@@ -11,7 +11,7 @@
 // fall back to printing an info line.
 
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 #include <glm/glm.hpp>
 
 #include <array>

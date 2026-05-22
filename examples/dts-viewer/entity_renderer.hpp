@@ -17,7 +17,7 @@
 #include "player_controller.hpp"
 
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 
 namespace dts_viewer
 {

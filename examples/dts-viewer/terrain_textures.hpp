@@ -10,7 +10,7 @@
 // quad is flat-textured by the dominant material at its corners.
 
 #define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#include "gl_includes.hpp"
 
 #include <map>
 #include <string>
