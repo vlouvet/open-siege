@@ -5,7 +5,9 @@
 
 #include <cstdio>
 #include <filesystem>
-#include <mach-o/dyld.h>
+#if defined(__APPLE__)
+#  include <mach-o/dyld.h>
+#endif
 #include <unistd.h>
 
 namespace fs = std::filesystem;

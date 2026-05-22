@@ -72,8 +72,12 @@ file(GLOB CSCRIPT_SDLTHREADS_CPP CONFIGURE_DEPENDS
 file(GLOB CSCRIPT_MATH_CPP CONFIGURE_DEPENDS
         ${CSCRIPT_ROOT}/math/*.cpp
         ${CSCRIPT_ROOT}/math/public/*.cpp
-        ${CSCRIPT_ROOT}/math/impl/*.cpp
-        ${CSCRIPT_ROOT}/math/isa/neon/*.cpp)
+        ${CSCRIPT_ROOT}/math/impl/*.cpp)
+if(APPLE OR (UNIX AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64"))
+    file(GLOB CSCRIPT_MATH_NEON_CPP CONFIGURE_DEPENDS
+            ${CSCRIPT_ROOT}/math/isa/neon/*.cpp)
+    list(APPEND CSCRIPT_MATH_CPP ${CSCRIPT_MATH_NEON_CPP})
+endif()
 file(GLOB CSCRIPT_THREADPOOL_CPP CONFIGURE_DEPENDS
         ${CSCRIPT_ROOT}/platform/threads/*.cpp)
 # cinterface/ pulls in app/mainLoop.h + game-controller deps we don't carry.
@@ -94,6 +98,10 @@ list(REMOVE_ITEM CSCRIPT_CORE_CPP ${CSCRIPT_CORE_EXCLUDE})
 list(REMOVE_ITEM CSCRIPT_POSIX_CPP ${CSCRIPT_PLATFORM_EXCLUDE})
 list(REMOVE_ITEM CSCRIPT_MAC_MM ${CSCRIPT_PLATFORM_EXCLUDE})
 list(REMOVE_ITEM CSCRIPT_MATH_CPP ${CSCRIPT_MATH_EXCLUDE})
+
+if(NOT APPLE)
+    set(CSCRIPT_MAC_MM "")
+endif()
 
 set(CSCRIPT_VM_SOURCES
         ${CSCRIPT_TORQUESCRIPT_CPP}

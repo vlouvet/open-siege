@@ -90,13 +90,19 @@ target_link_libraries(dts-viewer PRIVATE
     ${THREESPACE_DIR}/build/cscript/libcscript_core.a
     ${SDL2_LIBRARIES}
     OpenGL::GL
-    "-framework Cocoa"
-    "-framework Foundation"
-    "-framework CoreFoundation"
-    "-framework IOKit"
     nlohmann_json::nlohmann_json
     Boost::Boost
     glm::glm
     nonstd::span-lite
     taocpp::pegtl
     libzip::zip)
+
+if(APPLE)
+    target_link_libraries(dts-viewer PRIVATE
+        "-framework Cocoa"
+        "-framework Foundation"
+        "-framework CoreFoundation"
+        "-framework IOKit")
+elseif(UNIX AND NOT APPLE)
+    target_link_libraries(dts-viewer PRIVATE dl pthread m)
+endif()
