@@ -10,6 +10,7 @@
 //
 // Build target: cscript_dialect_corpus (EXCLUDE_FROM_ALL).
 
+#include "console/torquescript/dialectBEval.h"
 #include "console/torquescript/dialectDetect.h"
 
 #include <cstdio>
@@ -22,7 +23,10 @@
 
 namespace fs = std::filesystem;
 using studio::content::cscript::TorqueScript::CScriptDialect;
+using studio::content::cscript::TorqueScript::DialectBContext;
+using studio::content::cscript::TorqueScript::DialectBEvalResult;
 using studio::content::cscript::TorqueScript::detectDialect;
+using studio::content::cscript::TorqueScript::evaluateDialectB;
 
 static const char* dialectName(CScriptDialect d)
 {
@@ -66,6 +70,9 @@ int main(int argc, char** argv)
     int totalScanned = 0;
     int totalMatched = 0;
     int totalMismatched = 0;
+    int totalEvaluated = 0;          // spec 15/08 — evaluation pass
+    int totalEvalUnbound = 0;
+    int totalEvalErrors = 0;
     std::string mismatches;
 
     for (const auto& entry : fs::directory_iterator(dir))
@@ -107,6 +114,18 @@ int main(int argc, char** argv)
             mismatches += dialectName(got);
             mismatches += "\n";
         }
+
+        // Spec 15/08 — second pass: evaluate dialect-B-classified files.
+        // Acceptance is "zero runtime errors": unbound editor features
+        // emit warnings, only truly malformed input flips `ok = false`.
+        if (got == CScriptDialect::B) {
+            DialectBContext ctx;
+            DialectBEvalResult er = evaluateDialectB(
+                contents.c_str(), contents.size(), ctx);
+            ++totalEvaluated;
+            totalEvalUnbound += er.unbound_features;
+            if (!er.ok) ++totalEvalErrors;
+        }
     }
 
     std::printf(
@@ -118,5 +137,14 @@ int main(int argc, char** argv)
     if (totalMismatched > 0)
         std::printf("mismatches:\n%s", mismatches.c_str());
 
-    return totalMismatched == 0 ? 0 : 1;
+    if (totalEvaluated > 0) {
+        std::printf(
+            "cscript_dialect_corpus: dialect-B eval pass: evaluated=%d "
+            "unbound_features=%d eval_errors=%d\n",
+            totalEvaluated, totalEvalUnbound, totalEvalErrors);
+    }
+
+    if (totalMismatched > 0) return 1;
+    if (totalEvalErrors > 0) return 1;
+    return 0;
 }

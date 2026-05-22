@@ -135,3 +135,56 @@ endif`, `set X Y`, bareword calls, namespace-qualified calls like
 When a follow-up spec lights it up, the entry point is in place: the
 detector returns the dialect; the loader can dispatch to whichever
 parser is wired in.
+
+### Dialect-B *evaluator* — spec 15/08
+
+Spec 15/08 added a minimal dialect-B evaluator
+(`dialectBEval.{h,cpp}`) that walks dialect-B source line by line and:
+
+- Recognises and executes `set NAME VALUE`, `alias NAME VALUE`,
+  `unalias NAME` (store into a `DialectBContext` side-table)
+- Recognises (but no-ops) `echo`/`print` and structural keywords
+  (`if`/`endif`/`else`/`then`/`for`/`endfor`/`while`/`endwhile`)
+- Honours `#` comments and trailing-backslash line continuation
+- Emits `[unbound dialect-B feature: TOKEN]` warnings for the ~30
+  ConsoleWorld editor barewords (`newCanvas`, `focusServer`,
+  `addToolButton`, …) and `Ted::*` calls — these all require the
+  upstream editor's GUI subsystem and have no gameplay-side semantics
+  worth binding in v1
+
+Corpus-evaluation acceptance criterion is "zero runtime errors": 40
+ted.vol files + 2 scripts.vol dialect-B exceptions all evaluate
+without crashing; their unbound-feature warnings are summarised by
+`cscript_dialect_corpus` (`dialect-B eval pass: evaluated=N
+unbound_features=M eval_errors=0`).
+
+### Remaining dialect-B gaps (will not implement)
+
+These dialect-B constructs are deliberately NOT bound. They depend on
+the upstream Torque3D editor's GUI subsystem (wxwidgets-equivalent
+custom toolkit; not even present in the freeware drop):
+
+- `newCanvas` / `newWindow` / `newDialog` / `newMenu` / `newButton` /
+  `newToolWindow` — window-manager primitives
+- `addToolButton` / `addToolGap` / `addStatusBar` / `addMenuItem` /
+  `addMenu` / `setToolCommand` / `setButtonHelp` — toolbar/menu
+  population
+- `editBox` / `edit2Box` / `editText` / `ListBox` / `ListBoxFile` /
+  `LSEditor` — text-input widgets
+- `confirmBox` / `messageBox` — modal dialogs
+- `showWindow` / `hideWindow` / `focusCanvas` / `focusClient` /
+  `focusServer` — focus management
+- `loadFile` / `saveFile` / `openFile` / `closeFile` / `loadPalette` /
+  `flushTextureCache` — editor I/O
+- `listFiles` / `listBlocks` / `listMaterials` / `listFlags` —
+  editor introspection
+- `Ted::*` — entire ConsoleWorld editor namespace
+- `setcat` — string concatenation builtin used only by editor-side
+  `changeMission` (the gameplay path special-cases mission-switch in
+  the loader and doesn't need this token honoured)
+
+If a future spec wants gameplay-side `changeMission`, the cleanest
+path is a four-line special-case in the loader (it's already what the
+spec 15/05 notes recommend) rather than reviving the dialect-B
+parser. Future binding work for editor features would require porting
+the entire ConsoleWorld editor — out of scope.
