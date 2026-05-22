@@ -19,13 +19,19 @@
 #include "content/net/ghost_manager.hpp"
 #include "content/net/udp_socket.hpp"
 
+#include "ghost_stream.hpp"
+
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace studio::content::net;
 
@@ -53,7 +59,11 @@ void usage(const char* argv0)
         "  --template-paste     send a captured-real RequestConnect template\n"
         "  --listen-seconds N   alias for --duration (used with --template-paste)\n"
         "  --ghost-dump PATH    write captured phase-3 packets to PATH as JSON\n"
-        "                       (verified to elicit AcceptConnect from real Tribes)\n",
+        "                       (verified to elicit AcceptConnect from real Tribes)\n"
+        "  --decode-ghosts      run incoming server packets through the ghost\n"
+        "                       parser (spec 20/10); log decoded records per pkt\n"
+        "  --replay PATH        offline mode: read a capture JSON and feed every\n"
+        "                       s->c packet through the parser (no server needed)\n",
         argv0, (int)std::strlen(argv0), "");
 }
 
@@ -134,7 +144,8 @@ const std::uint8_t kRealRequestConnectTemplate[27] = {
 
 int run_template_paste(const std::string& host, std::uint16_t port,
                        int duration_s,
-                       const std::string& ghost_dump_path)
+                       const std::string& ghost_dump_path,
+                       bool decode_ghosts)
 {
     std::fprintf(stderr,
         "[net-test] template-paste mode -> %s:%u (sends captured-real Tribes\n"
@@ -245,6 +256,16 @@ int run_template_paste(const std::string& host, std::uint16_t port,
             if (ghost_packets <= 3) {
                 hex_dump("ghost", buf.data(), std::min<std::size_t>(buf.size(), 32));
             }
+            if (decode_ghosts) {
+                auto dec = net20::parse_ghost_packet(buf.data(), buf.size());
+                if (!dec.updates.empty()) {
+                    std::fprintf(stderr, "[ghost] %s\n",
+                        net20::format_update(dec.updates[0]).c_str());
+                } else if (!dec.note.empty()) {
+                    std::fprintf(stderr, "[ghost] (no record) %s\n",
+                        dec.note.c_str());
+                }
+            }
             captured.push_back({ now_ms() - phase3_start, std::move(buf) });
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -290,6 +311,111 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     }
 
     return ghost_packets > 0 ? 0 : 5;
+}
+
+// Spec 20/10 self-test path: read a capture JSON produced by
+// scripts/tribes_capture_proxy.py (or run_template_paste --ghost-dump),
+// feed every s->c packet through parse_ghost_packet, and summarise.
+// No network access required — purely offline verification of the
+// ghost-stream parser against canned data.
+int run_replay(const std::string& path)
+{
+    std::ifstream f(path);
+    if (!f) {
+        std::fprintf(stderr, "[replay] open '%s' failed\n", path.c_str());
+        return 2;
+    }
+    std::ostringstream ss; ss << f.rdbuf();
+    const std::string text = ss.str();
+
+    // Tiny ad-hoc JSON scanner — pull out the hex string of every packet
+    // whose "dir":"s->c" or that lacks a dir field (older ghost-dump
+    // format only contained server replies). Robust enough for the two
+    // JSON shapes we produce.
+    int total = 0, decoded = 0, with_record = 0;
+    std::vector<std::uint16_t> ghost_ids;
+
+    std::size_t pos = 0;
+    while (true) {
+        const std::size_t hex_key = text.find("\"hex\"", pos);
+        if (hex_key == std::string::npos) break;
+        const std::size_t colon = text.find(':', hex_key);
+        const std::size_t q1 = text.find('"', colon);
+        if (q1 == std::string::npos) break;
+        const std::size_t q2 = text.find('"', q1 + 1);
+        if (q2 == std::string::npos) break;
+        const std::string hex = text.substr(q1 + 1, q2 - q1 - 1);
+
+        // Pull the "dir" field that precedes this packet record. Within
+        // the same object, "dir" appears before "hex".
+        std::string dir;
+        const std::size_t obj_start = text.rfind('{', hex_key);
+        if (obj_start != std::string::npos) {
+            const std::size_t dir_key = text.find("\"dir\"", obj_start);
+            if (dir_key != std::string::npos && dir_key < hex_key) {
+                const std::size_t dq1 = text.find('"', text.find(':', dir_key));
+                const std::size_t dq2 = text.find('"', dq1 + 1);
+                if (dq1 != std::string::npos && dq2 != std::string::npos)
+                    dir = text.substr(dq1 + 1, dq2 - dq1 - 1);
+            }
+        }
+        pos = q2 + 1;
+
+        if (!dir.empty() && dir != "s->c") continue;
+
+        // Decode hex.
+        std::vector<std::uint8_t> bytes;
+        bytes.reserve(hex.size() / 2);
+        for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+            auto hexnib = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+                if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+                return -1;
+            };
+            int hi = hexnib(hex[i]), lo = hexnib(hex[i + 1]);
+            if (hi < 0 || lo < 0) break;
+            bytes.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+        }
+        if (bytes.empty()) continue;
+
+        ++total;
+        auto dec = net20::parse_ghost_packet(bytes.data(), bytes.size());
+        ++decoded;
+        if (!dec.updates.empty()) {
+            ++with_record;
+            const auto& u = dec.updates[0];
+            ghost_ids.push_back(u.ghost_id);
+            if (with_record <= 5) {
+                std::fprintf(stderr, "[replay] len=%zuB %s\n",
+                    bytes.size(), net20::format_update(u).c_str());
+            }
+        } else if (total <= 10 && !dec.note.empty()) {
+            std::fprintf(stderr, "[replay] len=%zuB no-record (%s)\n",
+                bytes.size(), dec.note.c_str());
+        }
+    }
+
+    // Distinct ghost-id count for acceptance criterion.
+    std::sort(ghost_ids.begin(), ghost_ids.end());
+    ghost_ids.erase(std::unique(ghost_ids.begin(), ghost_ids.end()),
+                    ghost_ids.end());
+
+    std::fprintf(stderr,
+        "[replay] %d s->c packets seen, %d decoded, %d with at least one record\n",
+        total, decoded, with_record);
+    std::fprintf(stderr, "[replay] distinct ghost_ids: %zu\n", ghost_ids.size());
+    if (!ghost_ids.empty()) {
+        std::fprintf(stderr, "[replay] ids:");
+        for (std::size_t i = 0; i < ghost_ids.size() && i < 20; ++i) {
+            std::fprintf(stderr, " %u", static_cast<unsigned>(ghost_ids[i]));
+        }
+        if (ghost_ids.size() > 20) std::fprintf(stderr, " ...");
+        std::fprintf(stderr, "\n");
+    }
+
+    // Acceptance: at least 1 ghost record across the capture.
+    return with_record > 0 ? 0 : 6;
 }
 
 int run_client(const std::string& host, std::uint16_t port,
@@ -359,7 +485,9 @@ int main(int argc, char** argv)
     int duration_s = 5;
     bool loopback_self = false;
     bool template_paste = false;
+    bool decode_ghosts = false;
     std::string ghost_dump_path;
+    std::string replay_path;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -379,12 +507,16 @@ int main(int argc, char** argv)
         if (a == "--duration" && i + 1 < argc) { duration_s = std::atoi(argv[++i]); continue; }
         if (a == "--listen-seconds" && i + 1 < argc) { duration_s = std::atoi(argv[++i]); continue; }
         if (a == "--ghost-dump" && i + 1 < argc) { ghost_dump_path = argv[++i]; continue; }
+        if (a == "--decode-ghosts") { decode_ghosts = true; continue; }
+        if (a == "--replay" && i + 1 < argc) { replay_path = argv[++i]; continue; }
         std::fprintf(stderr, "unknown arg '%s'\n", a.c_str());
         usage(argv[0]);
         return 1;
     }
 
+    if (!replay_path.empty()) return run_replay(replay_path);
     if (loopback_self) return run_loopback_self(duration_s);
-    if (template_paste) return run_template_paste(host, port, duration_s, ghost_dump_path);
+    if (template_paste) return run_template_paste(host, port, duration_s,
+                                                  ghost_dump_path, decode_ghosts);
     return run_client(host, port, name, password, duration_s);
 }
