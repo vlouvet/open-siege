@@ -83,3 +83,9 @@ const char* osGetTemporaryDirectory() { return "/tmp"; }
 // Stub it to return empty string so getExecutablePath falls back to its
 // platform-default discovery path.
 extern "C" const char* torque_getexecutablepath() { return ""; }
+
+// NetConnection::mErrorBuffer — static member declared in sim/netConnection.h
+// but defined in netConnection.cpp (which we don't vendor). simDatablock.cpp
+// calls getErrorBuffer() during datablock preload. Provide the definition here.
+#include "sim/netConnection.h"
+String NetConnection::mErrorBuffer;
