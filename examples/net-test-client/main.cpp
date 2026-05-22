@@ -20,6 +20,7 @@
 #include "content/net/udp_socket.hpp"
 
 #include "ghost_stream.hpp"
+#include "reliable_acks.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -63,7 +64,13 @@ void usage(const char* argv0)
         "  --decode-ghosts      run incoming server packets through the ghost\n"
         "                       parser (spec 20/10); log decoded records per pkt\n"
         "  --replay PATH        offline mode: read a capture JSON and feed every\n"
-        "                       s->c packet through the parser (no server needed)\n",
+        "                       s->c packet through the parser (no server needed)\n"
+        "  --ack                emit VC pure-acks per spec 20/11 §14 (default off;\n"
+        "                       experimentally keeps the connection alive past\n"
+        "                       the server's ~3-5s no-ack timeout)\n"
+        "  --no-acks            explicit alias for the default (acks off)\n"
+        "  --ack-selftest       offline: encode the §14.7 worked example and\n"
+        "                       confirm it round-trips to 05 08 09 80\n",
         argv0, (int)std::strlen(argv0), "");
 }
 
@@ -145,7 +152,8 @@ const std::uint8_t kRealRequestConnectTemplate[27] = {
 int run_template_paste(const std::string& host, std::uint16_t port,
                        int duration_s,
                        const std::string& ghost_dump_path,
-                       bool decode_ghosts)
+                       bool decode_ghosts,
+                       bool send_acks)
 {
     std::fprintf(stderr,
         "[net-test] template-paste mode -> %s:%u (sends captured-real Tribes\n"
@@ -238,6 +246,24 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     // Phase 3: server should now start streaming ghost data. Accumulate
     // every packet so a --ghost-dump path can emit a JSON file the
     // ghost-stream parser specs (20/09+) can replay against.
+    //
+    // When --ack is set we additionally emit pure-acks per clean-room
+    // §14: every non-Ping server packet marks its (send_seq mod 32)
+    // slot in our 32-slot window; on a ~28 Hz cadence (or earlier if
+    // ≥12 slots are pending — the "force ack" rule) we transmit a
+    // 3..10 byte pure-ack carrying the run-length-encoded slot list.
+    //
+    // The send-seq we re-use for every pure-ack is the same value the
+    // phase-2 emit used (§14.2: pure-ack/pure-ping do NOT increment
+    // the counter). Our phase-2 first emit was a 4-byte pure-ack with
+    // send-seq = 1 (the same seq RequestConnect occupied), so we keep
+    // sending pure-acks at send-seq = 1 throughout phase-3. Parity
+    // bit is the LSB of the connect-handle — we read it back out of
+    // the AcceptConnect-driven phase-2 template (bit 1 of byte 0).
+    const bool connect_parity = (kFirstDataPacket[0] & 0x02) != 0;
+    const std::uint16_t our_send_seq = 1;  // see comment above
+    net20::AckTracker ack;
+
     struct CapturedPacket {
         std::uint64_t t_ms;
         std::vector<std::uint8_t> bytes;
@@ -245,8 +271,48 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     std::vector<CapturedPacket> captured;
     int ghost_packets = 0;
     std::size_t ghost_bytes = 0;
+    int acks_emitted = 0;
+    std::size_t ack_bytes = 0;
     const std::uint64_t phase3_start = now_ms();
     const std::uint64_t deadline = phase3_start + 1000ULL * duration_s;
+    // Steady-state cadence (§14.5 observed 28 Hz ≈ 35 ms).
+    constexpr std::uint64_t kAckIntervalMs = 35;
+    constexpr std::uint64_t kMinEmitMs = 32;  // §14.5 rule 4
+    std::uint64_t last_emit_ms = now_ms();    // phase-2 just fired
+
+    auto emit_pure_ack = [&](const char* trigger) {
+        const std::uint64_t now = now_ms();
+        if (now < last_emit_ms + kMinEmitMs) return;  // §14.5 rule 4
+        // Build runs from the current pending window.
+        auto runs = net20::build_ack_runs(ack.received, ack.highest_recv_mod32);
+        if (runs.empty()) return;  // nothing to ack yet
+        net20::VcHeaderInputs hdr;
+        hdr.send_seq = our_send_seq;
+        hdr.connect_parity = connect_parity;
+        hdr.highest_acked_of_mine =
+            static_cast<std::uint8_t>(ack.highest_recv_mod32 & 0x1Fu);
+        hdr.ack_runs = std::move(runs);
+        hdr.type_word = net20::pkt_type::kPureAck;
+        const auto wire = net20::encode_vc_header(hdr);
+        if (!sock.send_to(*dst, wire.data(), wire.size())) {
+            std::fprintf(stderr, "[ack] send failed: %s\n",
+                sock.last_error().c_str());
+            return;
+        }
+        acks_emitted += 1;
+        ack_bytes += wire.size();
+        last_emit_ms = now;
+        ack.total_acks_sent += 1;
+        if (acks_emitted <= 5) {
+            std::fprintf(stderr,
+                "[ack] seq=%u size=%zuB highest=%u runs=%zu trigger=%s\n",
+                static_cast<unsigned>(our_send_seq), wire.size(),
+                static_cast<unsigned>(ack.highest_recv_mod32),
+                hdr.ack_runs.size(), trigger);
+        }
+        ack.clear_pending();
+    };
+
     while (now_ms() < deadline) {
         std::vector<std::uint8_t> buf;
         Endpoint src;
@@ -266,14 +332,34 @@ int run_template_paste(const std::string& host, std::uint16_t port,
                         dec.note.c_str());
                 }
             }
+            // §14.5 rule 1: mark non-Ping receive in our ack window.
+            if (send_acks) {
+                net20::ParsedIncomingHeader hdr_in;
+                if (net20::parse_incoming_header(buf.data(), buf.size(),
+                                                  hdr_in)) {
+                    if (hdr_in.base_type != net20::pkt_type::kPing) {
+                        ack.on_receive(hdr_in.send_seq);
+                    }
+                    // §14.5 rule 3: 12+ pending → force immediate emit.
+                    if (ack.should_force_ack()) {
+                        emit_pure_ack("force-12");
+                    }
+                }
+            }
             captured.push_back({ now_ms() - phase3_start, std::move(buf) });
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+        // §14.5 rule 2: steady-state emit at ~28 Hz when acks are pending.
+        if (send_acks && ack.pending_count() > 0
+            && now_ms() >= last_emit_ms + kAckIntervalMs) {
+            emit_pure_ack("cadence");
+        }
     }
     std::fprintf(stderr,
-        "[net-test] phase-3: %d ghost packets, %zu bytes total\n",
-        ghost_packets, ghost_bytes);
+        "[net-test] phase-3: %d ghost packets, %zu bytes total"
+        "; acks_sent=%d (%zuB)\n",
+        ghost_packets, ghost_bytes, acks_emitted, ack_bytes);
 
     if (!ghost_dump_path.empty() && !captured.empty()) {
         std::FILE* f = std::fopen(ghost_dump_path.c_str(), "wb");
@@ -418,6 +504,93 @@ int run_replay(const std::string& path)
     return with_record > 0 ? 0 : 6;
 }
 
+// Spec 20/12 offline self-test: verify our ack encoder reproduces the
+// 4-byte pure-ack hex `05 08 09 80` worked-example from §14.7 (a Groove
+// pure-ack acking server seq 1, with our own send-seq=1 and parity=0).
+int run_ack_selftest()
+{
+    // §14.7 worked example: bytes `05 08 09 80`. Cross-checking the bit-by-bit
+    // table in §14.7 against the LSB-first decoding rule of §14.1 (which the
+    // ghost_stream parser also relies on) shows the "highest-acked-of-mine =
+    // 2" entry in the §14.7 prose decodes to 1 on the wire (bit 11 = 1,
+    // bits 12..15 = 0 → LSB-first integer = 1). The hex bytes themselves
+    // are the authoritative value; the encoder reproduces them with
+    // highest_acked = 1.
+    const std::vector<std::uint8_t> expected = { 0x05, 0x08, 0x09, 0x80 };
+    const auto actual = net20::encode_pure_ack_simple(
+        /*send_seq=*/1,
+        /*connect_parity=*/false,
+        /*highest_acked=*/1,
+        /*run_length=*/1,
+        /*run_start=*/1);
+
+    auto to_hex = [](const std::vector<std::uint8_t>& v) {
+        std::string s;
+        char buf[4];
+        for (auto b : v) {
+            std::snprintf(buf, sizeof(buf), "%02x ", b);
+            s += buf;
+        }
+        if (!s.empty()) s.pop_back();
+        return s;
+    };
+
+    std::fprintf(stderr, "[selftest] §14.7 worked example\n");
+    std::fprintf(stderr, "[selftest] expected: %s\n", to_hex(expected).c_str());
+    std::fprintf(stderr, "[selftest] actual:   %s\n", to_hex(actual).c_str());
+    if (actual != expected) {
+        std::fprintf(stderr, "[selftest] FAIL\n");
+        return 7;
+    }
+
+    // Also exercise the parser path: feed the bytes back through
+    // parse_incoming_header and confirm type_word = 16, base_type = 0,
+    // is_ack = true, send_seq = 1.
+    net20::ParsedIncomingHeader p;
+    if (!net20::parse_incoming_header(actual.data(), actual.size(), p)) {
+        std::fprintf(stderr, "[selftest] parse_incoming_header rejected own emit\n");
+        return 7;
+    }
+    if (p.send_seq != 1 || p.type_word != 16 || !p.is_ack || p.base_type != 0) {
+        std::fprintf(stderr,
+            "[selftest] parser mismatch: seq=%u type=%u base=%u ack=%d\n",
+            (unsigned)p.send_seq, (unsigned)p.type_word, (unsigned)p.base_type,
+            (int)p.is_ack);
+        return 7;
+    }
+
+    // Multi-run encoder sanity check: two non-adjacent runs in the window.
+    std::array<bool, 32> w{};
+    w[3] = w[4] = w[5] = true;     // run of 3 at start=3
+    w[10] = true;                  // run of 1 at start=10
+    auto runs = net20::build_ack_runs(w, /*highest=*/10);
+    if (runs.size() != 2
+        || runs[0].length != 3 || runs[0].start_seq != 3
+        || runs[1].length != 1 || runs[1].start_seq != 10) {
+        std::fprintf(stderr,
+            "[selftest] build_ack_runs mismatch: %zu runs\n", runs.size());
+        for (const auto& r : runs)
+            std::fprintf(stderr, "             len=%u start=%u\n",
+                (unsigned)r.length, (unsigned)r.start_seq);
+        return 7;
+    }
+
+    // Split-on-7 sanity: a contiguous run of 9 should split as (7, s) + (2, s+7).
+    std::array<bool, 32> w2{};
+    for (int i = 0; i < 9; ++i) w2[i] = true;
+    auto runs2 = net20::build_ack_runs(w2, 8);
+    if (runs2.size() != 2
+        || runs2[0].length != 7 || runs2[0].start_seq != 0
+        || runs2[1].length != 2 || runs2[1].start_seq != 7) {
+        std::fprintf(stderr, "[selftest] split-on-7 mismatch: %zu runs\n",
+            runs2.size());
+        return 7;
+    }
+
+    std::fprintf(stderr, "[selftest] PASS\n");
+    return 0;
+}
+
 int run_client(const std::string& host, std::uint16_t port,
                const std::string& name, const std::string& password,
                int duration_s)
@@ -486,6 +659,8 @@ int main(int argc, char** argv)
     bool loopback_self = false;
     bool template_paste = false;
     bool decode_ghosts = false;
+    bool send_acks = false;          // spec 20/12 — off by default
+    bool ack_selftest = false;
     std::string ghost_dump_path;
     std::string replay_path;
 
@@ -509,14 +684,19 @@ int main(int argc, char** argv)
         if (a == "--ghost-dump" && i + 1 < argc) { ghost_dump_path = argv[++i]; continue; }
         if (a == "--decode-ghosts") { decode_ghosts = true; continue; }
         if (a == "--replay" && i + 1 < argc) { replay_path = argv[++i]; continue; }
+        if (a == "--ack") { send_acks = true; continue; }
+        if (a == "--no-acks") { send_acks = false; continue; }
+        if (a == "--ack-selftest") { ack_selftest = true; continue; }
         std::fprintf(stderr, "unknown arg '%s'\n", a.c_str());
         usage(argv[0]);
         return 1;
     }
 
+    if (ack_selftest) return run_ack_selftest();
     if (!replay_path.empty()) return run_replay(replay_path);
     if (loopback_self) return run_loopback_self(duration_s);
     if (template_paste) return run_template_paste(host, port, duration_s,
-                                                  ghost_dump_path, decode_ghosts);
+                                                  ghost_dump_path, decode_ghosts,
+                                                  send_acks);
     return run_client(host, port, name, password, duration_s);
 }
