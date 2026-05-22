@@ -47,3 +47,7 @@ ImageMagick
 /conanbuildinfo.json
 /logo/logo.png
 /siege-studio/tools/install.bat
+packaging/linux/build/
+packaging/linux/linuxdeploy-*.AppImage
+packaging/linux/appimagetool-*.AppImage
+Open-Siege-*.AppImage

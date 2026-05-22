@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Open Siege
+Exec=dts-viewer
+Icon=open-siege
+Categories=Game;
+Terminal=true
+Comment=Tribes 1 asset viewer and mission runner
