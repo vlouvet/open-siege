@@ -1,12 +1,34 @@
 #include "content/net/udp_socket.hpp"
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+   using ssize_t = int;
+   using socklen_t = int;
+   static void ensure_winsock() {
+       static const int _ = []{ WSADATA w; return WSAStartup(MAKEWORD(2,2), &w); }();
+       (void)_;
+   }
+   static const char* sock_strerror() {
+       static char buf[32];
+       std::snprintf(buf, sizeof(buf), "wsa:%d", ::WSAGetLastError());
+       return buf;
+   }
+#  define close(s)    ::closesocket(static_cast<SOCKET>(s))
+#  define SOCK_WOULD_BLOCK (::WSAGetLastError() == WSAEWOULDBLOCK)
+#else
+#  include <arpa/inet.h>
+#  include <fcntl.h>
+#  include <netdb.h>
+#  include <netinet/in.h>
+#  include <sys/socket.h>
+#  include <sys/types.h>
+#  include <unistd.h>
+   static void ensure_winsock() {}
+   static const char* sock_strerror() { return std::strerror(errno); }
+#  define SOCK_WOULD_BLOCK (errno == EAGAIN || errno == EWOULDBLOCK)
+#endif
 
 #include <cerrno>
 #include <cstring>
@@ -20,8 +42,13 @@ namespace
 
 void set_nonblocking(int fd)
 {
+#if defined(_WIN32)
+    u_long mode = 1;
+    ::ioctlsocket(static_cast<SOCKET>(fd), FIONBIO, &mode);
+#else
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#endif
 }
 
 bool fill_sockaddr(const Endpoint& ep, sockaddr_in& out_sa)
@@ -98,21 +125,22 @@ void UdpSocket::close()
 
 bool UdpSocket::bind(std::uint16_t local_port)
 {
+    ensure_winsock();
     close();
     fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd_ < 0) {
-        last_error_ = std::strerror(errno);
+        last_error_ = sock_strerror();
         return false;
     }
     int reuse = 1;
-    ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
 
     sockaddr_in sa{};
     sa.sin_family = AF_INET;
     sa.sin_addr.s_addr = htonl(INADDR_ANY);
     sa.sin_port = htons(local_port);
     if (::bind(fd_, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
-        last_error_ = std::strerror(errno);
+        last_error_ = sock_strerror();
         ::close(fd_);
         fd_ = -1;
         return false;
@@ -143,7 +171,7 @@ bool UdpSocket::send_to(const Endpoint& peer, const void* data, std::size_t size
     ssize_t n = ::sendto(fd_, data, size, 0,
                          reinterpret_cast<sockaddr*>(&sa), sizeof(sa));
     if (n < 0) {
-        last_error_ = std::strerror(errno);
+        last_error_ = sock_strerror();
         return false;
     }
     last_error_.clear();
@@ -159,11 +187,11 @@ bool UdpSocket::try_recv(std::vector<std::uint8_t>& out_data, Endpoint& out_peer
     ssize_t n = ::recvfrom(fd_, buf, sizeof(buf), 0,
                            reinterpret_cast<sockaddr*>(&sa), &sl);
     if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (SOCK_WOULD_BLOCK) {
             last_error_.clear();
             return false;
         }
-        last_error_ = std::strerror(errno);
+        last_error_ = sock_strerror();
         return false;
     }
     out_data.assign(buf, buf + n);

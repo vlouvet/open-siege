@@ -1,11 +1,33 @@
 #include "content/net/master_client.hpp"
 
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+   using ssize_t = int;
+   static void ensure_winsock() {
+       static const int _ = []{ WSADATA w; return WSAStartup(MAKEWORD(2,2), &w); }();
+       (void)_;
+   }
+   static const char* sock_strerror() {
+       static char buf[32];
+       std::snprintf(buf, sizeof(buf), "wsa:%d", ::WSAGetLastError());
+       return buf;
+   }
+#  define close(s)  ::closesocket(static_cast<SOCKET>(s))
+#  ifndef EINTR
+#    define EINTR WSAEINTR
+#  endif
+#else
+#  include <arpa/inet.h>
+#  include <netdb.h>
+#  include <netinet/in.h>
+#  include <sys/socket.h>
+#  include <sys/types.h>
+#  include <unistd.h>
+   static void ensure_winsock() {}
+   static const char* sock_strerror() { return std::strerror(errno); }
+#endif
 
 #include <cerrno>
 #include <cstring>
@@ -64,6 +86,7 @@ bool parse_url(const std::string& url, ParsedUrl& out, std::string& err)
 bool tcp_connect(const std::string& host, std::uint16_t port,
                  int& out_fd, std::string& err)
 {
+    ensure_winsock();
     addrinfo hints{};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -75,12 +98,12 @@ bool tcp_connect(const std::string& host, std::uint16_t port,
     }
     int fd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (fd < 0) {
-        err = std::strerror(errno);
+        err = sock_strerror();
         freeaddrinfo(res);
         return false;
     }
     if (::connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
-        err = std::strerror(errno);
+        err = sock_strerror();
         ::close(fd);
         freeaddrinfo(res);
         return false;
@@ -97,7 +120,7 @@ bool send_all(int fd, const void* data, std::size_t n, std::string& err)
         ssize_t r = ::send(fd, p, n, 0);
         if (r < 0) {
             if (errno == EINTR) continue;
-            err = std::strerror(errno);
+            err = sock_strerror();
             return false;
         }
         if (r == 0) {
