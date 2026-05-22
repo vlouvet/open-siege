@@ -88,7 +88,7 @@ foreach ($dll in $deps) {
         Write-Host "  bundling $dll"
         Copy-Item $src $StageDir
     } else {
-        Write-Warning "  NOT FOUND in $Ucrt64Bin: $dll (skipping)"
+        Write-Warning "  NOT FOUND in ${Ucrt64Bin}: $dll (skipping)"
     }
 }
 
