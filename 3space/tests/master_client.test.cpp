@@ -8,6 +8,7 @@
 
 #include "content/net/master_client.hpp"
 
+#if !defined(_WIN32)
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -16,9 +17,11 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#endif
 
 using namespace studio::content::net;
 
+#if !defined(_WIN32)
 namespace {
 
 struct MasterServerProc
@@ -100,9 +103,14 @@ std::unique_ptr<MasterServerProc> spawn_master(std::uint16_t port)
 }
 
 } // anonymous namespace
+#endif // !_WIN32
 
 TEST_CASE("MasterClient: heartbeat + fetch round-trip", "[net][master]")
 {
+#if defined(_WIN32)
+    WARN("MasterClient integration test skipped on Windows (no fork/exec)");
+    return;
+#else
     const std::uint16_t port = pick_port();
     auto srv = spawn_master(port);
     if (!srv) {
@@ -137,10 +145,15 @@ TEST_CASE("MasterClient: heartbeat + fetch round-trip", "[net][master]")
     REQUIRE(resp->servers[0].name == "Test Outpost");
     REQUIRE(resp->servers[0].players == 8);
     REQUIRE(resp->servers[0].map == "Recess");
+#endif // !_WIN32
 }
 
 TEST_CASE("MasterClient: deregister removes entry", "[net][master]")
 {
+#if defined(_WIN32)
+    WARN("MasterClient integration test skipped on Windows (no fork/exec)");
+    return;
+#else
     const std::uint16_t port = pick_port();
     auto srv = spawn_master(port);
     if (!srv) return;
@@ -159,4 +172,5 @@ TEST_CASE("MasterClient: deregister removes entry", "[net][master]")
     auto resp = mc.fetch_server_list(url);
     REQUIRE(resp.has_value());
     REQUIRE(resp->servers.empty());
+#endif // !_WIN32
 }
