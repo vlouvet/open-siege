@@ -275,9 +275,11 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
     } else {
         pkt_vec.assign(std::begin(kRealRequestConnectTemplate),
                        std::end(kRealRequestConnectTemplate));
-        pkt_vec[7] = static_cast<std::uint8_t>(rd() & 0xff);
-        pkt_vec[8] = static_cast<std::uint8_t>(rd() & 0xff);
-        pkt_vec[9] = static_cast<std::uint8_t>(rd() & 0xff);
+        // Spec 20/23 — Groove nonce is at offsets 10..12 (not 7..9
+        // like vanilla); bytes 2..9 + 27..44 are auth-protected.
+        pkt_vec[10] = static_cast<std::uint8_t>(rd() & 0xff);
+        pkt_vec[11] = static_cast<std::uint8_t>(rd() & 0xff);
+        pkt_vec[12] = static_cast<std::uint8_t>(rd() & 0xff);
     }
     const auto dst = resolve_endpoint(host, port);
     if (!dst) {
@@ -293,9 +295,14 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
     std::fprintf(stderr, "[net-client/live] sent RequestConnect (%zuB) to %s:%u\n",
         pkt_vec.size(), host.c_str(), port);
 
-    // Phase 1: AcceptConnect.
+    // Phase 1: AcceptConnect. Spec 20/23 — capture the server-chosen
+    // connect-handle parity bit (bit 1 of reply byte 0) so the phase-2
+    // ack + downstream pure-acks echo it back. The hardcoded
+    // parity=1 from kFirstDataPacket only works in sessions where the
+    // server happens to pick parity=1.
     const std::uint64_t accept_deadline = now_ms() + 3000;
     bool got_accept = false;
+    bool server_connect_parity = false;
     const std::size_t accept_len = use_groove ? 18 : 16;
     while (now_ms() < accept_deadline
            && !stop_requested_.load(std::memory_order_acquire)) {
@@ -303,10 +310,12 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
         Endpoint src;
         if (sock.try_recv(buf, src)) {
             if (buf.size() == accept_len) {
+                server_connect_parity = (buf[0] & 0x02) != 0;
                 got_accept = true;
                 std::fprintf(stderr,
-                    "[net-client/live] phase-1 AcceptConnect ok (%zuB)\n",
-                    buf.size());
+                    "[net-client/live] phase-1 AcceptConnect ok (%zuB, "
+                    "server parity=%d)\n",
+                    buf.size(), server_connect_parity ? 1 : 0);
             } else {
                 std::string reason((const char*)(buf.data() + 8),
                                    buf.size() - 8);
@@ -325,14 +334,34 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
         return;
     }
 
-    // Phase 2: first DataPacket.
-    if (!sock.send_to(*dst, kFirstDataPacket, sizeof(kFirstDataPacket))) {
+    // Phase 2: first DataPacket — 4-byte pure-ack at send_seq=1 with
+    // the server's parity. Spec 20/23.
+    std::uint8_t phase2_packet[4];
+    {
+        net20::BitWriter w;
+        w.write_flag(true);
+        w.write_flag(server_connect_parity);
+        w.write_bits(1u, 9);
+        w.write_bits(1u, 5);
+        w.write_bits(1u, 3);
+        w.write_bits(1u, 5);
+        w.write_bits(0u, 3);
+        w.write_bits(16u, 5);
+        if (w.bytes.size() == 4) {
+            std::memcpy(phase2_packet, w.bytes.data(), 4);
+        } else {
+            set_last_error("phase-2 encoder bug");
+            running_.store(false, std::memory_order_release);
+            return;
+        }
+    }
+    if (!sock.send_to(*dst, phase2_packet, sizeof(phase2_packet))) {
         set_last_error("phase-2 send failed: " + sock.last_error());
         running_.store(false, std::memory_order_release);
         return;
     }
 
-    const bool connect_parity = (kFirstDataPacket[0] & 0x02) != 0;
+    const bool connect_parity = server_connect_parity;
     const std::uint16_t our_send_seq = 1;
     const std::uint16_t ready_send_seq = 2;
     bool ready_sent = false;
@@ -372,7 +401,10 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
             static_cast<std::uint8_t>(ack.highest_recv_mod32 & 0x1Fu);
         in.ack_runs = net20::build_ack_runs(ack.received, ack.highest_recv_mod32);
         in.arg_byte = 'A';
-        const auto wire = net20::encode_client_ready(in);
+        // Spec 20/23 — use verbatim body bytes (Huffman + input PSC
+        // payload undecoded, so we replay the captured working
+        // session's 55 body bytes after our own VC header).
+        const auto wire = net20::encode_client_ready_verbatim(in);
         if (!sock.send_to(*dst, wire.data(), wire.size())) return;
         ready_sent = true;
         ack.clear_pending();
