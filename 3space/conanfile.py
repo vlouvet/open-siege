@@ -28,11 +28,15 @@ class LocalConanFile(ConanFile):
         self.options["boost"].bzip2 = False
         self.options["boost"].zlib = False
         self.options["boost"].numa = False
-        # On Windows: use win32 CNG for libzip crypto (no external openssl needed).
-        # openssl/1.1.1o fails to build against GCC 15 MinGW-w64 headers.
-        # macOS/Linux keep their defaults (openssl via Conan or system).
+        # On Windows: use win32 CNG for libzip crypto; disable optional
+        # compression formats whose Conan recipes use autoconf/make and fail
+        # in Conan's bundled MSYS2 native environment (_beginthreadex missing).
+        # Tribes VOL files only use zlib, so bzip2/lzma/zstd are unneeded.
         if self.settings.os == "Windows":
             self.options["libzip"].crypto = "win32"
+            self.options["libzip"].with_bzip2 = False
+            self.options["libzip"].with_lzma = False
+            self.options["libzip"].with_zstd = False
 
     def build(self):
         cmake = CMake(self)
