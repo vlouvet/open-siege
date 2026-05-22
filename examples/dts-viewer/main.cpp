@@ -2756,6 +2756,12 @@ int main(int argc, char** argv)
                     glm::vec3(0.95f, 0.97f, 1.0f), 4.0f);
             }
 
+            // Spec 13/07 — text overlays on the HUD route through ImGui's
+            // foreground draw list, which only accepts AddText calls while
+            // a frame is in progress. Bracket the HUD block with
+            // imgui_begin_frame so text_draw() lands in the live frame;
+            // imgui_end_frame runs after to flush both menus and HUD text.
+            dts_viewer::imgui_begin_frame();
             if (hud.visible) {
                 dts_viewer::hud2d_render(pstate, ptune, w, h);
                 dts_viewer::hud2d_render_compass(
@@ -2787,10 +2793,8 @@ int main(int argc, char** argv)
                 }
             }
 
-            // Spec 25/01 — ImGui pass after the 3D world + 2D HUD, before
-            // SwapWindow. begin/end together so the build + render pair
-            // happens in one frame's worth of state.
-            dts_viewer::imgui_begin_frame();
+            // Spec 25/01 — flush the ImGui frame (begin lives up above with
+            // the HUD block so spec 13/07 text_draw() lands in this frame).
             dts_viewer::imgui_end_frame();
 
             SDL_GL_SwapWindow(win);
