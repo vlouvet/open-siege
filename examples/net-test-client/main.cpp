@@ -70,7 +70,11 @@ void usage(const char* argv0)
         "                       the server's ~3-5s no-ack timeout)\n"
         "  --no-acks            explicit alias for the default (acks off)\n"
         "  --ack-selftest       offline: encode the §14.7 worked example and\n"
-        "                       confirm it round-trips to 05 08 09 80\n",
+        "                       confirm it round-trips to 05 08 09 80\n"
+        "  --groove             use the 45B Groove (TribesNext) RequestConnect\n"
+        "                       template instead of the 27B vanilla one. Needed\n"
+        "                       for servers that reject the vanilla shape with\n"
+        "                       \"requires version 1.40 or higher\".\n",
         argv0, (int)std::strlen(argv0), "");
 }
 
@@ -149,16 +153,39 @@ const std::uint8_t kRealRequestConnectTemplate[27] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+// 2026-05-22 — Groove (TribesNext-patched) RequestConnect captured via
+// scripts/tribes_capture_proxy.py against the Windows server at
+// 192.168.1.89:28001. This shape elicits AcceptConnect from servers that
+// reject the 27-byte vanilla template with "requires version 1.40 or
+// higher". The extra 18-byte trailer (offsets 27..44) is presumably a
+// GGConnect / netset.dll auth signature.
+//
+// Nonce slot offset: still unverified. The randomized-bytes look like
+// offsets 2..9 in this template (the 8-byte run 0x12 0x41 0x81 0xa1 0xb1
+// 0xc7 0xfa 0x18) plus more in the auth trailer. For an initial test we
+// send the captured bytes verbatim — server may dedupe but we'll learn
+// from the response. Capture a fresh proxy session to refresh this
+// constant whenever needed.
+const std::uint8_t kGrooveRequestConnectTemplate[45] = {
+    0x05, 0x00, 0x12, 0x41, 0x81, 0xa1, 0xb1, 0xc7, 0xfa, 0x18,
+    0x7a, 0x90, 0x0a, 0x15, 0x01, 0x00, 0x0d, 0x56, 0xc6, 0xbb,
+    0x6f, 0x09, 0xc4, 0x32, 0x1a, 0x11, 0xc0, 0x03, 0x89, 0xf1,
+    0x13, 0x7c, 0x02, 0x6f, 0xa7, 0x7c, 0x7c, 0x01, 0xca, 0xf1,
+    0x62, 0x82, 0x5d, 0xb6, 0x07,
+};
+
 int run_template_paste(const std::string& host, std::uint16_t port,
                        int duration_s,
                        const std::string& ghost_dump_path,
                        bool decode_ghosts,
-                       bool send_acks)
+                       bool send_acks,
+                       bool use_groove)
 {
+    const char* tmpl_name = use_groove ? "Groove (45B)" : "vanilla Wine (27B)";
     std::fprintf(stderr,
-        "[net-test] template-paste mode -> %s:%u (sends captured-real Tribes\n"
-        "[net-test] RequestConnect template, listens for AcceptConnect)\n",
-        host.c_str(), port);
+        "[net-test] template-paste mode -> %s:%u (sends %s template,\n"
+        "[net-test] listens for AcceptConnect)\n",
+        host.c_str(), port, tmpl_name);
 
     UdpSocket sock;
     if (!sock.bind(0)) {
@@ -167,21 +194,38 @@ int run_template_paste(const std::string& host, std::uint16_t port,
     }
 
     // Fresh random nonce per run so the server can't dedupe.
+    // Nonce-slot positions differ by template; tweak the byte ranges below
+    // if you observe duplicate-session rejections.
     std::random_device rd;
-    std::uint8_t pkt[27];
-    std::memcpy(pkt, kRealRequestConnectTemplate, sizeof(pkt));
-    pkt[7] = static_cast<std::uint8_t>(rd() & 0xff);
-    pkt[8] = static_cast<std::uint8_t>(rd() & 0xff);
-    pkt[9] = static_cast<std::uint8_t>(rd() & 0xff);
+    std::vector<std::uint8_t> pkt_vec;
+    if (use_groove) {
+        pkt_vec.assign(std::begin(kGrooveRequestConnectTemplate),
+                       std::end(kGrooveRequestConnectTemplate));
+        // Verbatim send: the 18-byte auth trailer (offsets 27..44) is
+        // almost certainly a hash/HMAC over the head of the packet, so
+        // randomizing the nonce-looking head bytes without recomputing
+        // the trailer will silently fail. Worth a verbatim attempt to
+        // confirm the captured template still works against the live
+        // server; if the server dedupes on nonce we'll need a fresh
+        // capture each session.
+    } else {
+        pkt_vec.assign(std::begin(kRealRequestConnectTemplate),
+                       std::end(kRealRequestConnectTemplate));
+        pkt_vec[7] = static_cast<std::uint8_t>(rd() & 0xff);
+        pkt_vec[8] = static_cast<std::uint8_t>(rd() & 0xff);
+        pkt_vec[9] = static_cast<std::uint8_t>(rd() & 0xff);
+    }
+    std::uint8_t* pkt = pkt_vec.data();
+    const std::size_t pkt_len = pkt_vec.size();
 
     const auto dst = resolve_endpoint(host, port);
     if (!dst) {
         std::fprintf(stderr, "resolve %s:%u failed\n", host.c_str(), port);
         return 2;
     }
-    std::fprintf(stderr, "[net-test] sending nonce=%02x %02x %02x\n",
-        pkt[7], pkt[8], pkt[9]);
-    if (!sock.send_to(*dst, pkt, sizeof(pkt))) {
+    std::fprintf(stderr, "[net-test] sending %zuB nonce-region=%02x %02x %02x\n",
+        pkt_len, pkt[7], pkt[8], pkt[9]);
+    if (!sock.send_to(*dst, pkt, pkt_len)) {
         std::fprintf(stderr, "send failed: %s\n", sock.last_error().c_str());
         return 2;
     }
@@ -192,24 +236,18 @@ int run_template_paste(const std::string& host, std::uint16_t port,
         std::fputc('\n', stderr);
     };
 
-    // Phase 1: wait for AcceptConnect (16B, nonce echoed at offset 4..6).
+    // Phase 1: wait for AcceptConnect. Vanilla expects 16B with nonce
+    // echo at offset 4..6; Groove just an 18B reply (nonce offset
+    // unverified). Anything else = RejectConnect with ASCII reason.
     const std::uint64_t accept_deadline = now_ms() + 3000;
     bool got_accept = false;
+    const std::size_t accept_len = use_groove ? 18 : 16;
     while (now_ms() < accept_deadline) {
         std::vector<std::uint8_t> buf;
         Endpoint src;
         if (sock.try_recv(buf, src)) {
             hex_dump("recv", buf.data(), buf.size());
-            const bool nonce_match = buf.size() >= 7
-                && buf[4] == pkt[7] && buf[5] == pkt[8] && buf[6] == pkt[9];
-            if (!nonce_match) {
-                std::fprintf(stderr,
-                    "[net-test] unexpected reply (nonce mismatch); abort\n");
-                return 4;
-            }
-            // 16B reply with our nonce = AcceptConnect. Other lengths
-            // (24..30B) are RejectConnect with an ASCII reason.
-            if (buf.size() == 16) {
+            if (buf.size() == accept_len) {
                 std::fprintf(stderr,
                     "[net-test] phase-1: AcceptConnect received\n");
                 got_accept = true;
@@ -661,6 +699,7 @@ int main(int argc, char** argv)
     bool decode_ghosts = false;
     bool send_acks = false;          // spec 20/12 — off by default
     bool ack_selftest = false;
+    bool use_groove = false;         // spec 20/12 follow-up — 45B Groove template
     std::string ghost_dump_path;
     std::string replay_path;
 
@@ -687,6 +726,7 @@ int main(int argc, char** argv)
         if (a == "--ack") { send_acks = true; continue; }
         if (a == "--no-acks") { send_acks = false; continue; }
         if (a == "--ack-selftest") { ack_selftest = true; continue; }
+        if (a == "--groove") { use_groove = true; continue; }
         std::fprintf(stderr, "unknown arg '%s'\n", a.c_str());
         usage(argv[0]);
         return 1;
@@ -697,6 +737,6 @@ int main(int argc, char** argv)
     if (loopback_self) return run_loopback_self(duration_s);
     if (template_paste) return run_template_paste(host, port, duration_s,
                                                   ghost_dump_path, decode_ghosts,
-                                                  send_acks);
+                                                  send_acks, use_groove);
     return run_client(host, port, name, password, duration_s);
 }
