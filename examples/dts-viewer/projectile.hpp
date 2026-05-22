@@ -207,12 +207,21 @@ bool projectile_fire(
 // applies splash damage / impulse to `player` when the explosion is
 // within range.  The caller passes the player pointer because v1 has a
 // single player; multi-entity damage routing lands when Track 14 lands.
+//
+// Spec 12/08 — optional generator-damage routing. When `generators`
+// is non-null, every detonation within splash radius applies damage
+// via `apply_damage_generator`; `on_generator_destroyed` is invoked
+// on the false->true transition (wired by main.cpp to fire the
+// `Generator::onDestroyed` script callback).
+struct GeneratorState;
 void projectiles_update(
-    ProjectileSystem&        sys,
-    const ProjectileTuning&  t,
-    const HeightSampler&     terrain,
-    PlayerState&             player,
-    float                    dt);
+    ProjectileSystem&                       sys,
+    const ProjectileTuning&                 t,
+    const HeightSampler&                    terrain,
+    PlayerState&                            player,
+    float                                   dt,
+    std::vector<GeneratorState>*            generators = nullptr,
+    void (*on_generator_destroyed)(const GeneratorState&) = nullptr);
 
 } // namespace dts_viewer
 

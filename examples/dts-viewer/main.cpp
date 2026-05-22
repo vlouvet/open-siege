@@ -2782,7 +2782,9 @@ int main(int argc, char** argv)
                     // Spec 17/02 — drain script schedule() queue.
                     dts_viewer::mission_tick(mctx, kFixedStep);
                     dts_viewer::projectiles_update(
-                        proj_sys, proj_tune, height_sampler, pstate, kFixedStep);
+                        proj_sys, proj_tune, height_sampler, pstate, kFixedStep,
+                        &ent_generators,
+                        &on_generator_destroyed_callback);
                     // Spec 12/07 — beam-weapon ticks. Only one beam type
                     // can be "held" at a time (the active weapon); the
                     // tick calls are no-ops when fire_held is false.

@@ -1,5 +1,6 @@
 #include "projectile.hpp"
 #include "player_controller.hpp"
+#include "entity_renderer.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -135,11 +136,13 @@ bool projectile_fire(
 }
 
 void projectiles_update(
-    ProjectileSystem&        sys,
-    const ProjectileTuning&  t,
-    const HeightSampler&     terrain,
-    PlayerState&             player,
-    float                    dt)
+    ProjectileSystem&                       sys,
+    const ProjectileTuning&                 t,
+    const HeightSampler&                    terrain,
+    PlayerState&                            player,
+    float                                   dt,
+    std::vector<GeneratorState>*            generators,
+    void (*on_generator_destroyed)(const GeneratorState&))
 {
     sys.cooldown_disc    = std::max(0.0f, sys.cooldown_disc    - dt);
     sys.cooldown_grenade = std::max(0.0f, sys.cooldown_grenade - dt);
@@ -224,6 +227,23 @@ void projectiles_update(
             }
             apply_splash(player, p.pos, r, dmg, imp,
                 p.owner_id, t.disc_self_dmg_coef);
+            // Spec 12/08 — route the same blast into nearby generators.
+            if (generators && r > 0.0f) {
+                for (auto& gn : *generators) {
+                    if (gn.destroyed) continue;
+                    // GeneratorState::xf is in Tribes Z-up coords; convert
+                    // to GL Y-up for the splash distance check.
+                    glm::vec3 gp{
+                        gn.xf.position[0],
+                        gn.xf.position[2],
+                        gn.xf.position[1] };
+                    float dist = glm::length(p.pos - gp);
+                    if (dist >= r) continue;
+                    float falloff = 1.0f - (dist / r);
+                    apply_damage_generator(gn, dmg * falloff,
+                        on_generator_destroyed);
+                }
+            }
             p.alive = false;
         }
     }
