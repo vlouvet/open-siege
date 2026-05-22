@@ -37,6 +37,7 @@ set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
 
 add_executable(dts-viewer
     main.cpp
+    asset_resolver.cpp
     interior_renderer.cpp
     mission_loader.cpp
     mission_bounds.cpp

@@ -68,6 +68,7 @@
 #include "inspector.hpp"
 #include "open_url.hpp"
 #include "help_menu.hpp"
+#include "asset_resolver.hpp"
 #include "mis_axes.hpp"
 #include "content/interior/interior_set.hpp"
 #include <set>
@@ -1484,22 +1485,52 @@ static bool load_terrain_from_ted(
 
 int main(int argc, char** argv)
 {
+    // Spec 23/03 — strip --tribes-dir before any other arg parsing so it
+    // works in every mode.
+    dts_viewer::stripTribesDir(argc, argv);
+
+    // When launched with no positional arguments, try the BYO asset resolver
+    // to find the Tribes install dir, then launch the mission viewer.
+    static std::string s_tribes_dir_storage; // stable backing for injected argv
+    static std::string s_default_vol_storage;
+    static char* s_injected[4];
     if (argc < 2) {
-        std::fprintf(stderr,
-            "usage: %s <path-to-vol> [dts-substring] [--grid N] [--screenshot path.ppm]\n"
-            "       %s <path-to-vol> --dump-bmp <bmp-substring>\n"
-            "       %s <path-to-vol> --dump-rgba <bmp-substring> <ppl-substring>\n"
-            "       %s --mission <path-to-.ted> [--screenshot path.ppm]\n"
-            "       %s --run-script <path-to-.cs>\n"
-            "  e.g. %s tribes-game/base/Entities.vol chainturret\n"
-            "       %s tribes-game/base/Entities.vol larmor --grid 4\n"
-            "       %s tribes-game/base/Entities.vol --dump-bmp ammo\n"
-            "       %s tribes-game/base/Entities.vol --dump-rgba ammo Shell.ppl\n"
-            "       %s --mission tribes-game/base/missions/1_Welcome.ted\n"
-            "       %s --run-script scripts/hello.cs\n",
-            argv[0], argv[0], argv[0], argv[0], argv[0],
-            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
-        return 1;
+        fs::path tribes = dts_viewer::resolveTribesDir();
+        if (tribes.empty()) {
+            std::fprintf(stderr,
+                "usage: %s <path-to-vol> [dts-substring] [--grid N] [--screenshot path.ppm]\n"
+                "       %s --mission <path-to-.ted> [--screenshot path.ppm]\n"
+                "       %s --run-script <path-to-.cs>\n"
+                "       %s --tribes-dir <path>   (set + cache Tribes install)\n",
+                argv[0], argv[0], argv[0], argv[0]);
+            return 1;
+        }
+        // Find first .ted mission and launch in mission mode.
+        fs::path missions_dir = tribes / "base" / "missions";
+        fs::path first_ted;
+        if (fs::is_directory(missions_dir)) {
+            for (const auto& e : fs::directory_iterator(missions_dir)) {
+                if (e.path().extension() == ".ted") { first_ted = e.path(); break; }
+            }
+        }
+        if (!first_ted.empty()) {
+            s_tribes_dir_storage = tribes.string();
+            s_default_vol_storage = first_ted.string();
+            s_injected[0] = argv[0];
+            s_injected[1] = const_cast<char*>("--mission");
+            s_injected[2] = s_default_vol_storage.data();
+            s_injected[3] = nullptr;
+            argc = 3;
+            argv = s_injected;
+        } else {
+            // No missions found — fall through to VOL mode with Entities.vol.
+            s_default_vol_storage = (tribes / "base" / "Entities.vol").string();
+            s_injected[0] = argv[0];
+            s_injected[1] = s_default_vol_storage.data();
+            s_injected[2] = nullptr;
+            argc = 2;
+            argv = s_injected;
+        }
     }
 
     // Spec 17/06 — global `--verbose-cscript` flag bypasses the
