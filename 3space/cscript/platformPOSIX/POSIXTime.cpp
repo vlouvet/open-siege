@@ -28,8 +28,13 @@
 #include <errno.h>
 #include <time.h>
 #include <sys/time.h>
-#include <sys/resource.h>
 #include <unistd.h>
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#else
+#  include <sys/resource.h>
+#endif
 
 static U32 sgCurrentTime = 0;
 
@@ -102,12 +107,17 @@ void Platform::fileToLocalTime(const FileTime & ft, LocalTime * lt)
    if(!lt)
       return;
       
+#if defined(_WIN32)
+   time_t long_time = ((time_t)ft.v2 << 32) | ft.v1;
+#else
    time_t long_time = ft;
-
+#endif
    struct tm systime;
-
-   /// Convert to local time, thread safe.
+#if defined(_WIN32)
+   localtime_s( &systime, &long_time );
+#else
    localtime_r( &long_time, &systime );
+#endif
    
    /// Fill the return struct
    lt->sec      = systime.tm_sec;
@@ -157,7 +167,10 @@ U32 x86UNIXGetTickCount()
 
 void Platform::sleep(U32 ms)
 {
-	// note: this will overflow if you want to sleep for more than 49 days. just so ye know.
-	usleep( ms * 1000 );
+#if defined(_WIN32)
+   Sleep(ms);
+#else
+   usleep( ms * 1000 );
+#endif
 }
 #endif

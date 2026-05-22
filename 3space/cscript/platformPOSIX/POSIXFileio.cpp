@@ -49,11 +49,10 @@
 #if defined(__APPLE__)
 #include <sys/syslimits.h>
 #endif
+#include <utime.h>
 #if defined(_WIN32)
 #  include <io.h>
 #  include <direct.h>
-#else
-#  include <utime.h>
 #endif
 
 /* these are for reading directors, getting stats, etc. */
