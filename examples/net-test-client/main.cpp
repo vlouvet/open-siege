@@ -164,36 +164,85 @@ int run_template_paste(const std::string& host, std::uint16_t port,
         return 2;
     }
 
-    const std::uint64_t deadline = now_ms() + 1000ULL * duration_s;
-    bool saw_reply = false;
-    while (now_ms() < deadline) {
+    auto hex_dump = [](const char* label, const std::uint8_t* p, std::size_t n) {
+        std::fprintf(stderr, "[net-test] %s (%zuB): ", label, n);
+        for (std::size_t i = 0; i < n; ++i) std::fprintf(stderr, "%02x", p[i]);
+        std::fputc('\n', stderr);
+    };
+
+    // Phase 1: wait for AcceptConnect (16B, nonce echoed at offset 4..6).
+    const std::uint64_t accept_deadline = now_ms() + 3000;
+    bool got_accept = false;
+    while (now_ms() < accept_deadline) {
         std::vector<std::uint8_t> buf;
         Endpoint src;
         if (sock.try_recv(buf, src)) {
-            saw_reply = true;
-            std::fprintf(stderr, "[net-test] reply: %zu bytes from %s:%u\n",
-                buf.size(), src.host.c_str(), src.port);
-            std::fputs("[net-test] hex: ", stderr);
-            for (auto b : buf) std::fprintf(stderr, "%02x", b);
-            std::fputc('\n', stderr);
-            // Hunt for our nonce in the reply.
-            for (std::size_t i = 0; i + 3 <= buf.size(); ++i) {
-                if (buf[i] == pkt[7] && buf[i+1] == pkt[8] && buf[i+2] == pkt[9]) {
-                    std::fprintf(stderr,
-                        "[net-test] nonce echoed at reply offset %zu\n", i);
-                    break;
-                }
+            hex_dump("recv", buf.data(), buf.size());
+            const bool nonce_match = buf.size() >= 7
+                && buf[4] == pkt[7] && buf[5] == pkt[8] && buf[6] == pkt[9];
+            if (!nonce_match) {
+                std::fprintf(stderr,
+                    "[net-test] unexpected reply (nonce mismatch); abort\n");
+                return 4;
+            }
+            // 16B reply with our nonce = AcceptConnect. Other lengths
+            // (24..30B) are RejectConnect with an ASCII reason.
+            if (buf.size() == 16) {
+                std::fprintf(stderr,
+                    "[net-test] phase-1: AcceptConnect received\n");
+                got_accept = true;
+            } else {
+                // ASCII reason starts after the 8-byte server header.
+                std::string reason((const char*)(buf.data() + 8),
+                    buf.size() - 8);
+                while (!reason.empty() && reason.back() == '\0') reason.pop_back();
+                std::fprintf(stderr,
+                    "[net-test] phase-1: RejectConnect — \"%s\"\n",
+                    reason.c_str());
+                return 3;
             }
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    if (!saw_reply) {
-        std::fprintf(stderr, "[net-test] no reply within %ds — server silent\n",
-            duration_s);
+    if (!got_accept) {
+        std::fprintf(stderr, "[net-test] phase-1: no AcceptConnect within 3s\n");
         return 4;
     }
-    return 0;
+
+    // Phase 2: send the first DataPacket. This is the implicit "handshake
+    // complete" signal. Bytes captured from a live session were 07 08 09 80;
+    // re-using them here as a literal until we decode the bit layout.
+    static const std::uint8_t kFirstDataPacket[4] = { 0x07, 0x08, 0x09, 0x80 };
+    if (!sock.send_to(*dst, kFirstDataPacket, sizeof(kFirstDataPacket))) {
+        std::fprintf(stderr, "[net-test] phase-2: send failed: %s\n",
+            sock.last_error().c_str());
+        return 2;
+    }
+    hex_dump("phase-2 send", kFirstDataPacket, sizeof(kFirstDataPacket));
+
+    // Phase 3: server should now start streaming ghost data. We just count
+    // how many further packets arrive in the remaining wall-time budget.
+    int ghost_packets = 0;
+    std::size_t ghost_bytes = 0;
+    const std::uint64_t deadline = now_ms() + 1000ULL * duration_s;
+    while (now_ms() < deadline) {
+        std::vector<std::uint8_t> buf;
+        Endpoint src;
+        if (sock.try_recv(buf, src)) {
+            ghost_packets += 1;
+            ghost_bytes += buf.size();
+            if (ghost_packets <= 3) {
+                hex_dump("ghost", buf.data(), std::min<std::size_t>(buf.size(), 32));
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    std::fprintf(stderr,
+        "[net-test] phase-3: %d ghost packets, %zu bytes total\n",
+        ghost_packets, ghost_bytes);
+    return ghost_packets > 0 ? 0 : 5;
 }
 
 int run_client(const std::string& host, std::uint16_t port,
