@@ -181,7 +181,7 @@ bool http_request(const std::string& url,
         return false;
     }
     const std::string resp = recv_all(fd);
-    ::close(fd);
+    sock_close_fd(fd);
 
     // Parse status line + headers + body.
     const auto crlf2 = resp.find("\r\n\r\n");

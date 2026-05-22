@@ -168,8 +168,8 @@ bool UdpSocket::send_to(const Endpoint& peer, const void* data, std::size_t size
         last_error_ = "address resolution failed";
         return false;
     }
-    ssize_t n = ::sendto(fd_, data, size, 0,
-                         reinterpret_cast<sockaddr*>(&sa), sizeof(sa));
+    ssize_t n = ::sendto(fd_, static_cast<const char*>(data), static_cast<int>(size), 0,
+                         reinterpret_cast<sockaddr*>(&sa), static_cast<int>(sizeof(sa)));
     if (n < 0) {
         last_error_ = sock_strerror();
         return false;
@@ -184,7 +184,7 @@ bool UdpSocket::try_recv(std::vector<std::uint8_t>& out_data, Endpoint& out_peer
     std::uint8_t buf[2048];
     sockaddr_in sa{};
     socklen_t sl = sizeof(sa);
-    ssize_t n = ::recvfrom(fd_, buf, sizeof(buf), 0,
+    ssize_t n = ::recvfrom(fd_, reinterpret_cast<char*>(buf), static_cast<int>(sizeof(buf)), 0,
                            reinterpret_cast<sockaddr*>(&sa), &sl);
     if (n < 0) {
         if (SOCK_WOULD_BLOCK) {
