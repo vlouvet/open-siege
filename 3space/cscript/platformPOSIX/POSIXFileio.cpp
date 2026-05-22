@@ -848,14 +848,21 @@ static bool GetFileTimes(const char *filePath, FileTime *createTime, FileTime *m
 
     if(createTime)
     {
-        // no where does SysV/BSD UNIX keep a record of a file's
-        // creation time.  instead of creation time I'll just use
-        // changed time for now.
+#if defined(_WIN32)
+        createTime->v1 = (U32)((U64)fStat.st_ctime & 0xFFFFFFFFu);
+        createTime->v2 = (U32)(((U64)fStat.st_ctime >> 32) & 0xFFFFFFFFu);
+#else
         *createTime = fStat.st_ctime;
+#endif
     }
     if(modifyTime)
     {
+#if defined(_WIN32)
+        modifyTime->v1 = (U32)((U64)fStat.st_mtime & 0xFFFFFFFFu);
+        modifyTime->v2 = (U32)(((U64)fStat.st_mtime >> 32) & 0xFFFFFFFFu);
+#else
         *modifyTime = fStat.st_mtime;
+#endif
     }
 
     return true;
@@ -1138,7 +1145,12 @@ bool Platform::fileTimeToString(FileTime * time, char * string, U32 strLen)
     if(!time || !string)
         return(false);
 
+#if defined(_WIN32)
+    U64 t64 = ((U64)time->v2 << 32) | time->v1;
+    dSprintf(string, strLen, "%llu", (unsigned long long)t64);
+#else
     dSprintf(string, strLen, "%ld", *time);
+#endif
     return(true);
 }
 
@@ -1147,7 +1159,13 @@ bool Platform::stringToFileTime(const char * string, FileTime * time)
     if(!time || !string)
         return(false);
 
+#if defined(_WIN32)
+    U64 t64 = (U64)dAtoi(string);
+    time->v1 = (U32)(t64 & 0xFFFFFFFFu);
+    time->v2 = (U32)(t64 >> 32);
+#else
     *time = dAtoi(string);
+#endif
 
     return(true);
 }
