@@ -17,7 +17,7 @@
 namespace dts_viewer
 {
 
-constexpr std::size_t kMaxWeaponSlots = 5;
+constexpr std::size_t kMaxWeaponSlots = 8;
 
 struct WeaponState
 {

@@ -8,21 +8,32 @@ namespace dts_viewer
 Inventory default_loadout()
 {
     Inventory inv;
-    // Slot 0: Disc (semi-auto)
+    // Slot 0: Blaster (spec 12/07) — energy bolt, plentiful ammo
     inv.weapons[0] = WeaponState{
-        ProjType::Disc, 25, 25, 1.2f, 0.0f, false, true };
-    // Slot 1: Chain (full-auto)
+        ProjType::Blaster, 100, 100, 0.18f, 0.0f, true, true };
+    // Slot 1: Disc (semi-auto)
     inv.weapons[1] = WeaponState{
-        ProjType::ChainBullet, 200, 200, 0.10f, 0.0f, true, true };
-    // Slot 2: Grenade
+        ProjType::Disc, 25, 25, 1.2f, 0.0f, false, true };
+    // Slot 2: Chain (full-auto)
     inv.weapons[2] = WeaponState{
-        ProjType::Grenade, 12, 12, 1.0f, 0.0f, false, true };
-    // Slot 3: Plasma (spec 12/06)
+        ProjType::ChainBullet, 200, 200, 0.10f, 0.0f, true, true };
+    // Slot 3: Grenade
     inv.weapons[3] = WeaponState{
-        ProjType::Plasma, 60, 60, 0.25f, 0.0f, true, true };
-    // Slot 4: Mortar (spec 12/06)
+        ProjType::Grenade, 12, 12, 1.0f, 0.0f, false, true };
+    // Slot 4: Plasma (spec 12/06)
     inv.weapons[4] = WeaponState{
+        ProjType::Plasma, 60, 60, 0.25f, 0.0f, true, true };
+    // Slot 5: Mortar (spec 12/06)
+    inv.weapons[5] = WeaponState{
         ProjType::Mortar, 8, 8, 3.0f, 0.0f, false, true };
+    // Slot 6: ELF (spec 12/07) — beam weapon, drains energy not ammo.
+    // max_ammo=0 + ammo=1 so the firing gate (ammo > 0) lets us select
+    // the slot; the actual gate is the energy pool inside elf_tick.
+    inv.weapons[6] = WeaponState{
+        ProjType::ELF, 1, 1, 0.0f, 0.0f, true, true };
+    // Slot 7: Laser (TargetLaser, spec 12/07) — charge-up release
+    inv.weapons[7] = WeaponState{
+        ProjType::Laser, 1, 1, 0.0f, 0.0f, false, true };
     inv.active_slot = 0;
     return inv;
 }

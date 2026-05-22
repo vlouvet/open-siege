@@ -2301,6 +2301,18 @@ int main(int argc, char** argv)
                             dts_viewer::select_weapon(pstate.inventory, 4);
                             std::fprintf(stderr, "weapon: slot 5\n");
                         }
+                        if (ev.key.keysym.sym == SDLK_6) {
+                            dts_viewer::select_weapon(pstate.inventory, 5);
+                            std::fprintf(stderr, "weapon: slot 6\n");
+                        }
+                        if (ev.key.keysym.sym == SDLK_7) {
+                            dts_viewer::select_weapon(pstate.inventory, 6);
+                            std::fprintf(stderr, "weapon: slot 7\n");
+                        }
+                        if (ev.key.keysym.sym == SDLK_8) {
+                            dts_viewer::select_weapon(pstate.inventory, 7);
+                            std::fprintf(stderr, "weapon: slot 8\n");
+                        }
                         if (ev.key.keysym.sym == SDLK_m) {
                             // M previously printed mission list; with the
                             // command map (13/06) also bound to M, toggle
@@ -2456,7 +2468,13 @@ int main(int argc, char** argv)
                             dts_viewer::set_mouse_capture(ter_cam, true);
                         } else if (ev.button.button == SDL_BUTTON_LEFT) {
                             auto& w = dts_viewer::active_weapon(pstate.inventory);
-                            if (w.equipped && w.cooldown <= 0.0f && w.ammo > 0) {
+                            // Beam weapons are driven by elf_tick / laser_tick
+                            // using a per-frame fire-held flag (see below).
+                            const bool beam_weapon =
+                                (w.projectile == dts_viewer::ProjType::ELF) ||
+                                (w.projectile == dts_viewer::ProjType::Laser);
+                            if (!beam_weapon && w.equipped &&
+                                w.cooldown <= 0.0f && w.ammo > 0) {
                                 glm::vec3 origin = dts_viewer::player_eye(pstate, ptune);
                                 glm::vec3 aim = dts_viewer::camera_forward(ter_cam);
                                 if (dts_viewer::projectile_fire(
@@ -2525,11 +2543,40 @@ int main(int argc, char** argv)
 
                 pstep_accumulator += dt_ter;
                 int steps = 0;
+                // Mouse-button hold state for continuous-fire weapons
+                // (spec 12/07 beam weapons + future full-auto polish).
+                // SDL_GetMouseState polls the OS-tracked state directly so
+                // we don't need to mirror MOUSEBUTTONDOWN/UP events.
+                Uint32 mbuttons = SDL_GetMouseState(nullptr, nullptr);
+                const bool fire_held =
+                    (mbuttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0 &&
+                    ter_cam.mouse_captured;
                 while (pstep_accumulator >= kFixedStep && steps < 5) {
                     // Spec 17/02 — drain script schedule() queue.
                     dts_viewer::mission_tick(mctx, kFixedStep);
                     dts_viewer::projectiles_update(
                         proj_sys, proj_tune, height_sampler, pstate, kFixedStep);
+                    // Spec 12/07 — beam-weapon ticks. Only one beam type
+                    // can be "held" at a time (the active weapon); the
+                    // tick calls are no-ops when fire_held is false.
+                    {
+                        const auto& aw = dts_viewer::active_weapon(pstate.inventory);
+                        glm::vec3 origin = dts_viewer::player_eye(pstate, ptune);
+                        glm::vec3 aim = dts_viewer::camera_forward(ter_cam);
+                        const bool elf_active =
+                            fire_held &&
+                            aw.projectile == dts_viewer::ProjType::ELF &&
+                            aw.equipped;
+                        dts_viewer::elf_tick(proj_sys, proj_tune, height_sampler,
+                            pstate, elf_active, origin, aim, /*owner_id*/0,
+                            kFixedStep);
+                        const bool laser_active =
+                            aw.projectile == dts_viewer::ProjType::Laser &&
+                            aw.equipped;
+                        dts_viewer::laser_tick(proj_sys, proj_tune, height_sampler,
+                            pstate, laser_active && fire_held,
+                            origin, aim, kFixedStep);
+                    }
                     dts_viewer::weapons_tick_cooldowns(
                         pstate.inventory, kFixedStep);
                     dts_viewer::inv_stations_update(
@@ -2777,6 +2824,87 @@ int main(int argc, char** argv)
                 }
             }
 
+            // Spec 12/07 — beam-weapon world-space visuals.
+            // ELF: a coloured line from the muzzle to the beam end.
+            // Laser: a single-pixel marker cube where the player painted.
+            // Both ride flat_prog (used for marker / bounds debug).
+            {
+                static GLuint beam_vao = 0, beam_vbo = 0;
+                if (beam_vao == 0) {
+                    glGenVertexArrays(1, &beam_vao);
+                    glGenBuffers(1, &beam_vbo);
+                    glBindVertexArray(beam_vao);
+                    glBindBuffer(GL_ARRAY_BUFFER, beam_vbo);
+                    glBufferData(GL_ARRAY_BUFFER, 6 * sizeof(float),
+                                 nullptr, GL_DYNAMIC_DRAW);
+                    glEnableVertexAttribArray(0);
+                    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                          3 * sizeof(float), nullptr);
+                }
+                if (proj_sys.elf.active) {
+                    glUseProgram(flat_prog);
+                    if (u_flat_mvp >= 0)
+                        glUniformMatrix4fv(u_flat_mvp, 1, GL_FALSE,
+                                           glm::value_ptr(MVP));
+                    if (u_flat_color >= 0) {
+                        // Bright cyan when the raycast hits a dynamic target,
+                        // pale blue otherwise. Helps the player see contact.
+                        const float r = proj_sys.elf.hit_target ? 0.4f : 0.6f;
+                        const float g = proj_sys.elf.hit_target ? 1.0f : 0.85f;
+                        const float b = 1.0f;
+                        glUniform3f(u_flat_color, r, g, b);
+                    }
+                    const float verts[] = {
+                        proj_sys.elf.start.x, proj_sys.elf.start.y, proj_sys.elf.start.z,
+                        proj_sys.elf.end.x,   proj_sys.elf.end.y,   proj_sys.elf.end.z,
+                    };
+                    glBindVertexArray(beam_vao);
+                    glBindBuffer(GL_ARRAY_BUFFER, beam_vbo);
+                    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+                    glLineWidth(3.0f);
+                    glDrawArrays(GL_LINES, 0, 2);
+                    glLineWidth(1.0f);
+                    glBindVertexArray(0);
+                }
+                if (proj_sys.laser.marker_active) {
+                    glUseProgram(flat_prog);
+                    // Fade the marker as it ages so the player sees it expire.
+                    const float lt = proj_tune.laser_marker_lifetime;
+                    const float fade = (lt > 0.0f)
+                        ? std::min(1.0f, proj_sys.laser.marker_remaining / lt)
+                        : 1.0f;
+                    glm::mat4 M = glm::translate(glm::mat4(1.0f),
+                        proj_sys.laser.marker_pos);
+                    M = glm::scale(M, glm::vec3(0.6f));
+                    glm::mat4 MVP_m = MVP * M;
+                    if (u_flat_mvp >= 0)
+                        glUniformMatrix4fv(u_flat_mvp, 1, GL_FALSE,
+                                           glm::value_ptr(MVP_m));
+                    if (u_flat_color >= 0)
+                        glUniform3f(u_flat_color,
+                                    1.0f, 0.3f * fade, 0.3f * fade);
+                    // Reuse the simple line endpoints as a tiny + in 3D
+                    // along world Y: cheap and unmissable.
+                    const float cross[] = {
+                        -1.0f, 0.0f, 0.0f,   1.0f, 0.0f, 0.0f,
+                         0.0f,-1.0f, 0.0f,   0.0f, 1.0f, 0.0f,
+                         0.0f, 0.0f,-1.0f,   0.0f, 0.0f, 1.0f,
+                    };
+                    glBindVertexArray(beam_vao);
+                    glBindBuffer(GL_ARRAY_BUFFER, beam_vbo);
+                    glBufferData(GL_ARRAY_BUFFER, sizeof(cross),
+                                 cross, GL_DYNAMIC_DRAW);
+                    glLineWidth(2.0f);
+                    glDrawArrays(GL_LINES, 0, 6);
+                    glLineWidth(1.0f);
+                    // Resize the buffer back to the 2-vertex line layout
+                    // for the next ELF draw.
+                    glBufferData(GL_ARRAY_BUFFER, 6 * sizeof(float),
+                                 nullptr, GL_DYNAMIC_DRAW);
+                    glBindVertexArray(0);
+                }
+            }
+
             // 14/12 — snow steps + draws after world geometry so flakes
             // occlude properly.
             if (snow_sys) {
@@ -2794,7 +2922,12 @@ int main(int argc, char** argv)
             // imgui_end_frame runs after to flush both menus and HUD text.
             dts_viewer::imgui_begin_frame();
             if (hud.visible) {
-                dts_viewer::hud2d_render(pstate, ptune, w, h);
+                {
+                    const float lcf = (proj_tune.laser_charge_seconds > 0.0f)
+                        ? (proj_sys.laser.charge_t / proj_tune.laser_charge_seconds)
+                        : 0.0f;
+                    dts_viewer::hud2d_render(pstate, ptune, w, h, lcf);
+                }
                 dts_viewer::hud2d_render_compass(
                     pstate.yaw, compass_team_ticks, pstate.pos, w, h);
                 dts_viewer::hud2d_render_sensor(

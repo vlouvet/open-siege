@@ -115,11 +115,21 @@ bool projectile_fire(
         spawn(ProjType::Mortar, t.mortar_init_speed,
               t.mortar_fuse_seconds, t.mortar_max_bounces, true);
         return true;
+    case ProjType::Blaster:
+        if (sys.cooldown_blaster > 0.0f) return false;
+        spawn(ProjType::Blaster, t.blaster_init_speed,
+              t.blaster_lifetime, 0, false);
+        sys.cooldown_blaster = t.blaster_fire_interval;
+        return true;
     case ProjType::ChainBullet:
         if (sys.cooldown_chain > 0.0f) return false;
         sys.cooldown_chain = t.chain_fire_interval;
         if (out_hit_pos) *out_hit_pos = origin + dir * t.chain_range;
         return true;
+    case ProjType::ELF:
+    case ProjType::Laser:
+        // Beam weapons are ticked via elf_tick / laser_tick — fire is a no-op.
+        return false;
     }
     return false;
 }
@@ -134,6 +144,7 @@ void projectiles_update(
     sys.cooldown_disc    = std::max(0.0f, sys.cooldown_disc    - dt);
     sys.cooldown_grenade = std::max(0.0f, sys.cooldown_grenade - dt);
     sys.cooldown_chain   = std::max(0.0f, sys.cooldown_chain   - dt);
+    sys.cooldown_blaster = std::max(0.0f, sys.cooldown_blaster - dt);
 
     for (auto& p : sys.alive) {
         if (!p.alive) continue;
@@ -204,6 +215,10 @@ void projectiles_update(
                 case ProjType::Mortar:
                     r = t.mortar_splash_radius; dmg = t.mortar_splash_dmg;
                     imp = t.mortar_splash_impulse; break;
+                case ProjType::Blaster:
+                    // Impact-only: tiny "splash" radius for the player-hit
+                    // routing; no impulse so the bolt doesn't disc-jump.
+                    r = 1.0f; dmg = t.blaster_dmg; imp = 0.0f; break;
                 default:
                     r = 0.0f; dmg = 0.0f; imp = 0.0f; break;
             }
@@ -218,6 +233,93 @@ void projectiles_update(
         std::remove_if(sys.alive.begin(), sys.alive.end(),
             [](const Projectile& p) { return !p.alive; }),
         sys.alive.end());
+}
+
+// ---- Spec 12/07 beam-weapon ticks ----
+
+void elf_tick(ProjectileSystem&       sys,
+              const ProjectileTuning& t,
+              const HeightSampler&    terrain,
+              PlayerState&            player,
+              bool                    fire_held,
+              const glm::vec3&        origin,
+              const glm::vec3&        aim_dir,
+              int                     owner_id,
+              float                   dt)
+{
+    auto& b = sys.elf;
+    const bool have_energy = (player.jet_fuel > t.elf_min_energy);
+    if (!fire_held || !have_energy) {
+        b.active = false;
+        return;
+    }
+
+    glm::vec3 dir = (glm::dot(aim_dir, aim_dir) > 1e-6f)
+        ? glm::normalize(aim_dir)
+        : glm::vec3{0.0f, 0.0f, 1.0f};
+
+    bool hit = false;
+    glm::vec3 end = ray_terrain_hit(terrain, origin, dir, t.elf_range, hit);
+    b.active     = true;
+    b.start      = origin;
+    b.end        = end;
+    b.hit_target = hit;
+
+    // Energy drain (Tribes' energy and jet fuel are the same pool).
+    player.jet_fuel = std::max(0.0f, player.jet_fuel - t.elf_energy_drain_per_s * dt);
+
+    // DoT: route through the splash helper so the self-hit / friendly
+    // logic is consistent. In v1 the player is the only entity, so this
+    // only matters if the beam crosses the player capsule.
+    apply_splash(player, end, /*radius*/2.0f,
+                 t.elf_dps * dt, /*impulse*/0.0f,
+                 owner_id, /*self_dmg_coef*/0.5f);
+}
+
+void laser_tick(ProjectileSystem&       sys,
+                const ProjectileTuning& t,
+                const HeightSampler&    terrain,
+                PlayerState&            player,
+                bool                    fire_held,
+                const glm::vec3&        origin,
+                const glm::vec3&        aim_dir,
+                float                   dt)
+{
+    auto& l = sys.laser;
+
+    // Marker fade is independent of charge state.
+    if (l.marker_active) {
+        l.marker_remaining -= dt;
+        if (l.marker_remaining <= 0.0f) {
+            l.marker_active    = false;
+            l.marker_remaining = 0.0f;
+        }
+    }
+
+    const bool was_charging = l.charging;
+    if (fire_held) {
+        l.charging = true;
+        l.charge_t = std::min(l.charge_t + dt, t.laser_charge_seconds);
+    } else if (was_charging) {
+        // Release. Fire only if charge is complete and energy is available.
+        const bool full = (l.charge_t >= t.laser_charge_seconds);
+        const bool have_energy = (player.jet_fuel >= t.laser_energy_per_shot);
+        if (full && have_energy) {
+            glm::vec3 dir = (glm::dot(aim_dir, aim_dir) > 1e-6f)
+                ? glm::normalize(aim_dir)
+                : glm::vec3{0.0f, 0.0f, 1.0f};
+            bool hit = false;
+            glm::vec3 end = ray_terrain_hit(terrain, origin, dir,
+                                            t.laser_range, hit);
+            l.marker_pos       = end;
+            l.marker_remaining = t.laser_marker_lifetime;
+            l.marker_active    = true;
+            player.jet_fuel = std::max(0.0f,
+                player.jet_fuel - t.laser_energy_per_shot);
+        }
+        l.charging = false;
+        l.charge_t = 0.0f;
+    }
 }
 
 } // namespace dts_viewer

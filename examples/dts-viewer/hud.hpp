@@ -77,10 +77,13 @@ struct PlayerState;
 struct PlayerTuning;
 
 void hud2d_init();          // lazy GL init; idempotent
+// `laser_charge_frac` (0..1) drives the Laser's charge-bar overlay
+// (spec 12/07). Pass <=0 when the active weapon isn't a Laser.
 void hud2d_render(const PlayerState& ps,
                   const PlayerTuning& tune,
                   int viewport_w,
-                  int viewport_h);
+                  int viewport_h,
+                  float laser_charge_frac = 0.0f);
 void hud2d_shutdown();
 
 // Track 13 spec 02 — compass band at the top of the screen.  Cardinal

@@ -319,7 +319,8 @@ void hud2d_shutdown()
 void hud2d_render(const PlayerState& ps,
                   const PlayerTuning& tune,
                   int viewport_w,
-                  int viewport_h)
+                  int viewport_h,
+                  float laser_charge_frac)
 {
     if (viewport_w <= 0 || viewport_h <= 0) return;
     ensure_init();
@@ -380,15 +381,33 @@ void hud2d_render(const PlayerState& ps,
     // ---- Ammo bar (active weapon only) ----
     const auto& w = active_weapon(ps.inventory);
     const float abar_y = ebar_y - bar_h - 6.0f;
-    float ammo_frac = (w.max_ammo > 0)
-        ? (static_cast<float>(w.ammo) / w.max_ammo) : 0.0f;
+    // Beam weapons drive the bar from charge / energy fraction, not ammo.
+    const bool is_elf   = (w.projectile == ProjType::ELF);
+    const bool is_laser = (w.projectile == ProjType::Laser);
+    float ammo_frac;
+    float ar = 0.95f, ag = 0.80f, ab = 0.10f;
+    if (is_laser) {
+        ammo_frac = std::max(0.0f, std::min(1.0f, laser_charge_frac));
+        // Pulse green→white at full charge so the player sees "ready".
+        if (ammo_frac >= 1.0f) { ar = 0.95f; ag = 1.00f; ab = 0.85f; }
+        else                   { ar = 0.20f; ag = 0.90f; ab = 0.30f; }
+    } else if (is_elf) {
+        // ELF has no per-weapon ammo; the energy bar above is the real
+        // gate. Mirror its fill here so the row still reads as "live".
+        ammo_frac = (tune.jet_fuel_max > 0.0f)
+            ? (ps.jet_fuel / tune.jet_fuel_max) : 0.0f;
+        ar = 0.30f; ag = 0.45f; ab = 1.00f;
+    } else {
+        ammo_frac = (w.max_ammo > 0)
+            ? (static_cast<float>(w.ammo) / w.max_ammo) : 0.0f;
+    }
     draw_quad_ndc(pxX(bar_x),                pxY(abar_y),
                   pxX(bar_x + bar_w),        pxY(abar_y - bar_h),
                   0.15f, 0.10f, 0.02f);
     draw_quad_ndc(pxX(bar_x),                pxY(abar_y),
                   pxX(bar_x + bar_w * ammo_frac),
                   pxY(abar_y - bar_h),
-                  0.95f, 0.80f, 0.10f);
+                  ar, ag, ab);
 
     // ---- Spec 13/07 — numeric labels overlaid on bars ----
     // y_base is the BOTTOM of the bar; ImGui text origin is top-left, so
@@ -412,8 +431,19 @@ void hud2d_render(const PlayerState& ps,
         case ProjType::ChainBullet: wname = "CHAIN";   break;
         case ProjType::Plasma:      wname = "PLASMA";  break;
         case ProjType::Mortar:      wname = "MORTAR";  break;
+        case ProjType::Blaster:     wname = "BLASTER"; break;
+        case ProjType::ELF:         wname = "ELF";     break;
+        case ProjType::Laser:       wname = "LASER";   break;
     }
-    std::snprintf(buf, sizeof(buf), "%-7s  %3d / %3d", wname, w.ammo, w.max_ammo);
+    if (is_laser) {
+        std::snprintf(buf, sizeof(buf), "%-7s  CHARGE %3d%%",
+                      wname, static_cast<int>(ammo_frac * 100.0f));
+    } else if (is_elf) {
+        std::snprintf(buf, sizeof(buf), "%-7s  ENERGY", wname);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%-7s  %3d / %3d",
+                      wname, w.ammo, w.max_ammo);
+    }
     text_draw(bar_x + 4.0f, abar_y - label_dy, buf,
               {1.00f, 0.95f, 0.70f}, text_size);
 
