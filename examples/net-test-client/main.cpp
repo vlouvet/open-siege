@@ -70,6 +70,10 @@ void usage(const char* argv0)
         "                       parser (spec 20/10); log decoded records per pkt\n"
         "  --replay PATH        offline mode: read a capture JSON and feed every\n"
         "                       s->c packet through the parser (no server needed)\n"
+        "  --qcheck-player PATH offline mode: run the spec 20/27 §15.1.1 four-point\n"
+        "                       smoothness check on every Player ghost in the\n"
+        "                       capture. Exits 0 iff >= 1 Player passes.\n"
+        "                       (alias: --player-qcheck)\n"
         "  --ack                emit VC pure-acks per spec 20/11 §14 (default off;\n"
         "                       experimentally keeps the connection alive past\n"
         "                       the server's ~3-5s no-ack timeout)\n"
@@ -875,6 +879,195 @@ int run_replay(const std::string& path)
     return with_record > 0 ? 0 : 6;
 }
 
+// Spec 20/27 §15.1.1 — multi-packet Player-velocity smoothness check.
+//
+// Walks every s->c packet in a capture, dispatches typed records, and for
+// each Player ghost that emits at least 2 non-initial updates with
+// has-velocity = 1, runs the 4-point invariant:
+//
+//   1. Speed bounded (decoded magnitude in [0, 256) m/s).
+//   2. Per-tick speed delta bounded (<= 30 m/s between adjacent updates).
+//   3. Direction consistency (unit(direction) . unit(pos_delta) near +1).
+//   4. Speed-vs-position cross-check (|pos_delta|/dt within ~5 m/s of
+//      magnitude; tolerance relaxed to 10 m/s here to account for
+//      update-skip gaps and packet loss).
+//
+// Reports per-Player pass/fail counts. Exit 0 if ≥1 Player ghost passed
+// all four checks; non-zero otherwise.
+int run_qcheck_player(const std::string& path)
+{
+    std::ifstream f(path);
+    if (!f) {
+        std::fprintf(stderr, "[qcheck-player] open '%s' failed\n", path.c_str());
+        return 2;
+    }
+    std::ostringstream ss; ss << f.rdbuf();
+    const std::string text = ss.str();
+
+    struct Sample {
+        std::uint64_t t_ms = 0;
+        float pos_x = 0, pos_y = 0, pos_z = 0;
+        float vel_x = 0, vel_y = 0, vel_z = 0;
+        float speed = 0;
+        bool has_velocity = false;
+    };
+    std::unordered_map<std::uint16_t, std::vector<Sample>> samples_by_ghost;
+
+    net20::GhostRegistry typed_registry;
+    typed_registry.install_default_class_tag_map();
+
+    // Tiny JSON scanner: pull (t_ms, hex) per packet.
+    std::size_t pos = 0;
+    while (true) {
+        const std::size_t hex_key = text.find("\"hex\"", pos);
+        if (hex_key == std::string::npos) break;
+        const std::size_t colon = text.find(':', hex_key);
+        const std::size_t q1 = text.find('"', colon);
+        if (q1 == std::string::npos) break;
+        const std::size_t q2 = text.find('"', q1 + 1);
+        if (q2 == std::string::npos) break;
+        const std::string hex = text.substr(q1 + 1, q2 - q1 - 1);
+
+        std::uint64_t t_ms = 0;
+        std::string dir;
+        const std::size_t obj_start = text.rfind('{', hex_key);
+        if (obj_start != std::string::npos) {
+            const std::size_t t_key = text.find("\"t_ms\"", obj_start);
+            if (t_key != std::string::npos && t_key < hex_key) {
+                const std::size_t tc = text.find(':', t_key);
+                if (tc != std::string::npos) {
+                    t_ms = std::strtoull(text.c_str() + tc + 1, nullptr, 10);
+                }
+            }
+            const std::size_t dir_key = text.find("\"dir\"", obj_start);
+            if (dir_key != std::string::npos && dir_key < hex_key) {
+                const std::size_t dq1 = text.find('"', text.find(':', dir_key));
+                const std::size_t dq2 = text.find('"', dq1 + 1);
+                if (dq1 != std::string::npos && dq2 != std::string::npos)
+                    dir = text.substr(dq1 + 1, dq2 - dq1 - 1);
+            }
+        }
+        pos = q2 + 1;
+        if (!dir.empty() && dir != "s->c") continue;
+
+        std::vector<std::uint8_t> bytes;
+        bytes.reserve(hex.size() / 2);
+        for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+            auto hexnib = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+                if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+                return -1;
+            };
+            int hi = hexnib(hex[i]), lo = hexnib(hex[i + 1]);
+            if (hi < 0 || lo < 0) break;
+            bytes.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+        }
+        if (bytes.empty()) continue;
+
+        auto td = net20::parse_typed_packet(bytes.data(), bytes.size(),
+                                             typed_registry);
+        for (const auto& tr : td.records) {
+            if (tr.kind != net20::GhostClassKind::Player || tr.kill) continue;
+            auto it = typed_registry.players.find(tr.ghost_id);
+            if (it == typed_registry.players.end()) continue;
+            const auto& p = it->second;
+            if (!p.has_pos_block) continue;
+            Sample s;
+            s.t_ms = t_ms;
+            s.pos_x = p.pos_x; s.pos_y = p.pos_y; s.pos_z = p.pos_z;
+            s.vel_x = p.velocity_x; s.vel_y = p.velocity_y;
+            s.vel_z = p.velocity_z;
+            s.has_velocity = p.has_velocity;
+            s.speed = std::sqrt(p.velocity_x * p.velocity_x
+                              + p.velocity_y * p.velocity_y
+                              + p.velocity_z * p.velocity_z);
+            samples_by_ghost[tr.ghost_id].push_back(s);
+        }
+    }
+
+    if (samples_by_ghost.empty()) {
+        std::fprintf(stderr,
+            "[qcheck-player] no Player ghosts found in capture.\n"
+            "[qcheck-player] (this implies either the class-tag-to-Player\n"
+            "[qcheck-player]  mapping is missing from the registry, or the\n"
+            "[qcheck-player]  capture contains no gameplay-mode traffic.)\n");
+        return 6;
+    }
+
+    int passed_players = 0;
+    for (const auto& [gid, samples] : samples_by_ghost) {
+        if (samples.size() < 2) {
+            std::fprintf(stderr,
+                "[qcheck-player] ghost=%u: only %zu sample(s); need >= 2\n",
+                static_cast<unsigned>(gid), samples.size());
+            continue;
+        }
+        // Run the four checks across consecutive sample pairs.
+        int check1_pass = 0, check1_fail = 0;
+        int check2_pass = 0, check2_fail = 0;
+        int check3_pass = 0, check3_fail = 0;
+        int check4_pass = 0, check4_fail = 0;
+        int with_vel = 0;
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            const auto& cur = samples[i];
+            // #1 speed bounded.
+            if (cur.has_velocity) {
+                ++with_vel;
+                if (std::isfinite(cur.speed) && cur.speed >= 0.0f
+                    && cur.speed < 256.0f) ++check1_pass;
+                else ++check1_fail;
+            }
+            if (i == 0) continue;
+            const auto& prev = samples[i - 1];
+            const float dt = static_cast<float>(cur.t_ms - prev.t_ms) / 1000.0f;
+            if (dt <= 0.0f || dt > 1.0f) continue;  // skip large gaps
+
+            // #2 per-tick speed delta bounded.
+            if (cur.has_velocity && prev.has_velocity) {
+                const float dspeed = std::abs(cur.speed - prev.speed);
+                if (dspeed <= 30.0f) ++check2_pass;
+                else ++check2_fail;
+            }
+            // #3 direction consistency.
+            const float dx = cur.pos_x - prev.pos_x;
+            const float dy = cur.pos_y - prev.pos_y;
+            const float dz = cur.pos_z - prev.pos_z;
+            const float dmag = std::sqrt(dx*dx + dy*dy + dz*dz);
+            if (cur.has_velocity && dmag > 0.5f && cur.speed > 0.5f) {
+                const float vmag = cur.speed;
+                const float dot = (cur.vel_x * dx + cur.vel_y * dy
+                                 + cur.vel_z * dz) / (vmag * dmag);
+                if (dot > 0.5f) ++check3_pass;
+                else ++check3_fail;
+            }
+            // #4 speed-vs-position cross-check.
+            if (cur.has_velocity) {
+                const float fd_speed = dmag / dt;
+                if (std::abs(fd_speed - cur.speed) < 10.0f) ++check4_pass;
+                else ++check4_fail;
+            }
+        }
+        const bool ok = (check1_fail == 0 && check2_fail == 0
+                      && check3_fail == 0 && check4_fail == 0
+                      && check1_pass > 0);
+        std::fprintf(stderr,
+            "[qcheck-player] ghost=%u samples=%zu with_vel=%d "
+            "c1=%d/%d c2=%d/%d c3=%d/%d c4=%d/%d -> %s\n",
+            static_cast<unsigned>(gid), samples.size(), with_vel,
+            check1_pass, check1_pass + check1_fail,
+            check2_pass, check2_pass + check2_fail,
+            check3_pass, check3_pass + check3_fail,
+            check4_pass, check4_pass + check4_fail,
+            ok ? "PASS" : "FAIL");
+        if (ok) ++passed_players;
+    }
+    std::fprintf(stderr,
+        "[qcheck-player] %d / %zu Player ghosts passed all 4 checks\n",
+        passed_players, samples_by_ghost.size());
+    return passed_players > 0 ? 0 : 6;
+}
+
 // Spec 20/12 offline self-test: verify our ack encoder reproduces the
 // 4-byte pure-ack hex `05 08 09 80` worked-example from §14.7 (a Groove
 // pure-ack acking server seq 1, with our own send-seq=1 and parity=0).
@@ -1353,6 +1546,7 @@ int main(int argc, char** argv)
     int send_ready_opt = -1;          // -1 = unset, 0 = off, 1 = on
     std::string ghost_dump_path;
     std::string replay_path;
+    std::string qcheck_player_path;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -1374,6 +1568,10 @@ int main(int argc, char** argv)
         if (a == "--ghost-dump" && i + 1 < argc) { ghost_dump_path = argv[++i]; continue; }
         if (a == "--decode-ghosts") { decode_ghosts = true; continue; }
         if (a == "--replay" && i + 1 < argc) { replay_path = argv[++i]; continue; }
+        if ((a == "--qcheck-player" || a == "--player-qcheck")
+            && i + 1 < argc) {
+            qcheck_player_path = argv[++i]; continue;
+        }
         if (a == "--ack") { send_acks = true; continue; }
         if (a == "--no-acks") { send_acks = false; continue; }
         if (a == "--ack-selftest") { ack_selftest = true; continue; }
@@ -1392,6 +1590,7 @@ int main(int argc, char** argv)
     if (ready_selftest) return run_ready_selftest();
     if (move_selftest) return run_move_selftest();
     if (!replay_path.empty()) return run_replay(replay_path);
+    if (!qcheck_player_path.empty()) return run_qcheck_player(qcheck_player_path);
     if (loopback_self) return run_loopback_self(duration_s);
     // Resolve the spec 20/22 default: --send-ready defaults to on whenever
     // --ack is set (the ready emit requires a live ack stream to be useful).

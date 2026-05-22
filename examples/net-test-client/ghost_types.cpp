@@ -77,6 +77,42 @@ struct BitReader {
         std::memcpy(&out, &bits, sizeof(out));
         return out;
     }
+
+    // §6.5 v3 — Normalised signed float in [-1, +1].
+    //
+    // Wire format: an UNSIGNED int of `width` bits (NOT sign-extended). The
+    // encoder rescales f from [-1, +1] to [0, 1] then packs as writeInt:
+    //     wire = round( ((f + 1) / 2) * (2^width - 1) )
+    // The receiver decodes:
+    //     f = (raw * 2) / (2^width - 1) - 1
+    // Width 1 collapses to 0 always.
+    //
+    // v1 of the spec used `read_signed(width)` with scale `2^(width-1) - 1`;
+    // that was wrong and produced velocity-direction / shield-direction
+    // garbage. The §6.5 audit corrected this.
+    float read_signed_float(unsigned width) noexcept {
+        if (width == 0 || width > 32) { overrun = true; return 0.0f; }
+        if (width == 1) { (void)read_bits(1); return 0.0f; }
+        const std::uint32_t raw = read_bits(width);
+        const float denom = static_cast<float>((1u << width) - 1u);
+        return denom == 0.0f ? 0.0f
+                             : (static_cast<float>(raw) * 2.0f) / denom - 1.0f;
+    }
+
+    // §6.8 — Form A normal-vector decode (single-width).
+    //
+    // Layout: signed-normalised x of `component_bits`, signed-normalised y of
+    // `component_bits`, then a 1-bit `z < 0` sign flag. Total: 2*N + 1 bits.
+    // Reconstruct z = sqrt(max(0, 1 - x*x - y*y)); negate iff sign flag = 1.
+    void read_normal_vec_form_a(unsigned component_bits,
+                                float& x, float& y, float& z) noexcept {
+        x = read_signed_float(component_bits);
+        y = read_signed_float(component_bits);
+        const bool z_neg = read_flag();
+        const float zsq = 1.0f - x * x - y * y;
+        const float zmag = zsq > 0.0f ? std::sqrt(zsq) : 0.0f;
+        z = z_neg ? -zmag : zmag;
+    }
 };
 
 // Decode the §15.0.1 base-state block.
@@ -108,9 +144,11 @@ GhostBaseState read_base_state(BitReader& br) {
 // this block desynchronises the walker by 3 bits per record and corrupts
 // every record after the first one in a packet (spec 24's root cause).
 //
-// Sub-payload layout:
-//   shield-changed = 1 -> 15-bit shield direction (writeSignedFloat(x,7)
-//     + writeSignedFloat(y,7) + 1-bit z-sign) followed by 8-bit z-offset.
+// Sub-payload layout (v3 — spec 26 audit corrected shield direction width
+// from 14 to 15 bits — the 1-bit z-sign flag had been missed):
+//   shield-changed = 1 -> 15-bit shield direction (§6.8 Form A with
+//     bits=7: signed-normalised x(7) + signed-normalised y(7) +
+//     1-bit z-sign) followed by 8-bit z-offset.
 //   thread-changed = 1 -> for each of 4 thread slots: 1-bit per-slot
 //     present; if present, SeqW-bit sequence id + 2-bit state +
 //     1-bit direction + 1-bit at-end. SeqW is build-dependent and not
@@ -122,25 +160,15 @@ GhostShapeLayer read_shape_layer_block(BitReader& br) {
 
     s.shield_changed = br.read_flag();
     if (s.shield_changed) {
-        // 15-bit shield direction: 7-bit signed x + 7-bit signed y + 1-bit
-        // z-sign. Reconstruct z = sqrt(1 - x*x - y*y), then negate iff sign.
-        auto read_signed_float = [&](unsigned width) {
-            if (br.overrun || width < 2) return 0.0f;
-            const std::int32_t raw = br.read_signed(width);
-            const float scale = static_cast<float>((1 << (width - 1)) - 1);
-            return scale == 0.0f ? 0.0f
-                                 : static_cast<float>(raw) / scale;
-        };
-        const float x = read_signed_float(7);
-        const float y = read_signed_float(7);
-        const bool z_neg = br.read_flag();
-        const float zsq = 1.0f - x * x - y * y;
-        const float zmag = zsq > 0.0f ? std::sqrt(zsq) : 0.0f;
+        // §15.0.2 v3: 15-bit shield direction via §6.8 Form A (2*7 + 1).
+        float x, y, z;
+        br.read_normal_vec_form_a(7, x, y, z);
         s.shield_dir_x = x;
         s.shield_dir_y = y;
-        s.shield_dir_z = z_neg ? -zmag : zmag;
-        // 8-bit z-offset, recovered metric value = (wire * 10) - 5 in
-        // [-5, +5] m. Spec uses normalised float of width 8.
+        s.shield_dir_z = z;
+        // 8-bit z-offset (normalised float of width 8 per §6.4 / §15.0.2
+        // v3): decode raw to f = raw / 255, then z_off_m = f * 10 - 5
+        // for a range of [-5, +5] m.
         const std::uint32_t zoff_bits = br.read_bits(8);
         const float zoff_norm = static_cast<float>(zoff_bits) / 255.0f;
         s.shield_z_offset = (zoff_norm * 10.0f) - 5.0f;
@@ -269,10 +297,11 @@ bool read_player_body(BitReader& br, GhostPlayer& p,
 
     p.has_pos_block = br.read_flag();
     if (p.has_pos_block) {
-        // Signed 5-bit normalised float * max-pitch (88° in radians).
-        const std::int32_t signed5 = br.read_signed(5);
+        // §15.1 v3: signed 5-bit normalised float (§6.5 v3) * max-pitch
+        // (88° in radians). Width 5 → denom = 31 (NOT 15 as v1 implied).
+        const float view_pitch_norm = br.read_signed_float(5);
         constexpr float kMaxPitch = 88.0f * 3.14159265358979323846f / 180.0f;
-        p.view_pitch = (static_cast<float>(signed5) / 15.0f) * kMaxPitch;
+        p.view_pitch = view_pitch_norm * kMaxPitch;
 
         // Full IEEE-754 position (96 bits bit-packed per §6.9 corrected).
         p.pos_x = br.read_float_unaligned();
@@ -283,18 +312,16 @@ bool read_player_body(BitReader& br, GhostPlayer& p,
         if (p.has_velocity) {
             const std::uint32_t mag_bits = br.read_bits(17);
             const float mag = static_cast<float>(mag_bits) / 512.0f;
-            // Normal-vector of widths (10, 10).
-            const std::int32_t z_signed = br.read_signed(10);
-            const std::uint32_t az_bits = br.read_bits(10);
-            const float z = static_cast<float>(z_signed) / 511.0f;
-            const float az = static_cast<float>(az_bits) / 1023.0f;
-            const float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
-            const float angle = az * 2.0f * 3.14159265358979323846f;
-            const float x_dir = r * std::cos(angle);
-            const float y_dir = r * std::sin(angle);
-            p.velocity_x = x_dir * mag;
-            p.velocity_y = y_dir * mag;
-            p.velocity_z = z * mag;
+            // §15.1 v3 corrected: velocity direction is a Form A
+            // normal-vector with bits=10. Total width 21 bits
+            // (2*10 + 1). v1 mis-classified this as Form B (10, 10) =
+            // 20 bits, which left the bit cursor off by one and
+            // desynchronised every subsequent record in the packet.
+            float dx, dy, dz;
+            br.read_normal_vec_form_a(10, dx, dy, dz);
+            p.velocity_x = dx * mag;
+            p.velocity_y = dy * mag;
+            p.velocity_z = dz * mag;
         }
 
         p.on_ground = br.read_flag();
@@ -302,17 +329,20 @@ bool read_player_body(BitReader& br, GhostPlayer& p,
         p.yaw = static_cast<float>(yaw_bits) * (2.0f * 3.14159265358979323846f / 511.0f);
 
         if (!p.initial_update) {
+            // §15.1 v3 correction: there is NO move-redundancy flag in
+            // the Player ghost record. The axes + button block is
+            // emitted unconditionally on non-initial updates with
+            // pos-block-present = 1. v1 incorrectly included a flag
+            // borrowed from the §17 input-frame encoding.
             p.has_move_block = true;
-            p.move_redundant = br.read_flag();
-            if (!p.move_redundant) {
-                p.fwd_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
-                p.back_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
-                p.left_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
-                p.right_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
-                p.jet_held = br.read_flag();
-                p.jump_held = br.read_flag();
-                p.crouch_held = br.read_flag();
-            }
+            p.move_redundant = false;
+            p.fwd_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
+            p.back_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
+            p.left_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
+            p.right_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
+            p.jet_held = br.read_flag();
+            p.jump_held = br.read_flag();
+            p.crouch_held = br.read_flag();
             p.energy = static_cast<float>(br.read_bits(7)) / 127.0f;
             p.skip_count = static_cast<std::uint8_t>(br.read_bits(4));
             p.no_interp = br.read_flag();
@@ -435,16 +465,15 @@ bool read_projectile_body(BitReader& br, GhostProjectile& pr,
             pr.velocity_y = br.read_float_unaligned();
             pr.velocity_z = br.read_float_unaligned();
         } else {
-            // Compressed velocity direction (9,9 normal-vector).
-            const std::int32_t z_signed = br.read_signed(9);
-            const std::uint32_t az_bits = br.read_bits(9);
-            const float z = static_cast<float>(z_signed) / 255.0f;
-            const float az = static_cast<float>(az_bits) / 511.0f;
-            const float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
-            const float angle = az * 2.0f * 3.14159265358979323846f;
-            pr.velocity_dir_x = r * std::cos(angle);
-            pr.velocity_dir_y = r * std::sin(angle);
-            pr.velocity_dir_z = z;
+            // §15.2 v3: compressed velocity direction is a Form A
+            // normal-vector with bits=9. Total 19 bits (2*9 + 1). v1
+            // mis-classified as Form B "(9, 9) = 18 bits" which
+            // dropped the z-sign flag and read garbage.
+            float dx, dy, dz;
+            br.read_normal_vec_form_a(9, dx, dy, dz);
+            pr.velocity_dir_x = dx;
+            pr.velocity_dir_y = dy;
+            pr.velocity_dir_z = dz;
         }
         pr.collision_sound_changed = br.read_flag();
         if (pr.collision_sound_changed) {
@@ -454,10 +483,30 @@ bool read_projectile_body(BitReader& br, GhostProjectile& pr,
     return !br.overrun;
 }
 
-// §15.4 Vehicle.
+// §15.4 Vehicle (v3 — spec 26 audit).
+//
+// Layout corrections vs v1:
+//   1) suppress-update flag is FIRST. When 1, no §15.0.1 base-state, no
+//      §15.0.2 shape-layer, and no Vehicle-specific bits follow — the
+//      record body is exactly 1 bit.
+//   2) When suppress = 0, the §15.0.1 base-state AND §15.0.2 shape-layer
+//      blocks ARE emitted (v1 elided the shape-layer block from the
+//      Vehicle path).
+//   3) The has-move sub-block has NO move-redundancy flag — the
+//      Vehicle's player-move sub-block is written with no prev pointer,
+//      which suppresses the redundancy bit.
+//
+// To keep this body self-contained the function reads the base-state and
+// shape-layer itself. The dispatcher for Vehicle therefore must NOT
+// pre-read base/shape (see parse_typed_packet).
 bool read_vehicle_body(BitReader& br, GhostVehicle& v) {
     v.suppress_update = br.read_flag();
-    if (v.suppress_update) return true;
+    if (v.suppress_update) return !br.overrun;
+
+    // §15.0.1 base-state + §15.0.2 shape-layer (only when not suppressed).
+    v.base = read_base_state(br);
+    v.shape = read_shape_layer_block(br);
+    if (br.overrun) return false;
 
     v.orientation_changed = br.read_flag();
     if (v.orientation_changed) {
@@ -469,16 +518,15 @@ bool read_vehicle_body(BitReader& br, GhostVehicle& v) {
         v.pos_z = br.read_float_unaligned();
         v.has_move = br.read_flag();
         if (v.has_move) {
-            v.move_redundant = br.read_flag();
-            if (!v.move_redundant) {
-                v.fwd_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
-                v.back_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
-                v.left_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
-                v.right_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
-                v.jet_held = br.read_flag();
-                v.jump_held = br.read_flag();
-                v.crouch_held = br.read_flag();
-            }
+            // §15.4 v3: no move-redundancy flag here.
+            v.move_redundant = false;
+            v.fwd_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
+            v.back_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
+            v.left_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
+            v.right_axis = static_cast<float>(br.read_bits(4)) / 15.0f;
+            v.jet_held = br.read_flag();
+            v.jump_held = br.read_flag();
+            v.crouch_held = br.read_flag();
             v.speed_fraction = static_cast<float>(br.read_bits(10)) / 1023.0f;
             v.lift = br.read_float_unaligned();
             v.skip_count = static_cast<std::uint8_t>(br.read_bits(4));
@@ -820,13 +868,14 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     break;
                 }
                 case GhostClassKind::Vehicle: {
+                    // §15.4 v3: Vehicle has a suppress-update flag FIRST
+                    // that gates §15.0.1 base + §15.0.2 shape. Let the
+                    // Vehicle body reader own the entire payload.
                     GhostVehicle v;
                     v.ghost_id = rec.ghost_id;
                     v.object_id = obj_id;
                     v.class_tag = class_tag;
-                    v.base = read_base_state(br);
-                    v.shape = read_shape_layer_block(br);
-                    ok = !br.overrun && read_vehicle_body(br, v);
+                    ok = read_vehicle_body(br, v);
                     if (ok) registry.vehicles[rec.ghost_id] = std::move(v);
                     break;
                 }
@@ -897,11 +946,12 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                     break;
                 }
                 case GhostClassKind::Vehicle: {
+                    // §15.4 v3: same as the full-update path — suppress
+                    // flag gates base + shape, so read_vehicle_body owns
+                    // the entire payload.
                     auto& v = registry.vehicles[rec.ghost_id];
                     v.ghost_id = rec.ghost_id;
-                    v.base = read_base_state(br);
-                    v.shape = read_shape_layer_block(br);
-                    ok = !br.overrun && read_vehicle_body(br, v);
+                    ok = read_vehicle_body(br, v);
                     break;
                 }
                 default:
