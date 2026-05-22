@@ -1617,6 +1617,10 @@ int main(int argc, char** argv)
             SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
         SDL_GLContext ctx = SDL_GL_CreateContext(win);
         SDL_GL_SetSwapInterval(1);
+#if !defined(__APPLE__)
+        glewExperimental = GL_TRUE;
+        glewInit();
+#endif
         std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
 
         // Spec 25/01 — ImGui must init after the GL context but before
@@ -3120,6 +3124,10 @@ int main(int argc, char** argv)
             SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
         SDL_GLContext ctx_i = SDL_GL_CreateContext(win_i);
         SDL_GL_SetSwapInterval(1);
+#if !defined(__APPLE__)
+        glewExperimental = GL_TRUE;
+        glewInit();
+#endif
         std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
 
         // Load palettes for texture expansion.
@@ -3657,6 +3665,10 @@ void main() {
         SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
     SDL_GLContext ctx = SDL_GL_CreateContext(win);
     SDL_GL_SetSwapInterval(1);
+#if !defined(__APPLE__)
+    glewExperimental = GL_TRUE;
+    glewInit();
+#endif
 
     std::printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
 

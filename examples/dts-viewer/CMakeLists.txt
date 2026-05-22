@@ -17,6 +17,9 @@ endif()
 
 find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
+if(UNIX AND NOT APPLE)
+    find_package(GLEW REQUIRED)
+endif()
 
 # 3space + its conan deps. We reuse the Find*.cmake files conan generated
 # when we built 3space directly.
@@ -41,6 +44,7 @@ add_executable(dts-viewer
     lighting.cpp
     terrain_textures.cpp
     hud.cpp
+    text_renderer.cpp
     screenshot.cpp
     mission_switcher.cpp
     player_controller.cpp
@@ -104,5 +108,6 @@ if(APPLE)
         "-framework CoreFoundation"
         "-framework IOKit")
 elseif(UNIX AND NOT APPLE)
-    target_link_libraries(dts-viewer PRIVATE dl pthread m)
+    target_link_libraries(dts-viewer PRIVATE dl pthread m GLEW::GLEW)
+    target_compile_definitions(dts-viewer PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
 endif()
