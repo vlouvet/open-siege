@@ -38,9 +38,11 @@ jobs:
         run: |
           ~/.conan-venv/bin/conan profile new default --detect --force
           ~/.conan-venv/bin/conan profile update settings.compiler.libcxx=libstdc++11 default
-          python - <<'PY'
-          import sys, yaml, pathlib
-          sys.path.insert(0, str(pathlib.Path.home() / '.conan-venv/lib/python3.14/site-packages'))
+          ~/.conan-venv/bin/python - <<'PY'
+          import sys, yaml, pathlib, glob
+          venv = pathlib.Path.home() / '.conan-venv'
+          sp = glob.glob(str(venv / 'lib/python*/site-packages'))
+          if sp: sys.path.insert(0, sp[0])
           import conans.client.conf
           s = yaml.safe_load(conans.client.conf.get_default_settings_yml())
           v = s['compiler']['gcc']['version']
@@ -58,9 +60,20 @@ jobs:
           restore-keys: |
             conan-windows-
 
+      - name: Download Conan cmake 3.22 (workaround for CMake 4.x breakage)
+        working-directory: 3space
+        run: |
+          # Fetch cmake 3.22.0 into the Conan cache without building any packages.
+          # A subsequent step puts it on PATH so transitive recipes (bzip2, openssl)
+          # use cmake 3.22 instead of MSYS2's system cmake 4.x.
+          mkdir -p build
+          ~/.conan-venv/bin/conan install cmake/3.22.0@ --build=missing 2>/dev/null || true
+
       - name: Conan install (fetch + build missing packages)
         working-directory: 3space
         run: |
+          CMAKE322=$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)
+          export PATH="$CMAKE322:$PATH"
           mkdir -p build
           ~/.conan-venv/bin/conan install . --install-folder=build --build=missing
 

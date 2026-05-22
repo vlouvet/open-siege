@@ -11,8 +11,7 @@ class LocalConanFile(ConanFile):
     author = "Matthew Rindel (matthew@thesiegehub.com)"
     build_requires = "cmake/3.22.0"
     settings = "os", "compiler", "build_type", "arch"
-    # openssl is here to force package resolution issue with cmake on linux
-    requires = "nlohmann_json/3.10.5", "boost/1.78.0", "glm/0.9.9.8", "span-lite/0.10.3", "taocpp-pegtl/3.2.1", "libzip/1.8.0", "openssl/1.1.1o", "catch2/2.13.8"
+    requires = "nlohmann_json/3.10.5", "boost/1.78.0", "glm/0.9.9.8", "span-lite/0.10.3", "taocpp-pegtl/3.2.1", "libzip/1.8.0", "catch2/2.13.8"
     generators = "cmake_find_package"
     exports_sources = "CMakeLists.txt", "include/*", "src/*"
 
@@ -22,6 +21,9 @@ class LocalConanFile(ConanFile):
         self.options["boost"].bzip2 = False
         self.options["boost"].zlib = False
         self.options["boost"].numa = False
+        # libzip supports openssl for encrypted zips; we don't need it.
+        # openssl/1.1.1o also fails to build against GCC 15 MinGW-w64 headers.
+        self.options["libzip"].with_openssl = False
 
     def build(self):
         cmake = CMake(self)

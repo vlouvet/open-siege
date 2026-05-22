@@ -102,6 +102,11 @@ export PATH="$CMAKE322:$PATH"
 cmake --version   # should print "cmake version 3.22.0"
 ```
 
+> **Note:** The cmake binary is only in `~/.conan/data/cmake/` after a first
+> `conan install` run. If the path is empty, run `conan install` once first
+> (it will fail on bzip2, but cmake will be downloaded). Then set the PATH and
+> retry.
+
 Add this export to `~/.bashrc` or repeat it each UCRT64 session.
 
 ## Build `3space`
