@@ -2,7 +2,12 @@
 // so redirect all x86 backends to scalar. The dispatch table initializer
 // in math_backend.cpp will call these if the CPU reports the capability;
 // falling back to scalar is correct and safe.
+//
+// mInstallLibrary_ASM: T3D legacy assembly math installer. We use the
+// math_backend dispatch system instead — this is a no-op.
 #if defined(__x86_64__) || defined(_M_X64) || defined(_M_IX86)
+
+void mInstallLibrary_ASM() {}
 
 #include "float4_dispatch.h"
 #include "float3_dispatch.h"

@@ -65,17 +65,22 @@ namespace Platform {
     const char* getClipboard()              { return ""; }
     bool setClipboard(const char*)          { return false; }
 
+    bool getWebDeployment()                 { return false; }
+
+#if defined(__APPLE__)
+    // POSIXFileio.cpp provides these on Linux; stub only on macOS
     StringTableEntry getUserHomeDirectory() { return StringTable->insert(""); }
     StringTableEntry getUserDataDirectory() { return StringTable->insert(""); }
-
-    bool getWebDeployment()                 { return false; }
+#endif
 }
 
 // Tagged-string table — used by the network layer to dedupe strings.
 unsigned int GameAddTaggedString(const char* /*s*/) { return 0; }
 
-// Temporary directory query — POSIX implementation calls this hook.
+#if defined(__APPLE__)
+// POSIXFileio.cpp provides osGetTemporaryDirectory on Linux
 const char* osGetTemporaryDirectory() { return "/tmp"; }
+#endif
 
 // Open Siege does not vendor cinterface/ — it pulls in the engine main
 // loop which we don't carry. The only cinterface symbol that platformMac
