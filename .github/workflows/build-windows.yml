@@ -206,6 +206,14 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j$(nproc)
 
+      - name: Server listen-server self-test
+        working-directory: apps/open-siege-t1-server
+        # Exercises the ListenServer thread + LoopbackEndpoint queue
+        # pair from spec 26/07. Pure header-only logic; if this fails,
+        # SP local-server path is broken.
+        run: |
+          ./build/open-siege-t1-server.exe --listen-server-selftest
+
       - name: Smoke test (header-only self-tests)
         working-directory: examples/dts-viewer
         # dts-viewer doesn't have a --help flag (it treats unknown args

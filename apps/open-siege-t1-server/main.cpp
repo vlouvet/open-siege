@@ -6,6 +6,7 @@
 // once spec 07 wires the engine's ghost_stream to a real socket loop.
 
 #include <osengine/audio_sink.hpp>
+#include <osengine/listen_server.hpp>
 #include <osengine/mission_loader.hpp>
 #include <osengine/mission_sounds.hpp>
 #include <osengine/paths.hpp>
@@ -74,9 +75,11 @@ int main(int argc, char** argv)
     int port = 28000;
     int tick_hz = 32;
 
+    bool listen_server_selftest = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--help") { print_usage(); return 0; }
+        if (a == "--listen-server-selftest") { listen_server_selftest = true; continue; }
         if (a == "--mission" && i + 1 < argc) { mission_name = argv[++i]; continue; }
         if (a == "--tribes-dir" && i + 1 < argc) { tribes_dir = argv[++i]; continue; }
         if (a == "--port" && i + 1 < argc) { port = std::atoi(argv[++i]); continue; }
@@ -84,6 +87,22 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "[server] unknown arg: %s\n", a.c_str());
         print_usage();
         return 2;
+    }
+
+    if (listen_server_selftest) {
+        dts_viewer::ListenServer ls(dts_viewer::ListenServerConfig{200, 6});
+        ls.start();
+        ls.client_endpoint().send({1,2,3,4});
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        ls.stop();
+        if (ls.ticks() < 4) {
+            std::fprintf(stderr, "[server] selftest: only %llu ticks (expected >=4)\n",
+                         (unsigned long long)ls.ticks());
+            return 1;
+        }
+        std::fprintf(stderr, "[server] listen-server selftest OK (%llu ticks)\n",
+                     (unsigned long long)ls.ticks());
+        return 0;
     }
 
     if (tribes_dir.empty()) {

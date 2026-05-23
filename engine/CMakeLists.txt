@@ -38,6 +38,7 @@ add_library(osengine STATIC
     src/ghost_types.cpp
     src/hud_bindings.cpp
     src/inv_station.cpp
+    src/listen_server.cpp
     src/mission.cpp
     src/mission_bounds.cpp
     src/mission_loader.cpp
