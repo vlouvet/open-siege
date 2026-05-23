@@ -41,6 +41,7 @@
 #include "content/terrain/dtf.hpp"
 #include "content/terrain/dtb.hpp"
 #include "mission_loader.hpp"
+#include "bot_paths.hpp"
 #include "camera.hpp"
 #include "height_sampler.hpp"
 #include "mission_bounds.hpp"
@@ -1549,6 +1550,53 @@ int main(int argc, char** argv)
     // Spec 23/03 — strip --tribes-dir before any other arg parsing so it
     // works in every mode.
     dts_viewer::stripTribesDir(argc, argv);
+
+    // Spec 18/01 — `--ai-paths <mission-stem>` dumps the bot path data
+    // discovered in MissionGroup\Teams\team<N>\AI\<droneName> + the
+    // optional MissionGroup\AIGraph, then exits. Pure-data debug; runs
+    // without GL init.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--ai-paths" || i + 1 >= argc) continue;
+        const std::string mission_stem = argv[i + 1];
+
+        fs::path tribes = dts_viewer::resolveTribesDir();
+        if (tribes.empty()) {
+            std::fprintf(stderr, "--ai-paths: Tribes dir not resolved\n");
+            return 2;
+        }
+        fs::path missions_dir = tribes / "base" / "missions";
+        fs::path base_dir     = tribes / "base";
+        auto lm = dts_viewer::load_mission(missions_dir, base_dir, mission_stem);
+        if (!lm) {
+            std::fprintf(stderr, "--ai-paths: load_mission(\"%s\") failed\n",
+                         mission_stem.c_str());
+            return 3;
+        }
+
+        auto paths = dts_viewer::load_bot_paths(lm->scene.root.children);
+        auto graph = dts_viewer::load_nav_graph(lm->scene.root.children);
+
+        std::printf("mission %s: %zu bot path(s), %zu AIGraph node(s)\n",
+                    mission_stem.c_str(), paths.size(), graph.nodes.size());
+        for (const auto& bp : paths) {
+            std::printf("  team%d/%s: spawn=(%.1f %.1f %.1f) waypoints=%zu\n",
+                        bp.team, bp.drone_name.c_str(),
+                        bp.spawn_pos[0], bp.spawn_pos[1], bp.spawn_pos[2],
+                        bp.waypoints.size());
+            for (std::size_t w = 0; w < bp.waypoints.size(); ++w) {
+                std::printf("    [%zu] (%.1f %.1f %.1f)\n", w,
+                            bp.waypoints[w][0], bp.waypoints[w][1],
+                            bp.waypoints[w][2]);
+            }
+        }
+        for (std::size_t n = 0; n < graph.nodes.size(); ++n) {
+            std::printf("  AIGraph[%zu] (%.1f %.1f %.1f)\n", n,
+                        graph.nodes[n][0], graph.nodes[n][1],
+                        graph.nodes[n][2]);
+        }
+        return 0;
+    }
 
     // When launched with no positional arguments, try the BYO asset resolver
     // to find the Tribes install dir, then launch the mission viewer.
