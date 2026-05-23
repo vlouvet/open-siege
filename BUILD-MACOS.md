@@ -48,6 +48,34 @@ cmake --build . -j8
 ./3space-tests                 # 54 assertions
 ```
 
+## Build all three binaries (track 26)
+
+After `3space` is built, the dts-viewer plus the new
+`open-siege-t1-client` / `open-siege-t1-server` binaries can be built in
+one shot via the top-level CMakeLists option:
+
+```sh
+cd open-siege
+cmake -S . -B build \
+    -DOPEN_SIEGE_BUILD_UPSTREAM=OFF \
+    -DOPEN_SIEGE_BUILD_APPS=ON \
+    -DCMAKE_MODULE_PATH=$(pwd)/3space/build/cmake
+cmake --build build -j
+# Binaries land at:
+#   build/examples/dts-viewer/dts-viewer
+#   build/apps/open-siege-t1-client/open-siege-t1-client
+#   build/apps/open-siege-t1-server/open-siege-t1-server
+#   build/examples/net-test-client/net-test-client
+```
+
+Or build each app in its own directory:
+
+```sh
+cd open-siege/examples/dts-viewer && cmake -S . -B build && cmake --build build -j
+cd open-siege/apps/open-siege-t1-server && cmake -S . -B build && cmake --build build -j
+cd open-siege/apps/open-siege-t1-client && cmake -S . -B build && cmake --build build -j
+```
+
 ## What works
 
 End-to-end validated against the official Tribes 1 freeware release:
