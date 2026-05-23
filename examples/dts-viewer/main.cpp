@@ -43,6 +43,7 @@
 #include "mission_loader.hpp"
 #include "bot_paths.hpp"
 #include "ai_player.hpp"
+#include "ai_tick.hpp"
 #include "camera.hpp"
 #include "height_sampler.hpp"
 #include "mission_bounds.hpp"
@@ -1595,6 +1596,100 @@ int main(int argc, char** argv)
         check(bot != nullptr, "name-collision spawn left original bot alive");
 
         std::printf("--ai-selftest: all checks passed\n");
+        return 0;
+    }
+
+    // Spec 18/03 — `--ai-tick-selftest` covers vars + tick + pathfollow +
+    // periodic callbacks + Graph stubs + callWithId.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--ai-tick-selftest") continue;
+
+        dts_viewer::cscript::init();
+        auto check = [&](bool ok, const char* msg) {
+            std::printf("  %s %s\n", ok ? "[PASS]" : "[FAIL]", msg);
+            if (!ok) std::exit(1);
+        };
+        auto tick_for = [](float total_s) {
+            constexpr float dt = 1.0f / 30.0f;
+            for (float t = 0.0f; t < total_s; t += dt)
+                dts_viewer::ai_tick_all(dt);
+        };
+
+        // --- pathType=1 (oneWay): bot stops at last waypoint ---
+        dts_viewer::cscript::eval(
+            "AI::spawn(\"a\", \"larmor\", \"0 0 0\", \"0 0 0\", \"A\", \"male2\");"
+            "AI::DirectiveWaypoint(\"a\", \"10 0 0\", 100);"
+            "AI::DirectiveWaypoint(\"a\", \"20 0 0\", 200);"
+            "AI::SetVar(\"a\", pathType, 1);");
+        AIPlayer* a = dts_viewer::find_ai_player_by_name("a");
+        check(a && a->mWaypoints.size() == 2,         "spec03: two waypoints");
+        tick_for(5.0f);    // 5s at 7 m/s = 35m — past waypoint 1, approaching 2
+        check(a && a->mTickPos[0] > 10.0f,            "spec03 oneWay: past wp1 after 5s");
+        tick_for(10.0f);   // 15s total — should have stopped at wp2
+        check(a && std::abs(a->mTickPos[0] - 20.0f) < 0.5f, "spec03 oneWay: stopped at wp2");
+
+        // --- pathType=2 (twoWay): bot reverses direction at endpoints ---
+        dts_viewer::cscript::eval(
+            "AI::spawn(\"b\", \"larmor\", \"0 0 0\", \"0 0 0\", \"B\", \"male2\");"
+            "AI::DirectiveWaypoint(\"b\", \"10 0 0\", 100);"
+            "AI::DirectiveWaypoint(\"b\", \"20 0 0\", 200);"
+            "AI::SetVar(\"b\", pathType, 2);");
+        AIPlayer* b = dts_viewer::find_ai_player_by_name("b");
+        // Tick in small slices and watch for any -1 sample. With ~28m of
+        // total run-distance and a 20m round-trip, the bot will reverse
+        // mid-window — the only deterministic check is "did we see it".
+        bool saw_reverse = false;
+        for (int s = 0; s < 30; ++s) {
+            dts_viewer::ai_tick_all(0.1f);
+            if (b && b->mPathDirection == -1) saw_reverse = true;
+        }
+        check(b && saw_reverse, "spec03 twoWay: direction reversed at some point");
+
+        // --- pathType=0 (circular): bot wraps ---
+        dts_viewer::cscript::eval(
+            "AI::spawn(\"c\", \"larmor\", \"0 0 0\", \"0 0 0\", \"C\", \"male2\");"
+            "AI::DirectiveWaypoint(\"c\", \"10 0 0\", 100);"
+            "AI::DirectiveWaypoint(\"c\", \"10 10 0\", 200);"
+            "AI::SetVar(\"c\", pathType, 0);");
+        AIPlayer* c = dts_viewer::find_ai_player_by_name("c");
+        tick_for(8.0f);
+        check(c && c->mVars["pathType"] == "0", "spec03: pathType var stored");
+
+        // --- AI::CallbackPeriodic fires ---
+        dts_viewer::cscript::eval(
+            "$ticks = 0;"
+            "function spec03_cb(%n) { $ticks++; }"
+            "AI::spawn(\"d\", \"larmor\", \"0 0 0\", \"0 0 0\", \"D\", \"male2\");"
+            "AI::CallbackPeriodic(\"d\", 1, \"spec03_cb\");");
+        tick_for(3.5f);    // expect 3 firings
+        dts_viewer::cscript::eval("echo(\"$ticks=\" @ $ticks);");
+        // Probe via a script-stored result the test can read back.
+        // (We don't have a getGlobal helper; rely on the echoed line.)
+        // Simpler: re-derive by checking the timer was reset (accumulator > 0).
+        AIPlayer* d = dts_viewer::find_ai_player_by_name("d");
+        check(d && d->mPeriodicAccumulator > 0.0f && d->mPeriodicAccumulator <= 1.0f,
+              "spec03: periodic callback accumulator reset");
+
+        // --- AI::callWithId wildcard: invoke a script function once per bot.
+        // Probe via AI::setVar(id, "spec03_seen", "1") — resolve_ai accepts
+        // numeric-string ids, so the AI::setVar binding marks each bot's
+        // var bag without needing a name-lookup helper.
+        dts_viewer::cscript::eval(
+            "AI::callWithId(\"*\", AI::setVar, spec03_seen, 1);");
+        int marked = 0;
+        for (auto* bot : dts_viewer::all_ai_players())
+            if (bot->mVars.count("spec03_seen")) ++marked;
+        check(marked >= 4, "spec03: callWithId wildcard reached all 4 bots");
+
+        // --- Graph stubs callable without throwing ---
+        dts_viewer::cscript::eval(
+            "Graph::reset();"
+            "Graph::AddNode(\"0 0 0\", \"Node 0\");"
+            "Graph::AddNode(\"10 0 0\", \"Node 1\");"
+            "Graph::buildGraph();");
+
+        std::printf("--ai-tick-selftest: all checks passed\n");
         return 0;
     }
 

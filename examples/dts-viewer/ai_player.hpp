@@ -49,6 +49,18 @@ public:
     bool  mCurrentTargetLOSHeld  = false;
     int   mLastLostTargetClientId = -1;
 
+    // Spec 18/03 — periodic-callback record. fn_name == "" means no
+    // callback. accumulator counts down from `period_sec` each tick;
+    // when it reaches 0 the script is fired and the accumulator resets.
+    std::string mPeriodicFn;
+    float       mPeriodicPeriod      = 0.0f;
+    float       mPeriodicAccumulator = 0.0f;
+
+    // Spec 18/03 — live-position cache for the tick loop. The tick
+    // reads/writes these directly; spec 18/05 syncs them into mLive
+    // (the bridged PlayerState) so the gameplay layer renders them.
+    float mTickPos[3] = {0.0f, 0.0f, 0.0f};
+
     AIPlayer();
 
     static void initPersistFields();

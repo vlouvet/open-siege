@@ -15,6 +15,7 @@
 
 #include "console/console.h"
 #include "console/consoleInternal.h"
+#include "console/script.h"
 #include "console/sim.h"
 #include "console/simObject.h"
 
@@ -75,6 +76,9 @@ const char* ai_spawn_cb(SimObject*, S32 argc, ConsoleValue* argv)
     bot->mPos      = StringTable->insert(pos ? pos : "0 0 0");
     bot->mVel      = StringTable->insert("0 0 0");
     bot->mDataBlock = StringTable->insert(bot->mArmorKey.c_str());
+    // Spec 18/03 — seed the tick-position from the spawn pos so the
+    // pathfollow loop has a starting point.
+    parseVec3(pos, bot->mTickPos);
     (void)rot;  // v1: rotation kept on the spawn marker; physics owns the
                 // live rotation. Spec 18/03 hooks it into mLive when set.
 
@@ -157,6 +161,117 @@ void ai_directive_targetlaser_cb(SimObject*, S32 argc, ConsoleValue* argv)
     ai_directive_target_cb(nullptr, argc, argv);
 }
 
+// ---------------------------------------------------------------------------
+// AI::SetVar(name, varName, value) — alias AI::setVar. Wildcard "*" name
+// applies to every live AIPlayer (per ai.cs L56).
+// ---------------------------------------------------------------------------
+void ai_setvar_cb(SimObject*, S32 argc, ConsoleValue* argv)
+{
+    if (argc < 4) return;
+    const char* name    = argv[1].getString();
+    const char* varName = argv[2].getString();
+    const char* value   = argv[3].getString();
+    if (!varName || !*varName) return;
+    if (!value) value = "";
+
+    if (name && std::strcmp(name, "*") == 0) {
+        for (auto* bot : dts_viewer::all_ai_players())
+            bot->mVars[varName] = value;
+        return;
+    }
+    if (AIPlayer* bot = resolve_ai(argv[1]))
+        bot->mVars[varName] = value;
+}
+
+// ---------------------------------------------------------------------------
+// AI::CallbackPeriodic(name, freqSec, scriptFunc) — schedule `scriptFunc`
+// to fire every `freqSec` real seconds. Stored on the AIPlayer and ticked
+// by ai_tick_all (spec 18/03).
+// ---------------------------------------------------------------------------
+void ai_callback_periodic_cb(SimObject*, S32 argc, ConsoleValue* argv)
+{
+    if (argc < 4) return;
+    AIPlayer* bot = resolve_ai(argv[1]);
+    if (!bot) return;
+    const float freq = static_cast<float>(argv[2].getFloat());
+    const char* fn   = argv[3].getString();
+    if (!fn) fn = "";
+    bot->mPeriodicFn          = fn;
+    bot->mPeriodicPeriod      = (freq > 0.0f) ? freq : 0.0f;
+    bot->mPeriodicAccumulator = bot->mPeriodicPeriod;
+}
+
+// ---------------------------------------------------------------------------
+// AI::callWithId(aiId, scriptFunc, ...args) — invoke `scriptFunc` with
+// `aiId` prepended. `aiId == "*"` runs once per live bot. ai.cs L54-55,
+// L486-488 are the retail call sites.
+//
+// We emit a literal script statement (`Player::mountItem(2050, blaster, 0);`)
+// rather than going through Sim::callMethod so the call site lands in the
+// existing Namespace lookup with the right argument types.
+// ---------------------------------------------------------------------------
+void ai_callwith_id_cb(SimObject*, S32 argc, ConsoleValue* argv)
+{
+    if (argc < 3) return;
+    const char* id_or_star = argv[1].getString();
+    const char* fn         = argv[2].getString();
+    if (!fn || !*fn) return;
+
+    auto emit_call = [&](int id) {
+        std::string cmd;
+        cmd.reserve(64);
+        cmd.append(fn);
+        cmd.push_back('(');
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d", id);
+        cmd.append(buf);
+        for (S32 i = 3; i < argc; ++i) {
+            cmd.append(", ");
+            const char* a = argv[i].getString();
+            // Wrap string args in quotes (numeric-looking args pass through
+            // — TorqueScript parses them either way).
+            if (a && *a) {
+                cmd.push_back('"');
+                cmd.append(a);
+                cmd.push_back('"');
+            } else {
+                cmd.append("\"\"");
+            }
+        }
+        cmd.append(");");
+        Con::evaluate(cmd.c_str(), false, "AI::callWithId");
+    };
+
+    if (std::strcmp(id_or_star, "*") == 0) {
+        for (auto* bot : dts_viewer::all_ai_players())
+            emit_call(static_cast<int>(bot->getId()));
+        return;
+    }
+    if (AIPlayer* bot = resolve_ai(argv[1]))
+        emit_call(static_cast<int>(bot->getId()));
+}
+
+// ---------------------------------------------------------------------------
+// Graph::AddNode / Graph::buildGraph / Graph::reset — stubs. Retail
+// ai.cs::buildGraph calls these for MissionGroup\AIGraph nodes. v1 does
+// straight-line waypoint following, so we just log + count.
+// ---------------------------------------------------------------------------
+namespace { int g_graph_node_count = 0; }
+
+void graph_addnode_cb(SimObject*, S32 argc, ConsoleValue*)
+{
+    if (argc >= 2) ++g_graph_node_count;
+}
+void graph_buildgraph_cb(SimObject*, S32, ConsoleValue*)
+{
+    Con::printf("Graph::buildGraph stub — %d nodes registered (v1 ignores)",
+                g_graph_node_count);
+}
+void graph_reset_cb(SimObject*, S32, ConsoleValue*)
+{
+    g_graph_node_count = 0;
+}
+
 } // namespace
 
 namespace dts_viewer {
@@ -184,6 +299,25 @@ void anchorAIBindings()
     Con::addCommand("AI", "DirectiveTargetLaser",  ai_directive_targetlaser_cb,
                     "(aiId, clientId) — force target (laser-painted)",
                     3, 3);
+
+    // Spec 18/03 — variable bag, periodic callbacks, callWithId, Graph stubs.
+    Con::addCommand("AI", "SetVar",            ai_setvar_cb,
+                    "(name, varName, value) — set a bot variable", 4, 4);
+    Con::addCommand("AI", "setVar",            ai_setvar_cb,
+                    "(name, varName, value) — lowercase alias", 4, 4);
+    Con::addCommand("AI", "CallbackPeriodic",  ai_callback_periodic_cb,
+                    "(name, freqSec, scriptFunc)", 4, 4);
+    Con::addCommand("AI", "callbackPeriodic",  ai_callback_periodic_cb,
+                    "(name, freqSec, scriptFunc) — lowercase alias", 4, 4);
+    Con::addCommand("AI", "callWithId",        ai_callwith_id_cb,
+                    "(aiId, scriptFunc, ...) — invoke scriptFunc(aiId, ...)",
+                    3, 32);
+    Con::addCommand("Graph", "AddNode",        graph_addnode_cb,
+                    "(pos, name) — stub: nav-graph node (v1 ignores)", 3, 3);
+    Con::addCommand("Graph", "buildGraph",     graph_buildgraph_cb,
+                    "() — stub: finalise nav graph", 1, 1);
+    Con::addCommand("Graph", "reset",          graph_reset_cb,
+                    "() — stub: clear nav graph", 1, 1);
 }
 
 } // namespace dts_viewer
