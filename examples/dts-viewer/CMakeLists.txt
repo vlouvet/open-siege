@@ -20,9 +20,12 @@ if(UNIX AND NOT APPLE OR WIN32)
 endif()
 
 # Track 26 spec 01 — osengine library holds all platform-free code.
-# dts-viewer adds the GL/SDL/ImGui/audio sources on top.
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../engine
-                 ${CMAKE_CURRENT_BINARY_DIR}/engine)
+# dts-viewer adds the GL/SDL/ImGui/audio sources on top. Guarded so the
+# top-level CMakeLists (spec 09) can add engine itself without conflict.
+if(NOT TARGET osengine)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../engine
+                     ${CMAKE_CURRENT_BINARY_DIR}/engine)
+endif()
 
 # (Conan finds inherited from osengine via target_link_libraries below.)
 
