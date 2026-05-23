@@ -8,6 +8,7 @@
 #include <osengine/audio_sink.hpp>
 #include <osengine/mission_loader.hpp>
 #include <osengine/mission_sounds.hpp>
+#include <osengine/paths.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -86,8 +87,15 @@ int main(int argc, char** argv)
     }
 
     if (tribes_dir.empty()) {
-        std::fputs("[server] --tribes-dir is required\n", stderr);
-        return 2;
+        tribes_dir = os_paths::assets_dir();
+        if (tribes_dir.empty()) {
+            std::fprintf(stderr,
+                "[server] --tribes-dir not given and no %s/tribes-dir.txt found\n",
+                os_paths::config_dir("shared").string().c_str());
+            return 2;
+        }
+        std::fprintf(stderr, "[server] using assets_dir from %s\n",
+                     os_paths::config_dir("shared").string().c_str());
     }
 
     std::signal(SIGINT, on_sigint);

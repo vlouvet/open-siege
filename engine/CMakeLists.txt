@@ -45,6 +45,7 @@ add_library(osengine STATIC
     src/movecommand.cpp
     src/net_client.cpp
     src/null_audio_sink.cpp
+    src/paths.cpp
     src/physics_capsule.cpp
     src/player_controller.cpp
     src/player_simobject.cpp
