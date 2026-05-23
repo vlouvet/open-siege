@@ -174,9 +174,17 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j$(nproc)
 
-      - name: Smoke test (--help)
+      - name: Smoke test (header-only self-tests)
         working-directory: examples/dts-viewer
-        run: ./build/dts-viewer.exe --help || true
+        # dts-viewer doesn't have a --help flag (it treats unknown args
+        # as VOL filenames). The header-only spec 22 self-tests are
+        # pure-simulation, exit non-zero on assertion failure, and don't
+        # touch GL — perfect for a CI smoke check that proves the binary
+        # actually links and runs.
+        run: |
+          ./build/dts-viewer.exe --prediction-selftest
+          ./build/dts-viewer.exe --lag-comp-selftest
+          ./build/dts-viewer.exe --jitter-buffer-selftest
 
       - name: Export MSYS2 UCRT64 bin path for packaging
         # setup-msys2@v2 installs MSYS2 to D:\a\_temp\msys64 on the
