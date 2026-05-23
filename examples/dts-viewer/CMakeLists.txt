@@ -74,6 +74,7 @@ add_executable(dts-viewer
     ai_player.cpp
     ai_bindings.cpp
     ai_tick.cpp
+    ai_perception.cpp
     # spec 20/15 — remote-ghost rendering. The four .cpp files below live
     # under examples/net-test-client/ (their original home from specs
     # 20/10, 20/12, 20/14, 20/22). We share the sources rather than

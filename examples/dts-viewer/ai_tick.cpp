@@ -3,6 +3,7 @@
 
 #include "ai_tick.hpp"
 #include "ai_player.hpp"
+#include "ai_perception.hpp"
 
 #include "console/console.h"
 #include "console/script.h"
@@ -58,7 +59,11 @@ void advance_waypoint(AIPlayer& bot)
 
 void tick_one(AIPlayer& bot, float dt)
 {
-    // Periodic callback first — fires even if no waypoints.
+    // Spec 18/04 — perception first, so target callbacks fire before
+    // any movement reacts to them.
+    dts_viewer::run_perception_tick(bot);
+
+    // Periodic callback next — fires even if no waypoints.
     if (!bot.mPeriodicFn.empty() && bot.mPeriodicPeriod > 0.0f) {
         bot.mPeriodicAccumulator -= dt;
         if (bot.mPeriodicAccumulator <= 0.0f) {

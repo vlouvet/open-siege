@@ -272,6 +272,25 @@ void graph_reset_cb(SimObject*, S32, ConsoleValue*)
     g_graph_node_count = 0;
 }
 
+// ---------------------------------------------------------------------------
+// Spec 18/04 — AI::setAutomaticTargets + ai::getTarget
+// ---------------------------------------------------------------------------
+void ai_set_automatic_targets_cb(SimObject*, S32 argc, ConsoleValue* argv)
+{
+    if (argc < 2) return;
+    if (AIPlayer* bot = resolve_ai(argv[1]))
+        bot->mAutoTargets = true;
+}
+
+S32 ai_get_target_cb(SimObject*, S32 argc, ConsoleValue* argv)
+{
+    if (argc < 2) return -1;
+    AIPlayer* bot = resolve_ai(argv[1]);
+    if (!bot) return -1;
+    if (bot->mForcedTargetClientId >= 0) return bot->mForcedTargetClientId;
+    return bot->mCurrentTargetClientId;
+}
+
 } // namespace
 
 namespace dts_viewer {
@@ -318,6 +337,13 @@ void anchorAIBindings()
                     "() — stub: finalise nav graph", 1, 1);
     Con::addCommand("Graph", "reset",          graph_reset_cb,
                     "() — stub: clear nav graph", 1, 1);
+
+    // Spec 18/04 — perception bindings. ai::getTarget is lowercase per
+    // ai.cs L158.
+    Con::addCommand("AI", "setAutomaticTargets", ai_set_automatic_targets_cb,
+                    "(name) — enable engine-side auto-targeting", 2, 2);
+    Con::addCommand("ai", "getTarget",           ai_get_target_cb,
+                    "(name) — current target client id (-1 if none)", 2, 2);
 }
 
 } // namespace dts_viewer

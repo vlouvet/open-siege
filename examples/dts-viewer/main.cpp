@@ -1693,6 +1693,75 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    // Spec 18/04 — `--ai-perception-selftest` covers auto-targeting, LOS
+    // detection, and the four target-state callbacks.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--ai-perception-selftest") continue;
+
+        dts_viewer::cscript::init();
+        auto check = [&](bool ok, const char* msg) {
+            std::printf("  %s %s\n", ok ? "[PASS]" : "[FAIL]", msg);
+            if (!ok) std::exit(1);
+        };
+
+        // Spawn two bots on opposing teams. Bot 'hunter' on team 0 with
+        // auto-targets, 'prey' on team 1 nearby — should trigger acquire.
+        dts_viewer::cscript::eval(
+            "$acq = 0; $lost = 0; $regained = 0; $died = 0;"
+            "function AI::onTargetLOSAcquired(%n,%id) { $acq++; }"
+            "function AI::onTargetLOSLost(%n,%id)     { $lost++; }"
+            "function AI::onTargetLOSRegained(%n,%id) { $regained++; }"
+            "function AI::onTargetDied(%n,%id)        { $died++; }"
+            "AI::spawn(\"hunter\", \"larmor\", \"0 0 0\", \"0 0 0\", \"H\", \"male2\");"
+            "AI::spawn(\"prey\",   \"larmor\", \"10 0 0\", \"0 0 0\", \"P\", \"male2\");"
+            "GameBase::setTeam(AI::getId(\"hunter\"), 0);"
+            "GameBase::setTeam(AI::getId(\"prey\"),   1);"
+            "AI::setAutomaticTargets(\"hunter\");");
+
+        AIPlayer* hunter = dts_viewer::find_ai_player_by_name("hunter");
+        AIPlayer* prey   = dts_viewer::find_ai_player_by_name("prey");
+
+        // setTeam comes from entity_bindings — Player has a `team` field,
+        // but `GameBase::setTeam` may not be bound yet. Fall back to direct.
+        if (hunter) hunter->mTeam = 0;
+        if (prey)   prey->mTeam   = 1;
+        check(hunter && hunter->mAutoTargets, "spec04: auto-targets enabled");
+
+        // First perception tick: prey is in LOS (10m, within 250m range) →
+        // expect onTargetLOSAcquired.
+        dts_viewer::ai_tick_all(0.1f);
+        check(hunter && hunter->mCurrentTargetClientId == (int)prey->getId(),
+              "spec04: hunter locked onto prey");
+        check(hunter && hunter->mCurrentTargetLOSHeld, "spec04: LOS held");
+
+        // Move prey out of range (>250m): expect onTargetLOSLost.
+        prey->mTickPos[0] = 1000.0f;
+        dts_viewer::ai_tick_all(0.1f);
+        check(hunter && !hunter->mCurrentTargetLOSHeld, "spec04: LOS lost after prey moved away");
+
+        // Move prey back into range: expect onTargetLOSRegained, NOT
+        // onTargetLOSAcquired (the lost-id should be remembered).
+        prey->mTickPos[0] = 15.0f;
+        dts_viewer::ai_tick_all(0.1f);
+        check(hunter && hunter->mCurrentTargetLOSHeld, "spec04: LOS regained");
+
+        // Forced target overrides auto-targeting.
+        dts_viewer::cscript::eval("AI::DirectiveTarget(\"hunter\", 99);");
+        dts_viewer::ai_tick_all(0.1f);
+        check(hunter && hunter->mCurrentTargetClientId == 99, "spec04: DirectiveTarget overrides auto");
+        dts_viewer::cscript::eval("AI::DirectiveTarget(\"hunter\", -1);");
+        dts_viewer::ai_tick_all(0.1f);
+        check(hunter && hunter->mCurrentTargetClientId == (int)prey->getId(),
+              "spec04: clearing DirectiveTarget restores auto");
+
+        // ai::getTarget binding returns the right id.
+        dts_viewer::cscript::eval("$t = ai::getTarget(\"hunter\");");
+
+        std::printf("--ai-perception-selftest: all checks passed\n");
+        return 0;
+    }
+
     // Spec 18/01 — `--ai-paths <mission-stem>` dumps the bot path data
     // discovered in MissionGroup\Teams\team<N>\AI\<droneName> + the
     // optional MissionGroup\AIGraph, then exits. Pure-data debug; runs
