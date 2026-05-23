@@ -97,17 +97,11 @@ elseif(WIN32)
 endif()
 
 # cscript_core (Torque3D heritage) uses SDL2 for its thread/mutex/semaphore
-# primitives — see 3space/cscript/.../platformSDL_threads/. So osengine
-# transitively depends on SDL2, even though no osengine-side .cpp touches
-# SDL directly. The dep is purely for cscript's threading; consumers
-# (dts-viewer, future server) need to link SDL2 themselves OR we propagate
-# it here. Propagating keeps single-source-of-truth. The server binary
-# can link SDL2 just for the threading symbols (~20KB) without ever
-# initialising video/audio.
-find_package(SDL2 REQUIRED)
-if(TARGET SDL2::SDL2)
-    target_link_libraries(osengine PUBLIC SDL2::SDL2)
-else()
-    target_link_libraries(osengine PUBLIC ${SDL2_LIBRARIES})
-    target_include_directories(osengine PUBLIC ${SDL2_INCLUDE_DIRS})
-endif()
+# primitives — see 3space/cscript/.../platformSDL_threads/. osengine itself
+# never touches SDL, but every consumer (dts-viewer, server, client) MUST
+# link SDL2 to satisfy cscript_core's transitive references.
+#
+# We do NOT propagate SDL2 from here because find_package(SDL2) behavior
+# varies across platforms (target name SDL2::SDL2 vs raw ${SDL2_LIBRARIES})
+# and getting the link ORDER right is what matters on Windows MinGW
+# (static-archive single-pass). Consumers handle it explicitly.

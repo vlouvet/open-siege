@@ -75,10 +75,25 @@ target_include_directories(dts-viewer PRIVATE
     ${IMGUI_DIR}/backends
     ${SDL2_INCLUDE_DIRS})
 
-target_link_libraries(dts-viewer PRIVATE
-    osengine               # public-deps come along: 3space, cscript, conan
-    ${SDL2_LIBRARIES}
-    OpenGL::GL)
+# Windows MinGW (ld.bfd) uses single-pass static-archive resolution.
+# libcscript_core.a (via osengine) references SDL_CreateMutex/Thread/
+# Semaphore — but those refs aren't seen until cscript_core itself is
+# pulled in, by which time SDL2 has already been scanned. Wrap the
+# static libs in --start-group/--end-group so the linker re-scans them
+# until all refs resolve.
+if(WIN32)
+    target_link_libraries(dts-viewer PRIVATE
+        "-Wl,--start-group"
+        osengine
+        ${SDL2_LIBRARIES}
+        "-Wl,--end-group"
+        OpenGL::GL)
+else()
+    target_link_libraries(dts-viewer PRIVATE
+        osengine
+        ${SDL2_LIBRARIES}
+        OpenGL::GL)
+endif()
 
 if(APPLE)
     target_link_libraries(dts-viewer PRIVATE
