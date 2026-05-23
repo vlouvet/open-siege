@@ -89,9 +89,25 @@ target_link_libraries(osengine PUBLIC
     libzip::zip)
 
 # Platform plumbing — for sockets and the like that the net-protocol
-# code uses. NO SDL, NO GL, NO audio.
+# code uses.
 if(UNIX)
     target_link_libraries(osengine PUBLIC dl pthread m)
 elseif(WIN32)
     target_link_libraries(osengine PUBLIC ws2_32 winmm)
+endif()
+
+# cscript_core (Torque3D heritage) uses SDL2 for its thread/mutex/semaphore
+# primitives — see 3space/cscript/.../platformSDL_threads/. So osengine
+# transitively depends on SDL2, even though no osengine-side .cpp touches
+# SDL directly. The dep is purely for cscript's threading; consumers
+# (dts-viewer, future server) need to link SDL2 themselves OR we propagate
+# it here. Propagating keeps single-source-of-truth. The server binary
+# can link SDL2 just for the threading symbols (~20KB) without ever
+# initialising video/audio.
+find_package(SDL2 REQUIRED)
+if(TARGET SDL2::SDL2)
+    target_link_libraries(osengine PUBLIC SDL2::SDL2)
+else()
+    target_link_libraries(osengine PUBLIC ${SDL2_LIBRARIES})
+    target_include_directories(osengine PUBLIC ${SDL2_INCLUDE_DIRS})
 endif()
