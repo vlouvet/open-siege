@@ -19,6 +19,11 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
+          # cache: true persists the pacman package downloads + DB across
+          # runs. Saves ~30s per run after the first successful hit. Free
+          # for public OSS repos (uses the same 10 GB Actions cache pool
+          # as actions/cache@v4).
+          cache: true
           update: true
           install: >-
             mingw-w64-ucrt-x86_64-toolchain
@@ -60,32 +65,37 @@ jobs:
           print(f"Patched gcc.version allowlist; now contains {len(v)} entries")
           PY
 
-          # Build the profile by hand — `conan profile new --detect` on a
-          # windows-2022 runner picks Visual Studio 17 because VS is on
-          # PATH ahead of MSYS2's gcc, even when this step itself runs
-          # inside the msys2 shell. We want MinGW gcc, so we write the
-          # profile explicitly and read the gcc version from `gcc --version`.
+          # Build the profile by hand. Two reasons:
+          #   1. `conan profile new --detect` picks Visual Studio 17 on a
+          #      windows-2022 runner because VS is on PATH ahead of MSYS2
+          #      gcc, even from inside the msys2 shell.
+          #   2. msys2 bash and Windows Python disagree on what `~` means
+          #      (/home/runneradmin vs C:\Users\runneradmin), so we can't
+          #      use `cat > ~/.conan/profiles/default` — the Python
+          #      conan client wouldn't find the file. Have Python write
+          #      it instead so both sides agree on the path.
           GCC_FULL=$(gcc -dumpversion)        # e.g. "16.1.0"
           GCC_MAJOR=${GCC_FULL%%.*}            # "16"
           echo "Using gcc ${GCC_FULL} (major: ${GCC_MAJOR})"
-          mkdir -p ~/.conan/profiles
-          cat > ~/.conan/profiles/default <<EOF
-          [settings]
-          os=Windows
-          os_build=Windows
-          arch=x86_64
-          arch_build=x86_64
-          compiler=gcc
-          compiler.version=${GCC_MAJOR}
-          compiler.libcxx=libstdc++11
-          compiler.threads=posix
-          compiler.exception=seh
-          build_type=Release
-          [options]
-          [conf]
-          [build_requires]
-          [env]
-          EOF
+          GCC_MAJOR="$GCC_MAJOR" ~/.conan-venv/bin/python - <<'PY'
+          import os, pathlib
+          profile_dir = pathlib.Path.home() / '.conan' / 'profiles'
+          profile_dir.mkdir(parents=True, exist_ok=True)
+          lines = [
+              '[settings]',
+              'os=Windows',
+              'os_build=Windows',
+              'arch=x86_64',
+              'arch_build=x86_64',
+              'compiler=gcc',
+              f"compiler.version={os.environ['GCC_MAJOR']}",
+              'compiler.libcxx=libstdc++11',
+              'build_type=Release',
+              '[options]', '[conf]', '[build_requires]', '[env]', '',
+          ]
+          (profile_dir / 'default').write_text('\n'.join(lines))
+          print(f"Wrote {profile_dir / 'default'}")
+          PY
           echo "--- conan profile show default ---"
           ~/.conan-venv/bin/conan profile show default
 
