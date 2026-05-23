@@ -41,12 +41,15 @@ add_library(osengine STATIC
     src/mission.cpp
     src/mission_bounds.cpp
     src/mission_loader.cpp
+    src/mission_sounds.cpp
     src/movecommand.cpp
+    src/null_audio_sink.cpp
     src/physics_capsule.cpp
     src/player_controller.cpp
     src/player_simobject.cpp
     src/reliable_acks.cpp
     src/vehicle.cpp
+    src/wav_loader.cpp
     src/weapons.cpp)
 
 target_include_directories(osengine PUBLIC

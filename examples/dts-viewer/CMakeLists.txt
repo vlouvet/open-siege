@@ -46,11 +46,9 @@ add_executable(dts-viewer
     help_menu.cpp
     viewer_state.cpp
     mission_switcher.cpp
-    # HUD + audio (SDL):
+    # HUD + audio (SDL/miniaudio — engine has wav_loader + mission_sounds):
     hud.cpp
-    wav_loader.cpp
     audio.cpp
-    mission_sounds.cpp
     # Asset glue (filesystem):
     asset_resolver.cpp
     asset_cache.cpp

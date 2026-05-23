@@ -3041,7 +3041,8 @@ int main(int argc, char** argv)
         dts_viewer::MissionSoundsState mission_audio;
         if (ter_mission) {
             mission_audio = dts_viewer::mission_sounds_load(
-                ter_mission->scene, ted_path.parent_path().parent_path());
+                ter_mission->scene, ted_path.parent_path().parent_path(),
+                dts_viewer::audio_default_sink());
             std::fprintf(stderr,
                 "audio: registered %zu mission ambient voices%s\n",
                 mission_audio.voices.size(),
@@ -4277,7 +4278,7 @@ int main(int argc, char** argv)
         }
 
         dts_viewer::mission_unload(mctx);
-        dts_viewer::mission_sounds_unload(mission_audio);
+        dts_viewer::mission_sounds_unload(mission_audio, dts_viewer::audio_default_sink());
         dts_viewer::audio_shutdown();
         dts_viewer::hud2d_shutdown();
         dts_viewer::imgui_shutdown();

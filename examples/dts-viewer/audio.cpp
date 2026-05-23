@@ -264,4 +264,32 @@ void audio_set_source_position(SoundHandle h, const glm::vec3& world_pos)
 
 bool audio_backend_active() { return g_initialized; }
 
+namespace
+{
+
+struct MiniAudioSink final : IAudioSink
+{
+    SoundHandle play_oneshot(const WavSample& s, float g) override
+    { return audio_play_oneshot(s, g); }
+    SoundHandle play_looping(const WavSample& s, float g) override
+    { return audio_play_looping(s, g); }
+    SoundHandle play_at(const WavSample& s, const glm::vec3& p,
+                        float rd, float md, float g, bool l) override
+    { return audio_play_at(s, p, rd, md, g, l); }
+    void stop(SoundHandle h) override { audio_stop(h); }
+    void set_source_position(SoundHandle h, const glm::vec3& p) override
+    { audio_set_source_position(h, p); }
+    void set_listener(const glm::vec3& p, const glm::vec3& f, const glm::vec3& u) override
+    { audio_set_listener(p, f, u); }
+    bool active() const override { return audio_backend_active(); }
+};
+
+} // anonymous namespace
+
+IAudioSink& audio_default_sink()
+{
+    static MiniAudioSink s;
+    return s;
+}
+
 } // namespace dts_viewer

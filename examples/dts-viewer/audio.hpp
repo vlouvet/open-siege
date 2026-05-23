@@ -1,39 +1,36 @@
 #ifndef DTS_VIEWER_AUDIO_HPP
 #define DTS_VIEWER_AUDIO_HPP
 
-// Audio backend API — Track 11 specs 02–06.
+// dts-viewer's miniaudio backend.
 //
-// v1 ships the API surface only; the actual mixing/output backend (miniaudio
-// or OpenAL Soft) requires vendoring a third-party header which is gated on
-// user authorisation.  Until that happens, audio_init() returns true and
-// every play_* call returns a non-zero handle but no audio is emitted.  All
-// callers continue to function (turret loops, BGM, footsteps), they're just
-// silent.
-//
-// When the backend is wired (a future spec or interactive vendor step), only
-// audio.cpp changes — callers depend on this header alone.
+// The pure-virtual IAudioSink lives in <osengine/audio_sink.hpp> so engine
+// code (mission_sounds, weapons, ...) can call it without dragging the
+// miniaudio header in. main.cpp still uses the free-function init/shutdown
+// + set_listener for the top-level lifecycle; the sink wraps everything.
 
-#include <cstdint>
+#include <osengine/audio_sink.hpp>
+#include <osengine/wav_loader.hpp>
+
 #include <glm/glm.hpp>
-
-#include "wav_loader.hpp"
 
 namespace dts_viewer
 {
 
-using SoundHandle = std::uint32_t;
-constexpr SoundHandle kInvalidSound = 0;
-
 // One-shot lifecycle.
 bool          audio_init();
 void          audio_shutdown();
+
+// The MiniAudioSink for the running backend. mission_sounds_load receives
+// this; pass null_audio_sink() instead when audio_init failed or you want
+// no audio.
+IAudioSink&   audio_default_sink();
 
 // 2D playback (no positional attenuation).
 SoundHandle   audio_play_oneshot(const WavSample& sample, float gain = 1.0f);
 SoundHandle   audio_play_looping(const WavSample& sample, float gain = 1.0f);
 void          audio_stop(SoundHandle h);
 
-// 3D positional (spec 11/03).
+// 3D positional.
 void          audio_set_listener(const glm::vec3& pos,
                                  const glm::vec3& forward,
                                  const glm::vec3& up);
@@ -45,8 +42,7 @@ SoundHandle   audio_play_at(const WavSample& sample,
                             bool  looping = false);
 void          audio_set_source_position(SoundHandle h, const glm::vec3& world_pos);
 
-// Backend health (for stderr logging).  Returns false when the stub backend
-// is active; true when a real backend has been wired.
+// Backend health (for stderr logging).
 bool          audio_backend_active();
 
 } // namespace dts_viewer

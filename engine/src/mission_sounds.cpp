@@ -1,4 +1,5 @@
-#include "mission_sounds.hpp"
+#include <osengine/mission_sounds.hpp>
+#include <osengine/wav_loader.hpp>
 
 #include <unordered_map>
 #include <variant>
@@ -39,6 +40,7 @@ WavSample empty_sample()
 void walk(
     const studio::content::mission::scene_node& n,
     MissionSoundsState& state,
+    IAudioSink& sink,
     const WavSample& placeholder)
 {
     using namespace studio::content::mission;
@@ -49,39 +51,40 @@ void walk(
             if (it != ambient_map().end()) {
                 // Tribes Z-up -> GL Y-up (see mis_axes.hpp).
                 glm::vec3 pos{ p.xf.position[0], p.xf.position[2], p.xf.position[1] };
-                SoundHandle h = audio_play_at(placeholder, pos,
+                SoundHandle h = sink.play_at(placeholder, pos,
                     8.0f, 100.0f, 1.0f, /*looping*/true);
                 if (h != kInvalidSound) state.voices.push_back(h);
             }
         }
         else if constexpr (std::is_same_v<T, node_snowfall>) {
             if (!state.wind_active) {
-                state.wind_handle = audio_play_looping(placeholder, 0.3f);
+                state.wind_handle = sink.play_looping(placeholder, 0.3f);
                 state.wind_active = state.wind_handle != kInvalidSound;
             }
         }
     }, n.payload);
-    for (auto& c : n.children) walk(c, state, placeholder);
+    for (auto& c : n.children) walk(c, state, sink, placeholder);
 }
 
 } // anonymous namespace
 
 MissionSoundsState mission_sounds_load(
     const studio::content::mission::scene_graph& scene,
-    const std::filesystem::path& /*vol_dir*/)
+    const std::filesystem::path& /*vol_dir*/,
+    IAudioSink& sink)
 {
     MissionSoundsState st;
     const WavSample placeholder = empty_sample();
-    walk(scene.root, st, placeholder);
+    walk(scene.root, st, sink, placeholder);
     return st;
 }
 
-void mission_sounds_unload(MissionSoundsState& state)
+void mission_sounds_unload(MissionSoundsState& state, IAudioSink& sink)
 {
-    for (SoundHandle h : state.voices) audio_stop(h);
+    for (SoundHandle h : state.voices) sink.stop(h);
     state.voices.clear();
     if (state.wind_handle != kInvalidSound) {
-        audio_stop(state.wind_handle);
+        sink.stop(state.wind_handle);
         state.wind_handle = kInvalidSound;
     }
     state.wind_active = false;
