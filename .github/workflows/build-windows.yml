@@ -152,6 +152,18 @@ jobs:
           mkdir -p build
           ~/.conan-venv/bin/conan install . --install-folder=build --build=missing
 
+      - name: Restore 3space build cache
+        uses: actions/cache@v4
+        with:
+          path: 3space/build
+          # Key on hashes of every 3space source + header + the CMakeLists,
+          # PLUS the conanfile hash (so dep-version bumps invalidate). On a
+          # cache hit, the build step below becomes a relink against the
+          # cached lib3space.a / libcscript_core.a — drops 1m20s to ~5s.
+          key: 3space-windows-${{ hashFiles('3space/src/**', '3space/include/**', '3space/cscript/**', '3space/CMakeLists.txt', '3space/conanfile.py') }}
+          restore-keys: |
+            3space-windows-
+
       - name: Configure + build 3space
         working-directory: 3space
         run: |
