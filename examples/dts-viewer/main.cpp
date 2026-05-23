@@ -42,6 +42,7 @@
 #include "content/terrain/dtb.hpp"
 #include "mission_loader.hpp"
 #include "bot_paths.hpp"
+#include "ai_player.hpp"
 #include "camera.hpp"
 #include "height_sampler.hpp"
 #include "mission_bounds.hpp"
@@ -1550,6 +1551,52 @@ int main(int argc, char** argv)
     // Spec 23/03 — strip --tribes-dir before any other arg parsing so it
     // works in every mode.
     dts_viewer::stripTribesDir(argc, argv);
+
+    // Spec 18/02 — `--ai-selftest` exercises the AI::spawn / AI::getId /
+    // AI::DirectiveWaypoint / AI::DirectiveTarget bindings without
+    // needing a mission load. Exits non-zero on assertion failure.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--ai-selftest") continue;
+
+        dts_viewer::cscript::init();
+        auto check = [&](bool ok, const char* msg) {
+            std::printf("  %s %s\n", ok ? "[PASS]" : "[FAIL]", msg);
+            if (!ok) std::exit(1);
+        };
+
+        dts_viewer::cscript::eval(
+            "$r = AI::spawn(\"a\", \"larmor\", \"0 0 0\", \"0 0 0\", \"Alpha\", \"male2\");");
+        dts_viewer::cscript::eval("$id = AI::getId(\"a\");");
+        dts_viewer::cscript::eval("echo(\"id=\" @ $id);");
+
+        AIPlayer* bot = dts_viewer::find_ai_player_by_name("a");
+        check(bot != nullptr,                    "AI::spawn registered bot");
+        check(bot && bot->getId() > 0,           "AI::getId returns positive id");
+
+        dts_viewer::cscript::eval(
+            "AI::DirectiveWaypoint(\"a\", \"10 0 0\", 100);"
+            "AI::DirectiveWaypoint(\"a\", \"20 0 0\", 50);");
+        check(bot && bot->mWaypoints.size() == 2, "two waypoints queued");
+        check(bot && bot->mWaypoints[0].order == 50, "sorted by orderNumber asc");
+        check(bot && std::abs(bot->mWaypoints[0].pos[0] - 20.0f) < 0.01f,
+              "lowest-order waypoint is (20,0,0)");
+
+        dts_viewer::cscript::eval("AI::DirectiveTarget(\"a\", 2049);");
+        check(bot && bot->mForcedTargetClientId == 2049, "DirectiveTarget set 2049");
+        dts_viewer::cscript::eval("AI::DirectiveTarget(\"a\", -1);");
+        check(bot && bot->mForcedTargetClientId == -1, "DirectiveTarget cleared");
+
+        // Spawn-collision check: second AI::spawn for the same name should
+        // refuse and return "false" without removing the existing bot.
+        dts_viewer::cscript::eval(
+            "$r2 = AI::spawn(\"a\", \"larmor\", \"0 0 0\", \"0 0 0\", \"Beta\", \"male2\");");
+        bot = dts_viewer::find_ai_player_by_name("a");
+        check(bot != nullptr, "name-collision spawn left original bot alive");
+
+        std::printf("--ai-selftest: all checks passed\n");
+        return 0;
+    }
 
     // Spec 18/01 — `--ai-paths <mission-stem>` dumps the bot path data
     // discovered in MissionGroup\Teams\team<N>\AI\<droneName> + the

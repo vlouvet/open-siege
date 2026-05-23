@@ -4,6 +4,8 @@
 #include "player_simobject.hpp"
 #include "entity_bindings.hpp"
 #include "hud_bindings.hpp"
+#include "ai_player.hpp"
+#include "ai_bindings.hpp"
 
 #include "console/console.h"
 #include "console/script.h"
@@ -52,6 +54,9 @@ namespace {
     // functions. The anchor only matters if hud_bindings.cpp gets
     // archive-bundled in the future; today it's a direct TU.
     dts_viewer::anchorHudBindings();
+    // Spec 18/02 — AI::spawn / AI::getId / AI::Directive* surface.
+    dts_viewer::anchorAIPlayerClass();
+    dts_viewer::anchorAIBindings();
 }
 
 } // namespace
