@@ -58,18 +58,22 @@ Conan 1.66's built-in compiler list does not include GCC 15. Add it and
 create the default profile:
 
 ```sh
-# Append GCC 15 entries to settings.yml
+# Append GCC 13-20 entries to settings.yml (covers whatever MSYS2 ships
+# this week; MSYS2's `pacman -Syu` bumps the toolchain frequently).
 python - <<'PY'
 import yaml, pathlib, os
 p = pathlib.Path.home() / '.conan/settings.yml'
 s = yaml.safe_load(p.read_text())
 v = s['compiler']['gcc']['version']
-for x in ('15', '15.1', '15.2'):
-    if x not in v: v.append(x)
+for major in range(13, 21):
+    for minor in ('', '.0', '.1', '.2', '.3', '.4', '.5'):
+        x = f"{major}{minor}"
+        if x and x not in v:
+            v.append(x)
 p.write_text(yaml.safe_dump(s, sort_keys=False))
 PY
 
-# Auto-detect: Conan sees gcc 15 and Windows, sets os=Windows, arch=x86_64
+# Auto-detect: Conan reads the local gcc + sets os=Windows, arch=x86_64
 conan profile new default --detect
 conan profile update settings.compiler.libcxx=libstdc++11 default
 ```
