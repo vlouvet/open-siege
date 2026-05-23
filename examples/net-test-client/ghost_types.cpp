@@ -669,14 +669,24 @@ std::string format_record(const TypedRecord& rec,
 }  // namespace
 
 void GhostRegistry::install_default_class_tag_map() {
-    // Capture-grounded defaults from `groove-session-20260522-100230.json`
-    // per §15.5.1: all five observed scope-always class tags resolve to
-    // "Mission-pinned static" — i.e. StaticShape.
+    // Capture-grounded defaults.
+    //
+    // Spec 14 (2026-05-22 spectator-only capture): five StaticShape tags
+    // observed in scope-always intros.
     class_tag_kinds[96]  = GhostClassKind::StaticShape;
     class_tag_kinds[333] = GhostClassKind::StaticShape;
     class_tag_kinds[512] = GhostClassKind::StaticShape;
     class_tag_kinds[615] = GhostClassKind::StaticShape;
     class_tag_kinds[896] = GhostClassKind::StaticShape;
+    // Spec 28 (2026-05-22 PvP capture pvp-session-20260522-202151.json):
+    // discovery harness identified tag 960 as Player — 52 samples across
+    // 14 distinct ghosts (matches a typical mid-size PvP match's roster),
+    // bounded velocities, and the only candidate whose consecutive-pair
+    // smoothness checks actually fired (evidence of real movement deltas).
+    // Tags 560 (8 ghosts) and 80 (8 ghosts) co-passed the relaxed Player
+    // probe but probably represent Vehicle/Projectile — they're left
+    // unmapped pending a per-kind probe extension.
+    class_tag_kinds[960] = GhostClassKind::Player;
 }
 
 void GhostRegistry::clear() {

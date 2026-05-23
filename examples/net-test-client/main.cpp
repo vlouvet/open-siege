@@ -1232,8 +1232,10 @@ int run_discover_classes(const std::string& path)
     }
     std::fprintf(stderr, "[discover] loaded %zu s->c packets\n", packets.size());
 
-    // Pass-1: enumerate observed class tags.
-    std::unordered_set<std::uint16_t> observed_tags;
+    // Pass-1: enumerate observed class tags + their occurrence frequency.
+    // High-frequency tags are real classes; low-frequency tags are usually
+    // spurious scope-always candidates from misaligned scanner offsets.
+    std::unordered_map<std::uint16_t, int> tag_count;
     {
         net20::GhostRegistry reg;
         reg.install_default_class_tag_map();
@@ -1242,25 +1244,37 @@ int run_discover_classes(const std::string& path)
                 pkt.bytes.data(), pkt.bytes.size(), reg);
             for (const auto& tr : td.records) {
                 if (tr.full_update && tr.class_tag != 0)
-                    observed_tags.insert(tr.class_tag);
+                    ++tag_count[tr.class_tag];
             }
         }
     }
     std::fprintf(stderr, "[discover] observed %zu distinct class_tags\n",
-                 observed_tags.size());
+                 tag_count.size());
 
     // Known StaticShape defaults — skip these in the per-tag probe.
     const std::unordered_set<std::uint16_t> known_static{96, 333, 512, 615, 896};
 
-    std::vector<std::uint16_t> candidates;
-    for (auto t : observed_tags) {
+    // Filter: only probe tags that appear at least N times — real Player
+    // intros happen on every Player join + respawn (≥5 in a typical 60s
+    // match). Spurious scanner hits typically appear ≤2 times.
+    constexpr int kMinFrequency = 3;
+    std::vector<std::pair<std::uint16_t, int>> candidate_pairs;
+    for (auto& [t, n] : tag_count) {
         if (known_static.count(t)) continue;
-        candidates.push_back(t);
+        if (n < kMinFrequency) continue;
+        candidate_pairs.emplace_back(t, n);
     }
-    std::sort(candidates.begin(), candidates.end());
-    std::fprintf(stderr, "[discover] %zu candidate tags to probe (excluding "
-                 "%zu StaticShape defaults)\n",
-                 candidates.size(), known_static.size());
+    // Probe most-frequent first.
+    std::sort(candidate_pairs.begin(), candidate_pairs.end(),
+        [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::vector<std::uint16_t> candidates;
+    candidates.reserve(candidate_pairs.size());
+    for (auto& p : candidate_pairs) candidates.push_back(p.first);
+    std::fprintf(stderr, "[discover] %zu candidates to probe (freq >= %d, "
+                 "excluding %zu StaticShape defaults; %zu low-frequency tags "
+                 "filtered out)\n",
+                 candidates.size(), kMinFrequency, known_static.size(),
+                 tag_count.size() - known_static.size() - candidates.size());
 
     // Pass-2: per-tag Player probe.
     std::vector<CandidateResult> results;
