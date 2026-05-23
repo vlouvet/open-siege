@@ -42,9 +42,14 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace net20 {
+
+// Forward declaration — ghost_types.hpp owns the full definition. We only
+// need the `ghost_kinds` field for normal-mode scoring (spec 29).
+struct GhostRegistry;
 
 struct GhostUpdate {
     std::uint16_t ghost_id = 0;
@@ -92,8 +97,15 @@ struct GhostPacketDecode {
 // Parse a single UDP datagram as a Tribes 1.41 VC DataPacket and decode the
 // leading record of any ghost-sub-stream it contains. Returns a structure
 // even on framing errors; the `note` field describes what went wrong.
+//
+// Spec 29: passing a non-null `known` registry allows the scanner to
+// accept normal-mode delta candidates whose first record references a
+// previously-introduced ghost_id. Without the registry the scanner only
+// finds scope-always introductions (which carry an in-band 10-bit
+// class_tag that gives high confidence).
 GhostPacketDecode parse_ghost_packet(const std::uint8_t* data,
-                                     std::size_t length);
+                                     std::size_t length,
+                                     const GhostRegistry* known = nullptr);
 
 // Convenience: format one record as a single log line.
 std::string format_update(const GhostUpdate& u);

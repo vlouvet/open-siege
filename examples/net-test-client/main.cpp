@@ -560,8 +560,10 @@ int run_template_paste(const std::string& host, std::uint16_t port,
             }
             if (decode_ghosts) {
                 // Outer framing summary (one line per packet that contains
-                // at least one ghost record).
-                auto dec = net20::parse_ghost_packet(buf.data(), buf.size());
+                // at least one ghost record). Spec 29: pass registry so the
+                // scanner accepts normal-mode delta candidates.
+                auto dec = net20::parse_ghost_packet(buf.data(), buf.size(),
+                                                     &typed_registry);
                 if (!dec.updates.empty()) {
                     std::fprintf(stderr, "[ghost] %s\n",
                         net20::format_update(dec.updates[0]).c_str());
@@ -693,6 +695,13 @@ int run_replay(const std::string& path)
     int total = 0, decoded = 0, with_record = 0;
     std::vector<std::uint16_t> ghost_ids;
 
+    // Spec 29 verification: per-packet record histogram so we can compare
+    // before/after the registry-aware scanner change.
+    int packets_with_0 = 0, packets_with_1 = 0, packets_with_2_3 = 0,
+        packets_with_4plus = 0;
+    int multi_record_packets = 0;
+    int multi_record_total = 0;
+
     // Spec 14: typed-ghost registry, kept across packets so deltas can
     // resolve previously-introduced ghost ids back to their classes.
     net20::GhostRegistry typed_registry;
@@ -762,7 +771,11 @@ int run_replay(const std::string& path)
         if (bytes.empty()) continue;
 
         ++total;
-        auto dec = net20::parse_ghost_packet(bytes.data(), bytes.size());
+        // Spec 29: pass the typed registry so the scanner can accept
+        // normal-mode delta candidates whose first record references a
+        // previously-introduced ghost_id.
+        auto dec = net20::parse_ghost_packet(bytes.data(), bytes.size(),
+                                             &typed_registry);
         ++decoded;
         if (!dec.updates.empty()) {
             ++with_record;
@@ -780,6 +793,16 @@ int run_replay(const std::string& path)
         // Spec 14: dispatch typed records.
         auto td = net20::parse_typed_packet(bytes.data(), bytes.size(),
                                              typed_registry);
+        // Spec 29 histogram bucket — counts packets, not records.
+        const std::size_t n_recs = td.records.size();
+        if      (n_recs == 0)  ++packets_with_0;
+        else if (n_recs == 1)  ++packets_with_1;
+        else if (n_recs <= 3)  ++packets_with_2_3;
+        else                   ++packets_with_4plus;
+        if (n_recs >= 2) {
+            ++multi_record_packets;
+            multi_record_total += static_cast<int>(n_recs);
+        }
         for (const auto& tr : td.records) {
             ++typed_records;
             const auto kind_idx = static_cast<std::size_t>(tr.kind);
@@ -874,6 +897,18 @@ int run_replay(const std::string& path)
         "[replay-qcheck] StaticShape per-object_id consistency:"
         " ok=%d mismatch=%d (same object_id seen across packets)\n",
         pos_consistent, pos_mismatch);
+
+    // Spec 29 acceptance check: per-packet record yield histogram, plus
+    // the multi-record-packet average (target: >=4 records / multi-record
+    // packet).
+    const double avg_multi = multi_record_packets > 0
+        ? static_cast<double>(multi_record_total) / multi_record_packets
+        : 0.0;
+    std::fprintf(stderr,
+        "[spec29] per-packet record histogram: 0=%d  1=%d  2-3=%d  4+=%d\n"
+        "[spec29] multi-record packets: %d  avg records/multi-record: %.2f\n",
+        packets_with_0, packets_with_1, packets_with_2_3, packets_with_4plus,
+        multi_record_packets, avg_multi);
 
     // Acceptance: at least 1 ghost record across the capture.
     return with_record > 0 ? 0 : 6;

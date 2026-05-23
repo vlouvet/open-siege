@@ -714,7 +714,9 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                                      GhostRegistry& registry)
 {
     TypedPacketDecode out;
-    out.framing = parse_ghost_packet(data, length);
+    // Spec 29: pass the registry so the scanner can accept normal-mode
+    // delta candidates whose first ghost_id is already known.
+    out.framing = parse_ghost_packet(data, length, &registry);
     if (!out.framing.ghost_stream_start_bit.has_value()) {
         out.note = out.framing.note.empty()
                    ? std::string("no ghost stream found")

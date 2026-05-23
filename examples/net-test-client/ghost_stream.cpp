@@ -1,7 +1,11 @@
 // Track 20 spec 10 — ghost-stream framing parser (clean-room).
+// Spec 29 extension: optional registry-aware scoring lets the scanner
+// accept normal-mode delta candidates (the bulk per-tick traffic),
+// not just scope-always introductions.
 // See ghost_stream.hpp for the wire format reference.
 
 #include "ghost_stream.hpp"
+#include "ghost_types.hpp"   // for GhostRegistry::ghost_kinds lookup
 
 #include <algorithm>
 #include <cstdio>
@@ -140,7 +144,8 @@ void decode_rate_prefix(BitReader& br, GhostPacketDecode& out) {
 //   * if scope-always mode AND new-id (assumed true for any first-record on
 //     the bulk stream), class_tag in 1..1023.
 int score_ghost_start_candidate(const BitReader& br, std::size_t at,
-                                GhostUpdate& record) {
+                                GhostUpdate& record,
+                                const GhostRegistry* known) {
     const std::size_t total = br.bit_length;
     if (at >= total) return 0;
     // Minimum bits needed to score: mode(1) + selector(3) + presence(1)
@@ -200,6 +205,17 @@ int score_ghost_start_candidate(const BitReader& br, std::size_t at,
         // Normal-mode delta. We can't disambiguate further without the
         // per-class payload; treat as moderately plausible if reachable.
         score += 4;
+        // Spec 29: if the registry knows this ghost_id, that's strong
+        // evidence we found a valid delta-stream start. Boost score
+        // enough to clear the acceptance threshold but stay below the
+        // scope-always-intro signal (1024).
+        if (known) {
+            auto it = known->ghost_kinds.find(
+                static_cast<std::uint16_t>(ghost_id));
+            if (it != known->ghost_kinds.end()) {
+                score += 512;
+            }
+        }
     } else {
         // Scope-always + kill: rare but legal.
         score += 2;
@@ -215,7 +231,8 @@ int score_ghost_start_candidate(const BitReader& br, std::size_t at,
 // Returns std::nullopt if no plausible candidate was found.
 std::optional<std::size_t> scan_for_ghost_stream(const BitReader& br,
                                                  std::size_t start_bit,
-                                                 GhostUpdate& best_record) {
+                                                 GhostUpdate& best_record,
+                                                 const GhostRegistry* known) {
     int best_score = 0;
     std::optional<std::size_t> best_at;
     GhostUpdate scratch;
@@ -223,16 +240,20 @@ std::optional<std::size_t> scan_for_ghost_stream(const BitReader& br,
     const std::size_t end = br.bit_length > 16 ? br.bit_length - 16 : 0;
     for (std::size_t at = start_bit; at < end; ++at) {
         scratch = GhostUpdate{};
-        const int s = score_ghost_start_candidate(br, at, scratch);
+        const int s = score_ghost_start_candidate(br, at, scratch, known);
         if (s > best_score) {
             best_score = s;
             best_at = at;
             best_record = scratch;
         }
     }
-    if (best_score < 1024) {
-        // Require at least the "scope-always + valid class_tag" confidence
-        // level. Below this we're guessing.
+    // Acceptance thresholds:
+    //   * 1024 = scope-always + valid 10-bit class_tag (very high confidence)
+    //   * 512  = normal-mode-delta + first ghost_id matches a known one
+    //            (spec 29: only available when caller passes a non-null
+    //            registry, otherwise normal-mode candidates max out at 5).
+    const int threshold = known ? 256 : 1024;
+    if (best_score < threshold) {
         return std::nullopt;
     }
     return best_at;
@@ -241,7 +262,8 @@ std::optional<std::size_t> scan_for_ghost_stream(const BitReader& br,
 }  // namespace
 
 GhostPacketDecode parse_ghost_packet(const std::uint8_t* data,
-                                     std::size_t length) {
+                                     std::size_t length,
+                                     const GhostRegistry* known) {
     GhostPacketDecode out;
     if (data == nullptr || length == 0) {
         out.note = "empty packet";
@@ -275,7 +297,7 @@ GhostPacketDecode parse_ghost_packet(const std::uint8_t* data,
     // without per-class payload widths (spec 13). Use the scanning strategy
     // documented in spec §5.0.7 #1.
     GhostUpdate first;
-    auto found = scan_for_ghost_stream(br, br.pos, first);
+    auto found = scan_for_ghost_stream(br, br.pos, first, known);
     if (!found) {
         out.note = "no plausible ghost-sub-stream found";
         return out;
