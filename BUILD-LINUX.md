@@ -118,6 +118,26 @@ Expected output:
 [100%] Built target dts-viewer
 ```
 
+## Build all three binaries (track 26)
+
+After `3space` is built, the dts-viewer plus the new
+`open-siege-t1-client` / `open-siege-t1-server` binaries can be built in
+one shot via the top-level CMakeLists option:
+
+```sh
+cd ~/open-siege
+cmake -S . -B build \
+    -DOPEN_SIEGE_BUILD_UPSTREAM=OFF \
+    -DOPEN_SIEGE_BUILD_APPS=ON \
+    -DCMAKE_MODULE_PATH=$(pwd)/3space/build/cmake
+cmake --build build -j$(nproc)
+# Binaries at:
+#   build/examples/dts-viewer/dts-viewer
+#   build/apps/open-siege-t1-client/open-siege-t1-client
+#   build/apps/open-siege-t1-server/open-siege-t1-server
+#   build/examples/net-test-client/net-test-client
+```
+
 Verify:
 ```sh
 ./build/dts-viewer
