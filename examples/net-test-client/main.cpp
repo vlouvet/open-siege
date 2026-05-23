@@ -19,11 +19,11 @@
 #include "content/net/ghost_manager.hpp"
 #include "content/net/udp_socket.hpp"
 
-#include "client_events.hpp"
-#include "ghost_stream.hpp"
-#include "ghost_types.hpp"
-#include "movecommand.hpp"
-#include "reliable_acks.hpp"
+#include <osengine/client_events.hpp>
+#include <osengine/ghost_stream.hpp>
+#include <osengine/ghost_types.hpp>
+#include <osengine/movecommand.hpp>
+#include <osengine/reliable_acks.hpp>
 
 #include <algorithm>
 #include <chrono>

@@ -1,26 +1,21 @@
 project(net-test-client)
 cmake_minimum_required(VERSION 3.17)
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/../../3space/build/cmake)
+# Track 26 spec 01 — net-protocol sources moved to engine/ (libosengine.a).
+# net-test-client is now a thin wrapper that links osengine for the
+# ghost_stream / reliable_acks / client_events / movecommand code, and
+# adds the CLI subcommand dispatch in main.cpp.
 
-find_package(nlohmann_json REQUIRED)
-find_package(Boost REQUIRED)
-find_package(glm REQUIRED)
-find_package(span-lite REQUIRED)
-find_package(pegtl REQUIRED)
-find_package(libzip REQUIRED)
+# Bring in osengine if not already added by the parent project. When
+# net-test-client is built standalone, this adds the library; when built
+# from a top-level CMake that also pulls in apps/dts-viewer (which
+# add_subdirectory's engine first), CMake dedupes silently.
+if(NOT TARGET osengine)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../engine
+                     ${CMAKE_CURRENT_BINARY_DIR}/engine)
+endif()
 
-add_executable(net-test-client main.cpp ghost_stream.cpp ghost_types.cpp reliable_acks.cpp client_events.cpp movecommand.cpp)
+add_executable(net-test-client main.cpp)
 set_property(TARGET net-test-client PROPERTY CXX_STANDARD 17)
 
-target_include_directories(net-test-client PRIVATE
-    ${CMAKE_SOURCE_DIR}/../../3space/include)
-
-target_link_libraries(net-test-client PRIVATE
-    ${CMAKE_SOURCE_DIR}/../../3space/build/lib3space.a
-    nlohmann_json::nlohmann_json
-    Boost::Boost
-    glm::glm
-    nonstd::span-lite
-    taocpp::pegtl
-    libzip::zip)
+target_link_libraries(net-test-client PRIVATE osengine)
