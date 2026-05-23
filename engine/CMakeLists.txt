@@ -81,47 +81,44 @@ target_include_directories(osengine INTERFACE
     ${THREESPACE_DIR}/cscript/lib
     ${THREESPACE_DIR}/cscript/lib/tinyxml2)
 
+target_link_libraries(osengine PUBLIC
+    nlohmann_json::nlohmann_json
+    Boost::Boost
+    glm::glm
+    nonstd::span-lite
+    taocpp::pegtl
+    libzip::zip)
+
 # cscript_core (Torque3D heritage) uses SDL2 for its thread/mutex/semaphore
 # primitives — see 3space/cscript/.../platformSDL_threads/. osengine itself
 # never touches SDL, but cscript_core's mutex/thread/semaphore .obj files
 # carry undefined refs to SDL_CreateMutex, SDL_CreateThread, etc.
 #
-# On Windows MinGW (ld.bfd) static-archive resolution is single-pass: when
-# SDL2 is scanned, only the THEN-undefined symbols pull objects out of it.
-# cscript_core's SDL_* refs don't exist yet (cscript_core hasn't been
-# scanned), so SDL2 gets dropped from the table. We MUST therefore wrap
-# the static archives in --start-group/--end-group so ld re-scans until
-# all refs resolve. Linux/macOS don't care — ld.gold / lld / macOS ld
-# handle this correctly without grouping.
+# We do NOT propagate lib3space.a / libcscript_core.a / SDL2 through
+# osengine PUBLIC because CMake reorders / dedupes link libraries and on
+# Windows MinGW (ld.bfd, single-pass static-archive resolution) the
+# ordering must be EXACTLY: lib3space.a -> libcscript_core.a -> SDL2 so
+# SDL2 can satisfy cscript_core's refs. Wrapping in --start-group/--end-
+# group from PUBLIC didn't work — CMake stripped the grouping flags.
 #
-# We also propagate SDL2 PUBLIC on Windows so consumers don't have to
-# repeat the link line — they just `target_link_libraries(... osengine)`.
-if(WIN32)
-    find_package(SDL2 REQUIRED)
-    target_link_libraries(osengine PUBLIC
-        "-Wl,--start-group"
-        ${THREESPACE_DIR}/build/lib3space.a
-        ${THREESPACE_DIR}/build/cscript/libcscript_core.a
-        ${SDL2_LIBRARIES}
-        nlohmann_json::nlohmann_json
-        Boost::Boost
-        glm::glm
-        nonstd::span-lite
-        taocpp::pegtl
-        libzip::zip
-        "-Wl,--end-group"
-        ws2_32 winmm)
-else()
-    target_link_libraries(osengine PUBLIC
-        ${THREESPACE_DIR}/build/lib3space.a
-        ${THREESPACE_DIR}/build/cscript/libcscript_core.a
-        nlohmann_json::nlohmann_json
-        Boost::Boost
-        glm::glm
-        nonstd::span-lite
-        taocpp::pegtl
-        libzip::zip)
-    if(UNIX)
-        target_link_libraries(osengine PUBLIC dl pthread m)
-    endif()
+# Instead, export the .a paths as cache variables and let each consumer
+# (dts-viewer, server, client) list them explicitly in their own
+# target_link_libraries call.
+set(OSENGINE_LIB3SPACE_A     "${THREESPACE_DIR}/build/lib3space.a"
+    CACHE INTERNAL "lib3space static archive")
+set(OSENGINE_CSCRIPT_CORE_A  "${THREESPACE_DIR}/build/cscript/libcscript_core.a"
+    CACHE INTERNAL "cscript_core static archive")
+
+# osengine itself only links the two .a files for its own .cpp files
+# (e.g. cscript_host.cpp pulls Torque-side symbols). PRIVATE so the
+# consumer's link line is the authoritative one for ordering.
+target_link_libraries(osengine PRIVATE
+    ${OSENGINE_LIB3SPACE_A}
+    ${OSENGINE_CSCRIPT_CORE_A})
+
+# Platform plumbing — sockets for net code, threading.
+if(UNIX)
+    target_link_libraries(osengine PUBLIC dl pthread m)
+elseif(WIN32)
+    target_link_libraries(osengine PUBLIC ws2_32 winmm)
 endif()

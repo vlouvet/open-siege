@@ -18,4 +18,12 @@ endif()
 add_executable(net-test-client main.cpp)
 set_property(TARGET net-test-client PROPERTY CXX_STANDARD 17)
 
-target_link_libraries(net-test-client PRIVATE osengine)
+# Even though net-test-client never calls SDL_*, cscript_core's mutex/
+# thread/semaphore code (transitively in osengine) does — see
+# engine/CMakeLists.txt header comment. Link SDL2 for symbol resolution.
+find_package(SDL2 REQUIRED)
+target_link_libraries(net-test-client PRIVATE
+    osengine
+    ${OSENGINE_LIB3SPACE_A}
+    ${OSENGINE_CSCRIPT_CORE_A}
+    ${SDL2_LIBRARIES})

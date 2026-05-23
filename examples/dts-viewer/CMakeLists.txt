@@ -73,11 +73,15 @@ target_include_directories(dts-viewer PRIVATE
     ${IMGUI_DIR}/backends
     ${SDL2_INCLUDE_DIRS})
 
-# osengine on Windows already wraps lib3space.a + libcscript_core.a +
-# SDL2 in --start-group/--end-group (ld.bfd single-pass) and propagates
-# the group PUBLIC, so consumers just link osengine + OpenGL.
+# Link order matters on Windows MinGW (ld.bfd single-pass): cscript_core.a
+# refers to SDL_CreateMutex / SDL_CreateThread / SDL_CreateSemaphore from
+# its mutex.cpp/thread.cpp/semaphore.cpp .obj members. SDL2_LIBRARIES MUST
+# come immediately after libcscript_core.a so those refs resolve.
+# OSENGINE_* cache vars are set by engine/CMakeLists.txt.
 target_link_libraries(dts-viewer PRIVATE
     osengine
+    ${OSENGINE_LIB3SPACE_A}
+    ${OSENGINE_CSCRIPT_CORE_A}
     ${SDL2_LIBRARIES}
     OpenGL::GL)
 
