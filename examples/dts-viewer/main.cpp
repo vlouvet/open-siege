@@ -1762,6 +1762,62 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    // Spec 18/05 — `--ai-replay <mission-stem>` runs the full pipeline:
+    // load mission, extract bot paths, spawn AIPlayers, tick a few
+    // seconds, kill one to verify onDroneKilled, print PASS.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--ai-replay" || i + 1 >= argc) continue;
+
+        const std::string mission_stem = argv[i + 1];
+        dts_viewer::cscript::init();
+
+        fs::path tribes = dts_viewer::resolveTribesDir();
+        if (tribes.empty()) {
+            std::fprintf(stderr, "--ai-replay: Tribes dir not resolved\n");
+            return 2;
+        }
+        auto lm = dts_viewer::load_mission(
+            tribes / "base" / "missions", tribes / "base", mission_stem);
+        if (!lm) {
+            std::fprintf(stderr, "--ai-replay: load_mission(\"%s\") failed\n",
+                         mission_stem.c_str());
+            return 3;
+        }
+
+        auto paths = dts_viewer::load_bot_paths(lm->scene.root.children);
+        const int n_spawned = dts_viewer::spawn_bots_from_paths(paths);
+        std::printf("--ai-replay: extracted %zu paths, spawned %d bots\n",
+                    paths.size(), n_spawned);
+        if (n_spawned == 0) {
+            std::printf("--ai-replay: no AI markers — pick a mission with "
+                        "MissionGroup\\AI groups (e.g. 5_CTF, 6_Towers)\n");
+            return 0;
+        }
+
+        // Track death event count via a script-side global.
+        dts_viewer::cscript::eval(
+            "$dronesKilled = 0;"
+            "function AI::onDroneKilled(%n) { $dronesKilled++; "
+            "echo(\"onDroneKilled \" @ %n); }");
+
+        // Sim for 3 seconds, then kill the first bot — verify
+        // onDroneKilled fires and the bot exits the live list.
+        for (int t = 0; t < 90; ++t) dts_viewer::ai_tick_all(1.0f / 30.0f);
+        const std::size_t live_before = dts_viewer::all_ai_players().size();
+        AIPlayer* first = dts_viewer::all_ai_players().front();
+        const std::string killed_name = first->mAIName;
+        dts_viewer::notify_drone_killed(*first);
+        const std::size_t live_after = dts_viewer::all_ai_players().size();
+
+        const bool pass = (live_after == live_before - 1)
+                       && (dts_viewer::find_ai_player_by_name(killed_name) == nullptr);
+        std::printf("--ai-replay: live %zu -> %zu after killing \"%s\" %s\n",
+                    live_before, live_after, killed_name.c_str(),
+                    pass ? "[PASS]" : "[FAIL]");
+        return pass ? 0 : 1;
+    }
+
     // Spec 18/01 — `--ai-paths <mission-stem>` dumps the bot path data
     // discovered in MissionGroup\Teams\team<N>\AI\<droneName> + the
     // optional MissionGroup\AIGraph, then exits. Pure-data debug; runs

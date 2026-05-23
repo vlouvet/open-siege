@@ -73,6 +73,18 @@ namespace dts_viewer {
 // Linker anchor — same pattern as anchorPlayerClass().
 void anchorAIPlayerClass();
 
+// Spec 18/05 — engine-side mission AI spawn. For each BotPath extracted
+// in spec 18/01, creates an AIPlayer (mirror of AI::spawn) and queues
+// its waypoints. Returns the number of bots created.
+struct BotPath;
+int  spawn_bots_from_paths(const std::vector<BotPath>& paths);
+
+// Spec 18/05 — manually trigger the on-death pipeline for `bot`. Fires
+// `AI::onDroneKilled(name)` (script side) and unregisters the AIPlayer.
+// Designed to be called from Player::kill when the dying object is an
+// AIPlayer.
+void notify_drone_killed(AIPlayer& bot);
+
 // Spec 18/02 — name → AIPlayer registry. `AI::getId` does the lookup.
 // `AI::spawn` inserts; the AIPlayer destructor removes.
 AIPlayer* find_ai_player_by_name(const std::string& name);
