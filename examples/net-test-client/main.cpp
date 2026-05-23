@@ -74,6 +74,10 @@ void usage(const char* argv0)
         "                       smoothness check on every Player ghost in the\n"
         "                       capture. Exits 0 iff >= 1 Player passes.\n"
         "                       (alias: --player-qcheck)\n"
+        "  --discover-classes PATH  spec 20/28: brute-force probe every observed\n"
+        "                       class_tag as a Player candidate; rank by sample\n"
+        "                       count + bounded-speed rate. Exits 0 if any tag\n"
+        "                       passes.\n"
         "  --ack                emit VC pure-acks per spec 20/11 §14 (default off;\n"
         "                       experimentally keeps the connection alive past\n"
         "                       the server's ~3-5s no-ack timeout)\n"
@@ -914,6 +918,80 @@ int run_replay(const std::string& path)
     return with_record > 0 ? 0 : 6;
 }
 
+// Spec 20/28 — shared capture-loading helper.
+//
+// Parses a tribes_capture_proxy.py JSON file into a vector of s→c packets,
+// each carrying its proxy-recorded `t_ms` timestamp and the raw bytes.
+// Used by run_qcheck_player and run_discover_classes.
+namespace {
+
+struct CapturePacket {
+    std::uint64_t t_ms = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
+bool load_capture(const std::string& path,
+                  std::vector<CapturePacket>& out)
+{
+    std::ifstream f(path);
+    if (!f) return false;
+    std::ostringstream ss; ss << f.rdbuf();
+    const std::string text = ss.str();
+
+    std::size_t pos = 0;
+    while (true) {
+        const std::size_t hex_key = text.find("\"hex\"", pos);
+        if (hex_key == std::string::npos) break;
+        const std::size_t colon = text.find(':', hex_key);
+        const std::size_t q1 = text.find('"', colon);
+        if (q1 == std::string::npos) break;
+        const std::size_t q2 = text.find('"', q1 + 1);
+        if (q2 == std::string::npos) break;
+        const std::string hex = text.substr(q1 + 1, q2 - q1 - 1);
+
+        std::uint64_t t_ms = 0;
+        std::string dir;
+        const std::size_t obj_start = text.rfind('{', hex_key);
+        if (obj_start != std::string::npos) {
+            const std::size_t t_key = text.find("\"t_ms\"", obj_start);
+            if (t_key != std::string::npos && t_key < hex_key) {
+                const std::size_t tc = text.find(':', t_key);
+                if (tc != std::string::npos) {
+                    t_ms = std::strtoull(text.c_str() + tc + 1, nullptr, 10);
+                }
+            }
+            const std::size_t dir_key = text.find("\"dir\"", obj_start);
+            if (dir_key != std::string::npos && dir_key < hex_key) {
+                const std::size_t dq1 = text.find('"', text.find(':', dir_key));
+                const std::size_t dq2 = text.find('"', dq1 + 1);
+                if (dq1 != std::string::npos && dq2 != std::string::npos)
+                    dir = text.substr(dq1 + 1, dq2 - dq1 - 1);
+            }
+        }
+        pos = q2 + 1;
+        if (!dir.empty() && dir != "s->c") continue;
+
+        CapturePacket pkt;
+        pkt.t_ms = t_ms;
+        pkt.bytes.reserve(hex.size() / 2);
+        for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+            auto hexnib = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+                if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+                return -1;
+            };
+            int hi = hexnib(hex[i]), lo = hexnib(hex[i + 1]);
+            if (hi < 0 || lo < 0) break;
+            pkt.bytes.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+        }
+        if (!pkt.bytes.empty()) out.push_back(std::move(pkt));
+    }
+    return true;
+}
+
+}  // namespace
+
 // Spec 20/27 §15.1.1 — multi-packet Player-velocity smoothness check.
 //
 // Walks every s->c packet in a capture, dispatches typed records, and for
@@ -950,6 +1028,20 @@ int run_qcheck_player(const std::string& path)
 
     net20::GhostRegistry typed_registry;
     typed_registry.install_default_class_tag_map();
+
+    // Spec 28 hook: optional override mapping class_tag -> Player. When the
+    // environment variable QCHECK_PLAYER_TAG is set to a positive integer,
+    // add that tag to the registry as Player before replay. Lets the
+    // discovery harness validate candidate tags via the strict 4-point check.
+    if (const char* env = std::getenv("QCHECK_PLAYER_TAG")) {
+        int t = std::atoi(env);
+        if (t > 0 && t <= 1023) {
+            typed_registry.class_tag_kinds[static_cast<std::uint16_t>(t)] =
+                net20::GhostClassKind::Player;
+            std::fprintf(stderr,
+                "[qcheck-player] override: class_tag %d -> Player\n", t);
+        }
+    }
 
     // Tiny JSON scanner: pull (t_ms, hex) per packet.
     std::size_t pos = 0;
@@ -1101,6 +1193,179 @@ int run_qcheck_player(const std::string& path)
         "[qcheck-player] %d / %zu Player ghosts passed all 4 checks\n",
         passed_players, samples_by_ghost.size());
     return passed_players > 0 ? 0 : 6;
+}
+
+// Spec 20/28 — class-tag → kind discovery.
+//
+// Replay a capture once with the default StaticShape-only registry to
+// enumerate every observed class_tag. Then, for each unknown tag T,
+// rebuild the registry with T mapped to a candidate kind (Player only
+// for v1 — that's what unblocks visible PvP), replay the capture, and
+// run a relaxed Player-sanity check. Report a ranked table.
+//
+// Sanity rules (lighter than --qcheck-player because we're scoring
+// noise vs. signal, not validating a known-good Player):
+//   * `samples`     = total decoded Player updates with has_pos_block.
+//   * `with_vel`    = subset with has_velocity = 1.
+//   * `bounded`     = subset whose speed is finite & in [0, 256) m/s.
+//   * `score`       = bounded / max(with_vel, 1).
+//   * Tag PASSES if score >= 0.75 AND samples >= 8.
+namespace {
+
+struct CandidateResult {
+    std::uint16_t tag = 0;
+    int samples = 0;
+    int with_vel = 0;
+    int bounded = 0;
+    float score = 0.0f;
+    int distinct_ghosts = 0;
+};
+
+}  // namespace
+
+int run_discover_classes(const std::string& path)
+{
+    std::vector<CapturePacket> packets;
+    if (!load_capture(path, packets)) {
+        std::fprintf(stderr, "[discover] open '%s' failed\n", path.c_str());
+        return 2;
+    }
+    std::fprintf(stderr, "[discover] loaded %zu s->c packets\n", packets.size());
+
+    // Pass-1: enumerate observed class tags.
+    std::unordered_set<std::uint16_t> observed_tags;
+    {
+        net20::GhostRegistry reg;
+        reg.install_default_class_tag_map();
+        for (const auto& pkt : packets) {
+            auto td = net20::parse_typed_packet(
+                pkt.bytes.data(), pkt.bytes.size(), reg);
+            for (const auto& tr : td.records) {
+                if (tr.full_update && tr.class_tag != 0)
+                    observed_tags.insert(tr.class_tag);
+            }
+        }
+    }
+    std::fprintf(stderr, "[discover] observed %zu distinct class_tags\n",
+                 observed_tags.size());
+
+    // Known StaticShape defaults — skip these in the per-tag probe.
+    const std::unordered_set<std::uint16_t> known_static{96, 333, 512, 615, 896};
+
+    std::vector<std::uint16_t> candidates;
+    for (auto t : observed_tags) {
+        if (known_static.count(t)) continue;
+        candidates.push_back(t);
+    }
+    std::sort(candidates.begin(), candidates.end());
+    std::fprintf(stderr, "[discover] %zu candidate tags to probe (excluding "
+                 "%zu StaticShape defaults)\n",
+                 candidates.size(), known_static.size());
+
+    // Pass-2: per-tag Player probe.
+    std::vector<CandidateResult> results;
+    for (auto T : candidates) {
+        net20::GhostRegistry reg;
+        reg.install_default_class_tag_map();
+        reg.class_tag_kinds[T] = net20::GhostClassKind::Player;
+
+        CandidateResult r;
+        r.tag = T;
+        std::unordered_set<std::uint16_t> ghosts_seen;
+
+        for (const auto& pkt : packets) {
+            auto td = net20::parse_typed_packet(
+                pkt.bytes.data(), pkt.bytes.size(), reg);
+            for (const auto& tr : td.records) {
+                if (tr.kind != net20::GhostClassKind::Player || tr.kill) continue;
+                auto it = reg.players.find(tr.ghost_id);
+                if (it == reg.players.end()) continue;
+                const auto& p = it->second;
+                if (!p.has_pos_block) continue;
+
+                ghosts_seen.insert(tr.ghost_id);
+                ++r.samples;
+                if (p.has_velocity) {
+                    ++r.with_vel;
+                    const float sp = std::sqrt(p.velocity_x * p.velocity_x
+                                            + p.velocity_y * p.velocity_y
+                                            + p.velocity_z * p.velocity_z);
+                    if (std::isfinite(sp) && sp >= 0.0f && sp < 256.0f)
+                        ++r.bounded;
+                }
+            }
+        }
+        r.distinct_ghosts = static_cast<int>(ghosts_seen.size());
+        r.score = r.with_vel > 0
+                  ? static_cast<float>(r.bounded) / r.with_vel
+                  : 0.0f;
+        results.push_back(r);
+    }
+
+    // Sort by (samples desc, score desc) — tags that produce many samples
+    // with high bounded-speed rate are the best Player candidates.
+    std::sort(results.begin(), results.end(),
+        [](const CandidateResult& a, const CandidateResult& b) {
+            if (a.samples != b.samples) return a.samples > b.samples;
+            return a.score > b.score;
+        });
+
+    // Pass criteria — calibrated against the 876-packet capture's noise floor.
+    // Real Player ghosts in a 72-second gameplay session should generate
+    // dozens of updates each (~10Hz when moving); a tag with only 2-3 samples
+    // per distinct ghost is more likely a misaligned scope-always coincidence.
+    // Tightened thresholds:
+    //   * samples >= 30 (high cross-packet recurrence)
+    //   * with_vel >= 10 (Player updates carry velocity in normal mode)
+    //   * score >= 0.9 (90% of velocities must be bounded)
+    //   * samples/ghost >= 3 (rejects "every-ghost-only-fires-once" patterns)
+    auto pass_pred = [](const CandidateResult& r) {
+        if (r.samples < 30) return false;
+        if (r.with_vel < 10) return false;
+        if (r.score < 0.9f) return false;
+        if (r.distinct_ghosts > 0
+            && (r.samples / r.distinct_ghosts) < 3) return false;
+        return true;
+    };
+
+    std::fprintf(stderr, "\n[discover] === Player candidates (ranked) ===\n");
+    std::fprintf(stderr,
+        "    tag  samples  with_vel  bounded  score  distinct  PASS\n");
+    int passed = 0;
+    int shown = 0;
+    for (const auto& r : results) {
+        const bool pass = pass_pred(r);
+        if (pass) ++passed;
+        // Surface top 20 plus all passing rows.
+        if (++shown <= 20 || pass) {
+            std::fprintf(stderr,
+                "  %5u    %5d     %5d    %5d   %.2f      %3d   %s\n",
+                r.tag, r.samples, r.with_vel, r.bounded, r.score,
+                r.distinct_ghosts, pass ? "YES" : "no");
+        }
+    }
+    std::fprintf(stderr, "[discover] %d tag(s) pass the strict Player threshold\n",
+                 passed);
+    std::fprintf(stderr,
+        "[discover] threshold: samples>=30 with_vel>=10 score>=0.9 "
+        "samples/ghost>=3\n");
+    std::fprintf(stderr,
+        "[discover] cross-validate a candidate via:\n"
+        "  QCHECK_PLAYER_TAG=<tag> %s --qcheck-player <capture>\n",
+        "net-test-client");
+
+    if (passed == 0) {
+        std::fprintf(stderr,
+            "[discover] no candidate passed. Possible causes:\n"
+            "  - Capture is predominantly spectator-mode / no Player joins.\n"
+            "  - Per-class Player payload widths in spec §15.1 are off by\n"
+            "    a few bits for this build (mis-decode keeps cursor from\n"
+            "    surviving past the introduction).\n"
+            "  - Many low-sample false positives in the rank list are\n"
+            "    coincidental scope-always patterns at misaligned offsets.\n");
+        return 6;
+    }
+    return 0;
 }
 
 // Spec 20/12 offline self-test: verify our ack encoder reproduces the
@@ -1582,6 +1847,7 @@ int main(int argc, char** argv)
     std::string ghost_dump_path;
     std::string replay_path;
     std::string qcheck_player_path;
+    std::string discover_classes_path;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -1607,6 +1873,9 @@ int main(int argc, char** argv)
             && i + 1 < argc) {
             qcheck_player_path = argv[++i]; continue;
         }
+        if (a == "--discover-classes" && i + 1 < argc) {
+            discover_classes_path = argv[++i]; continue;
+        }
         if (a == "--ack") { send_acks = true; continue; }
         if (a == "--no-acks") { send_acks = false; continue; }
         if (a == "--ack-selftest") { ack_selftest = true; continue; }
@@ -1626,6 +1895,7 @@ int main(int argc, char** argv)
     if (move_selftest) return run_move_selftest();
     if (!replay_path.empty()) return run_replay(replay_path);
     if (!qcheck_player_path.empty()) return run_qcheck_player(qcheck_player_path);
+    if (!discover_classes_path.empty()) return run_discover_classes(discover_classes_path);
     if (loopback_self) return run_loopback_self(duration_s);
     // Resolve the spec 20/22 default: --send-ready defaults to on whenever
     // --ack is set (the ready emit requires a live ack stream to be useful).
