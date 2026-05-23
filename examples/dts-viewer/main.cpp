@@ -44,6 +44,7 @@
 #include "bot_paths.hpp"
 #include "ai_player.hpp"
 #include "ai_tick.hpp"
+#include "predicted_player.hpp"
 #include "camera.hpp"
 #include "height_sampler.hpp"
 #include "mission_bounds.hpp"
@@ -1552,6 +1553,91 @@ int main(int argc, char** argv)
     // Spec 23/03 — strip --tribes-dir before any other arg parsing so it
     // works in every mode.
     dts_viewer::stripTribesDir(argc, argv);
+
+    // Spec 22/01 — `--prediction-selftest` exercises PredictedPlayer's
+    // apply_local / reconcile loop in pure simulation (no terrain, no
+    // mission bounds, flat ground at Y=0).
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--prediction-selftest") continue;
+
+        auto check = [&](bool ok, const char* msg) {
+            std::printf("  %s %s\n", ok ? "[PASS]" : "[FAIL]", msg);
+            if (!ok) std::exit(1);
+        };
+
+        dts_viewer::HeightSampler flat{}; // valid()=false → sample returns 0
+
+        // -- Test 1: identical sim -> zero error, silent accept ---
+        dts_viewer::PredictedPlayer pp;
+        pp.predicted.pos = glm::vec3(0.0f, 0.0f, 0.0f);
+        pp.predicted.on_ground = true;
+
+        // Reference player runs the same inputs server-side.
+        dts_viewer::PlayerState server = pp.predicted;
+        dts_viewer::InputState walk{};
+        walk.fwd = true;
+
+        std::uint32_t last_seq = 0;
+        for (int t = 0; t < 30; ++t) {
+            const float dt = 1.0f / 30.0f;
+            last_seq = pp.apply_local(walk, dt, flat, nullptr);
+            dts_viewer::player_update(server, pp.tuning, walk, flat, nullptr, dt);
+        }
+        pp.reconcile(server, last_seq, flat, nullptr);
+        check(pp.silent_accepts == 1, "test1: identical sim -> silent accept");
+        check(pp.snaps == 0,           "test1: no snap");
+        check(pp.max_error_m < 0.05f,  "test1: error within smooth threshold");
+
+        // -- Test 2: small server divergence (10 cm) -> blend ---
+        pp.reset_diagnostics();
+        // Server is 10 cm ahead — within snap_threshold (50 cm), past smooth.
+        server.pos.z += 0.10f;
+        last_seq = pp.apply_local(walk, 1.0f / 30.0f, flat, nullptr);
+        pp.reconcile(server, last_seq, flat, nullptr);
+        check(pp.blends == 1, "test2: 10cm divergence -> blend");
+        check(pp.snaps  == 0, "test2: no snap");
+
+        // -- Test 3: large server divergence (5 m) -> hard snap ---
+        pp.reset_diagnostics();
+        server.pos.z += 5.0f;
+        last_seq = pp.apply_local(walk, 1.0f / 30.0f, flat, nullptr);
+        pp.reconcile(server, last_seq, flat, nullptr);
+        check(pp.snaps == 1, "test3: 5m divergence -> hard snap");
+
+        // -- Test 4: rollback bound — applying 100 inputs leaves <= 64
+        //    pending (the cap), so reconcile remains bounded. ---
+        pp.reset_diagnostics();
+        for (int t = 0; t < 100; ++t)
+            pp.apply_local(walk, 1.0f / 30.0f, flat, nullptr);
+        check(pp.pending.size() <= 64, "test4: pending capped at 64");
+
+        // -- Test 5: stale ack drops pending entries ---
+        pp.reset_diagnostics();
+        // Apply 10 more inputs; record last seq.
+        std::uint32_t mid_seq = 0;
+        for (int t = 0; t < 10; ++t)
+            mid_seq = pp.apply_local(walk, 1.0f / 30.0f, flat, nullptr);
+        const auto before = pp.pending.size();
+        pp.reconcile(pp.predicted, mid_seq, flat, nullptr);
+        check(pp.pending.size() < before,
+              "test5: ack=mid_seq drops earlier pending entries");
+
+        // -- Test 6: yaw is NOT overwritten on snap ---
+        pp.reset_diagnostics();
+        pp.predicted.yaw = 1.234f;
+        dts_viewer::PlayerState far_server = pp.predicted;
+        far_server.pos.z += 10.0f;
+        far_server.yaw = 0.0f;  // server's view of yaw — should be ignored
+        last_seq = pp.apply_local(walk, 1.0f / 30.0f, flat, nullptr);
+        pp.reconcile(far_server, last_seq, flat, nullptr);
+        check(pp.snaps == 1,                       "test6: snap fired");
+        check(std::abs(pp.predicted.yaw - 1.234f) < 1e-4f,
+              "test6: yaw preserved through hard snap");
+
+        std::printf("--prediction-selftest: all checks passed\n");
+        return 0;
+    }
 
     // Spec 18/02 — `--ai-selftest` exercises the AI::spawn / AI::getId /
     // AI::DirectiveWaypoint / AI::DirectiveTarget bindings without
