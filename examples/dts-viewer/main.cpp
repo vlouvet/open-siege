@@ -86,7 +86,7 @@
 #include "help_menu.hpp"
 #include "asset_resolver.hpp"
 #include "mis_axes.hpp"
-#include "net_client.hpp"
+#include <osengine/net_client.hpp>
 #include "content/interior/interior_set.hpp"
 #include <set>
 #if defined(_WIN32)

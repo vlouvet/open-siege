@@ -12,7 +12,7 @@
 //     --send-ready` mode (spec 20/22), simplified to publish into the
 //     shared registry instead of dumping packets to JSON.
 
-#include "net_client.hpp"
+#include <osengine/net_client.hpp>
 
 #include <osengine/client_events.hpp>
 #include <osengine/ghost_stream.hpp>

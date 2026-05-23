@@ -53,8 +53,6 @@ add_executable(dts-viewer
     asset_resolver.cpp
     asset_cache.cpp
     open_url.cpp
-    # Net-protocol client driver (uses sockets but no GL/SDL):
-    net_client.cpp
     # Engine-tied script wrappers still in dts-viewer pending split
     # (track 26 spec 02 splits entity_state out of entity_renderer):
     entity_bindings.cpp

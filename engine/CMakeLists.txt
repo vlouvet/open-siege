@@ -43,6 +43,7 @@ add_library(osengine STATIC
     src/mission_loader.cpp
     src/mission_sounds.cpp
     src/movecommand.cpp
+    src/net_client.cpp
     src/null_audio_sink.cpp
     src/physics_capsule.cpp
     src/player_controller.cpp

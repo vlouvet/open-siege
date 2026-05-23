@@ -196,6 +196,16 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j$(nproc)
 
+      - name: Configure + build open-siege-t1-client
+        working-directory: apps/open-siege-t1-client
+        run: |
+          export PATH="$CONAN_CMAKE_BIN:/ucrt64/bin:$PATH"
+          cmake -S . -B build \
+            -G "MinGW Makefiles" \
+            -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/mingw32-make.exe \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j$(nproc)
+
       - name: Smoke test (header-only self-tests)
         working-directory: examples/dts-viewer
         # dts-viewer doesn't have a --help flag (it treats unknown args
