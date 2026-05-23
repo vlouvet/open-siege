@@ -34,10 +34,17 @@ jobs:
           ~/.conan-venv/bin/pip install 'conan==1.66'
           echo "$HOME/.conan-venv/bin" >> "$GITHUB_PATH"
 
-      - name: Patch Conan settings.yml for GCC 15
+      - name: Patch Conan settings.yml for current GCC
         run: |
           ~/.conan-venv/bin/conan profile new default --detect --force
           ~/.conan-venv/bin/conan profile update settings.compiler.libcxx=libstdc++11 default
+          # MSYS2's `update: true` pulls whatever GCC is current. Conan 1.66
+          # ships an allow-list that hasn't been updated in years, so any
+          # GCC newer than ~14 needs to be appended to the allowlist or
+          # `conan install` fails with exit code 2 (and the message gets
+          # eaten by the msys2.CMD shell wrapper, hiding the cause).
+          # Discover the detected version + patch settings.yml + dump the
+          # final profile so future regressions are diagnosable from the log.
           ~/.conan-venv/bin/python - <<'PY'
           import sys, yaml, pathlib, glob
           venv = pathlib.Path.home() / '.conan-venv'
@@ -46,11 +53,19 @@ jobs:
           import conans.client.conf
           s = yaml.safe_load(conans.client.conf.get_default_settings_yml())
           v = s['compiler']['gcc']['version']
-          for x in ('15', '15.1', '15.2'):
-              if x not in v: v.append(x)
+          # Cover GCC 13-20 + their .0/.1/.2 minor forms. Cheap insurance
+          # against the next MSYS2 toolchain bump.
+          for major in range(13, 21):
+              for minor in ('', '.0', '.1', '.2', '.3', '.4', '.5'):
+                  x = f"{major}{minor}"
+                  if x and x not in v:
+                      v.append(x)
           p = pathlib.Path.home() / '.conan/settings.yml'
           p.write_text(yaml.safe_dump(s, sort_keys=False))
+          print(f"Patched gcc.version allowlist; now contains {len(v)} entries")
           PY
+          echo "--- conan profile show default ---"
+          ~/.conan-venv/bin/conan profile show default
 
       - name: Restore Conan package cache
         uses: actions/cache@v4
@@ -66,8 +81,12 @@ jobs:
           # Fetch cmake 3.22.0 into the Conan cache without building any packages.
           # A subsequent step puts it on PATH so transitive recipes (bzip2, openssl)
           # use cmake 3.22 instead of MSYS2's system cmake 4.x.
+          # We `|| true` because the prebuilt cmake/3.22.0 binary may not
+          # exist for our compiler triplet — in that case Conan falls back
+          # to building it from source on the main install step. Errors are
+          # forwarded to stdout so they're visible in the log if needed.
           mkdir -p build
-          ~/.conan-venv/bin/conan install cmake/3.22.0@ --build=missing 2>/dev/null || true
+          ~/.conan-venv/bin/conan install cmake/3.22.0@ --build=missing 2>&1 || true
 
       - name: Conan install (fetch + build missing packages)
         working-directory: 3space
