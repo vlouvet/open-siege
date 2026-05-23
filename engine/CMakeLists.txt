@@ -78,30 +78,47 @@ target_include_directories(osengine INTERFACE
     ${THREESPACE_DIR}/cscript/lib
     ${THREESPACE_DIR}/cscript/lib/tinyxml2)
 
-target_link_libraries(osengine PUBLIC
-    ${THREESPACE_DIR}/build/lib3space.a
-    ${THREESPACE_DIR}/build/cscript/libcscript_core.a
-    nlohmann_json::nlohmann_json
-    Boost::Boost
-    glm::glm
-    nonstd::span-lite
-    taocpp::pegtl
-    libzip::zip)
-
-# Platform plumbing — for sockets and the like that the net-protocol
-# code uses.
-if(UNIX)
-    target_link_libraries(osengine PUBLIC dl pthread m)
-elseif(WIN32)
-    target_link_libraries(osengine PUBLIC ws2_32 winmm)
-endif()
-
 # cscript_core (Torque3D heritage) uses SDL2 for its thread/mutex/semaphore
 # primitives — see 3space/cscript/.../platformSDL_threads/. osengine itself
-# never touches SDL, but every consumer (dts-viewer, server, client) MUST
-# link SDL2 to satisfy cscript_core's transitive references.
+# never touches SDL, but cscript_core's mutex/thread/semaphore .obj files
+# carry undefined refs to SDL_CreateMutex, SDL_CreateThread, etc.
 #
-# We do NOT propagate SDL2 from here because find_package(SDL2) behavior
-# varies across platforms (target name SDL2::SDL2 vs raw ${SDL2_LIBRARIES})
-# and getting the link ORDER right is what matters on Windows MinGW
-# (static-archive single-pass). Consumers handle it explicitly.
+# On Windows MinGW (ld.bfd) static-archive resolution is single-pass: when
+# SDL2 is scanned, only the THEN-undefined symbols pull objects out of it.
+# cscript_core's SDL_* refs don't exist yet (cscript_core hasn't been
+# scanned), so SDL2 gets dropped from the table. We MUST therefore wrap
+# the static archives in --start-group/--end-group so ld re-scans until
+# all refs resolve. Linux/macOS don't care — ld.gold / lld / macOS ld
+# handle this correctly without grouping.
+#
+# We also propagate SDL2 PUBLIC on Windows so consumers don't have to
+# repeat the link line — they just `target_link_libraries(... osengine)`.
+if(WIN32)
+    find_package(SDL2 REQUIRED)
+    target_link_libraries(osengine PUBLIC
+        "-Wl,--start-group"
+        ${THREESPACE_DIR}/build/lib3space.a
+        ${THREESPACE_DIR}/build/cscript/libcscript_core.a
+        ${SDL2_LIBRARIES}
+        nlohmann_json::nlohmann_json
+        Boost::Boost
+        glm::glm
+        nonstd::span-lite
+        taocpp::pegtl
+        libzip::zip
+        "-Wl,--end-group"
+        ws2_32 winmm)
+else()
+    target_link_libraries(osengine PUBLIC
+        ${THREESPACE_DIR}/build/lib3space.a
+        ${THREESPACE_DIR}/build/cscript/libcscript_core.a
+        nlohmann_json::nlohmann_json
+        Boost::Boost
+        glm::glm
+        nonstd::span-lite
+        taocpp::pegtl
+        libzip::zip)
+    if(UNIX)
+        target_link_libraries(osengine PUBLIC dl pthread m)
+    endif()
+endif()
