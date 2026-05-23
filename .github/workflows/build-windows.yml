@@ -120,19 +120,42 @@ jobs:
           mkdir -p build
           ~/.conan-venv/bin/conan install cmake/3.22.0@ --build=missing 2>&1 || true
 
+      - name: Locate Conan cmake 3.22 binary
+        # msys2 bash's ~ doesn't agree with Windows Python's ~, so use
+        # Python (which agrees with the conan client) to find the
+        # installed cmake/3.22.0/bin directory and export it for later
+        # steps via $GITHUB_PATH and $GITHUB_ENV.
+        run: |
+          ~/.conan-venv/bin/python - <<'PY'
+          import glob, os, pathlib
+          base = pathlib.Path.home() / '.conan/data/cmake/3.22.0/_/_/package'
+          matches = glob.glob(str(base / '*' / 'bin'))
+          if not matches:
+              print(f"ERROR: no cmake/3.22.0 package binary under {base}", flush=True)
+              raise SystemExit(1)
+          binp = matches[0]
+          # GITHUB_PATH expects Windows-style paths in raw form; the runner
+          # prepends them correctly even in msys2 shells.
+          gh_path = os.environ['GITHUB_PATH']
+          with open(gh_path, 'a') as f:
+              f.write(binp + '\n')
+          gh_env = os.environ['GITHUB_ENV']
+          with open(gh_env, 'a') as f:
+              f.write(f'CONAN_CMAKE_BIN={binp}\n')
+          print(f"Found cmake at {binp}")
+          PY
+
       - name: Conan install (fetch + build missing packages)
         working-directory: 3space
         run: |
-          CMAKE322=$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)
-          export PATH="$CMAKE322:$PATH"
+          export PATH="$CONAN_CMAKE_BIN:$PATH"
           mkdir -p build
           ~/.conan-venv/bin/conan install . --install-folder=build --build=missing
 
       - name: Configure + build 3space
         working-directory: 3space
         run: |
-          CMAKE322=$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)
-          export PATH="$CMAKE322:/ucrt64/bin:$PATH"
+          export PATH="$CONAN_CMAKE_BIN:/ucrt64/bin:$PATH"
           cmake -S . -B build \
             -G "MinGW Makefiles" \
             -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/mingw32-make.exe \
@@ -144,8 +167,7 @@ jobs:
       - name: Configure + build dts-viewer
         working-directory: examples/dts-viewer
         run: |
-          CMAKE322=$(ls -d ~/.conan/data/cmake/3.22.0/_/_/package/*/bin 2>/dev/null | head -1)
-          export PATH="$CMAKE322:/ucrt64/bin:$PATH"
+          export PATH="$CONAN_CMAKE_BIN:/ucrt64/bin:$PATH"
           cmake -S . -B build \
             -G "MinGW Makefiles" \
             -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/mingw32-make.exe \
