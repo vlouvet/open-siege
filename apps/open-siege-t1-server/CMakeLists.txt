@@ -23,6 +23,15 @@ find_package(SDL2 REQUIRED)
 
 add_executable(open-siege-t1-server main.cpp)
 
+# Filter out SDL2main from SDL2_LIBRARIES — the server has its own main()
+# and doesn't include SDL.h, so the SDL2main.a wrapper would just produce
+# an "undefined reference to SDL_main" link error on Windows. We still
+# need -lSDL2 (the SDL2 import lib) because cscript_core's mutex.cpp /
+# thread.cpp / semaphore.cpp have SDL_CreateMutex / CreateThread / etc
+# refs that the linker has to satisfy.
+set(SDL2_LIBS_NO_MAIN "${SDL2_LIBRARIES}")
+list(FILTER SDL2_LIBS_NO_MAIN EXCLUDE REGEX "(SDL|sdl)2?main")
+
 # Link order: lib3space -> cscript_core -> SDL2 (cscript_core has
 # unresolved SDL_* refs that SDL2 must satisfy; ld.bfd single-pass on
 # MinGW). Cache vars come from engine/CMakeLists.txt.
@@ -30,7 +39,7 @@ target_link_libraries(open-siege-t1-server PRIVATE
     osengine
     ${OSENGINE_LIB3SPACE_A}
     ${OSENGINE_CSCRIPT_CORE_A}
-    ${SDL2_LIBRARIES})
+    ${SDL2_LIBS_NO_MAIN})
 
 if(APPLE)
     target_link_libraries(open-siege-t1-server PRIVATE
