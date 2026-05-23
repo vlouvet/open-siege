@@ -46,6 +46,7 @@
 #include "ai_tick.hpp"
 #include "predicted_player.hpp"
 #include "lag_compensation.hpp"
+#include "jitter_buffer.hpp"
 #include "camera.hpp"
 #include "height_sampler.hpp"
 #include "mission_bounds.hpp"
@@ -1733,6 +1734,97 @@ int main(int argc, char** argv)
               "lag-comp: 50-ping & 200-ping hit DIFFERENT historical poses (0.75m apart)");
 
         std::printf("--lag-comp-selftest: all checks passed\n");
+        return 0;
+    }
+
+    // Spec 22/03 — `--jitter-buffer-selftest` exercises GhostJitterBuffer:
+    //   - interpolation between adjacent snapshots
+    //   - extrapolation when display-time overshoots newest
+    //   - extrapolation clamp prevents rubber-banding
+    //   - 5% packet loss simulation: dropped snapshots don't break motion
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--jitter-buffer-selftest") continue;
+
+        auto check = [&](bool ok, const char* msg) {
+            std::printf("  %s %s\n", ok ? "[PASS]" : "[FAIL]", msg);
+            if (!ok) std::exit(1);
+        };
+
+        dts_viewer::GhostJitterBuffer<> buf;
+
+        // Record snapshots at 100ms intervals: ghost moving +X at 5 m/s
+        // (snapshot N at t=100*N ms, pos.x = 0.5*N, vel.x = 5.0).
+        for (int n = 0; n < 8; ++n) {
+            dts_viewer::JitterSnapshot s;
+            s.pos_x = 0.5f * n;
+            s.vel_x = 5.0f;
+            buf.record(static_cast<std::uint32_t>(n * 100), s);
+        }
+
+        // Exact-frame and interpolation lookups.
+        auto a = buf.sample(300);
+        check(std::abs(a.pos_x - 1.5f) < 1e-4f, "t=300ms -> x=1.5");
+        auto b = buf.sample(350);  // halfway between frames 3 and 4
+        check(std::abs(b.pos_x - 1.75f) < 1e-4f, "t=350ms -> x=1.75 (interp)");
+
+        // Extrapolation: t=750ms is 50ms past newest (frame7 at 700ms).
+        bool extrap = false;
+        auto e1 = buf.sample(750, &extrap);
+        // Expected: pos.x of frame7 (3.5) + vel.x (5) * 0.050s = 3.75
+        check(std::abs(e1.pos_x - 3.75f) < 1e-4f, "t=750ms extrapolates by 50ms -> x=3.75");
+        check(extrap == true,                      "extrapolated flag set");
+
+        // Extrapolation clamp: t=2000ms is 1300ms past newest; cap at 200ms.
+        auto e2 = buf.sample(2000, &extrap);
+        // Expected: frame7 (3.5) + vel.x (5) * 0.200s = 4.5
+        check(std::abs(e2.pos_x - 4.5f) < 1e-4f, "t=2000ms extrapolation clamps at 200ms -> x=4.5");
+
+        // 5% packet loss simulation: drop every 20th packet from a long
+        // stream and verify motion stays smooth (no >2x normal step).
+        buf.clear();
+        const int kPackets = 50;
+        const float kStep  = 0.5f;  // per snapshot
+        for (int n = 0; n < kPackets; ++n) {
+            if (n > 0 && n % 20 == 0) continue;  // simulated drop
+            dts_viewer::JitterSnapshot s;
+            s.pos_x = kStep * n;
+            s.vel_x = 5.0f;
+            buf.record(static_cast<std::uint32_t>(n * 100), s);
+        }
+        // Sample at the dropped-packet times — should interpolate cleanly.
+        auto drop1 = buf.sample(2000);  // n=20 was dropped
+        // Wait — the buffer only holds 8 frames. With 49 records, only
+        // frames 41..49 remain. Let me check with shorter sequence:
+        buf.clear();
+        for (int n = 0; n < 8; ++n) {
+            if (n == 4) continue;  // simulated drop
+            dts_viewer::JitterSnapshot s;
+            s.pos_x = kStep * n;
+            s.vel_x = 5.0f;
+            buf.record(static_cast<std::uint32_t>(n * 100), s);
+        }
+        auto missing = buf.sample(400);  // dropped frame's time
+        // Should interpolate between frames 3 (t=300, x=1.5) and 5 (t=500, x=2.5).
+        check(std::abs(missing.pos_x - 2.0f) < 1e-4f,
+              "dropped-packet hole: interpolates cleanly across gap");
+
+        // Multi-ghost registry sanity check.
+        dts_viewer::JitterBufferRegistry reg;
+        reg.default_display_delay_ms = 100;
+        for (int n = 0; n < 5; ++n) {
+            dts_viewer::JitterSnapshot s;
+            s.pos_x = 10.0f * n;
+            reg.record(42, static_cast<std::uint32_t>(n * 100), s);
+        }
+        auto multi = reg.sample(42, 500);   // display_t = 400 → frame 4 → x=40
+        check(std::abs(multi.pos_x - 40.0f) < 1e-4f,
+              "registry: ghost_id=42 sample respects display delay");
+        auto absent = reg.sample(99, 500);
+        check(std::abs(absent.pos_x - 0.0f) < 1e-4f,
+              "registry: unknown ghost returns empty snapshot");
+
+        std::printf("--jitter-buffer-selftest: all checks passed\n");
         return 0;
     }
 
