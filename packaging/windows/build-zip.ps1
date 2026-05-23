@@ -12,7 +12,11 @@
 
 param(
     [string]$BuildDir = "$PSScriptRoot\..\..\examples\dts-viewer\build",
-    [string]$OutputDir = "$PSScriptRoot\build"
+    [string]$OutputDir = "$PSScriptRoot\build",
+    # Override default with -Ucrt64Bin to support non-default MSYS2 installs
+    # (the GitHub Actions runner installs to D:\a\_temp\msys64 rather than
+    # C:\msys64, so CI passes the path via $env:MSYS2_UCRT64_BIN).
+    [string]$Ucrt64Bin = $(if ($env:MSYS2_UCRT64_BIN) { $env:MSYS2_UCRT64_BIN } else { 'C:\msys64\ucrt64\bin' })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,7 +25,11 @@ $ZipName   = 'Open-Siege-win64'
 $StageDir  = Join-Path $OutputDir $ZipName
 $ZipPath   = Join-Path $OutputDir "$ZipName.zip"
 $Exe       = Join-Path $BuildDir 'dts-viewer.exe'
-$Ucrt64Bin = 'C:\msys64\ucrt64\bin'
+
+Write-Host "Source for runtime DLLs: $Ucrt64Bin"
+if (-not (Test-Path $Ucrt64Bin)) {
+    Write-Error "UCRT64 bin dir not found: $Ucrt64Bin`nSet MSYS2_UCRT64_BIN env var or pass -Ucrt64Bin."
+}
 
 if (-not (Test-Path $Exe)) {
     Write-Error "dts-viewer.exe not found at: $Exe`nRun the UCRT64 cmake build first."

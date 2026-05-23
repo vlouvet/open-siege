@@ -178,6 +178,17 @@ jobs:
         working-directory: examples/dts-viewer
         run: ./build/dts-viewer.exe --help || true
 
+      - name: Export MSYS2 UCRT64 bin path for packaging
+        # setup-msys2@v2 installs MSYS2 to D:\a\_temp\msys64 on the
+        # windows-2022 runner (not C:\msys64). The packaging PS script
+        # reads MSYS2_UCRT64_BIN to find the runtime DLLs it bundles.
+        run: |
+          UCRT_BIN_WIN=$(cygpath -w /ucrt64/bin)
+          echo "MSYS2_UCRT64_BIN=$UCRT_BIN_WIN" >> "$GITHUB_ENV"
+          echo "Resolved UCRT64 bin: $UCRT_BIN_WIN"
+          ls /ucrt64/bin/SDL2.dll /ucrt64/bin/glew32.dll || \
+            (echo "ERROR: expected runtime DLLs not present in /ucrt64/bin" && exit 1)
+
       - name: Build portable zip
         shell: pwsh
         run: packaging\windows\build-zip.ps1
