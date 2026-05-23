@@ -36,34 +36,56 @@ jobs:
 
       - name: Patch Conan settings.yml for current GCC
         run: |
-          ~/.conan-venv/bin/conan profile new default --detect --force
-          ~/.conan-venv/bin/conan profile update settings.compiler.libcxx=libstdc++11 default
-          # MSYS2's `update: true` pulls whatever GCC is current. Conan 1.66
-          # ships an allow-list that hasn't been updated in years, so any
-          # GCC newer than ~14 needs to be appended to the allowlist or
-          # `conan install` fails with exit code 2 (and the message gets
-          # eaten by the msys2.CMD shell wrapper, hiding the cause).
-          # Discover the detected version + patch settings.yml + dump the
-          # final profile so future regressions are diagnosable from the log.
+          # Patch settings.yml FIRST, before any profile detection — Conan
+          # 1.66's compiler.gcc.version allow-list stops at 14, but MSYS2
+          # ships gcc 16+ today (and the next bump won't be far away).
           ~/.conan-venv/bin/python - <<'PY'
           import sys, yaml, pathlib, glob
           venv = pathlib.Path.home() / '.conan-venv'
           sp = glob.glob(str(venv / 'lib/python*/site-packages'))
           if sp: sys.path.insert(0, sp[0])
           import conans.client.conf
-          s = yaml.safe_load(conans.client.conf.get_default_settings_yml())
+          # Seed ~/.conan/settings.yml with conan's defaults if absent.
+          p = pathlib.Path.home() / '.conan/settings.yml'
+          p.parent.mkdir(parents=True, exist_ok=True)
+          if not p.exists():
+              p.write_text(conans.client.conf.get_default_settings_yml())
+          s = yaml.safe_load(p.read_text())
           v = s['compiler']['gcc']['version']
-          # Cover GCC 13-20 + their .0/.1/.2 minor forms. Cheap insurance
-          # against the next MSYS2 toolchain bump.
           for major in range(13, 21):
               for minor in ('', '.0', '.1', '.2', '.3', '.4', '.5'):
                   x = f"{major}{minor}"
-                  if x and x not in v:
-                      v.append(x)
-          p = pathlib.Path.home() / '.conan/settings.yml'
+                  if x not in v: v.append(x)
           p.write_text(yaml.safe_dump(s, sort_keys=False))
           print(f"Patched gcc.version allowlist; now contains {len(v)} entries")
           PY
+
+          # Build the profile by hand — `conan profile new --detect` on a
+          # windows-2022 runner picks Visual Studio 17 because VS is on
+          # PATH ahead of MSYS2's gcc, even when this step itself runs
+          # inside the msys2 shell. We want MinGW gcc, so we write the
+          # profile explicitly and read the gcc version from `gcc --version`.
+          GCC_FULL=$(gcc -dumpversion)        # e.g. "16.1.0"
+          GCC_MAJOR=${GCC_FULL%%.*}            # "16"
+          echo "Using gcc ${GCC_FULL} (major: ${GCC_MAJOR})"
+          mkdir -p ~/.conan/profiles
+          cat > ~/.conan/profiles/default <<EOF
+          [settings]
+          os=Windows
+          os_build=Windows
+          arch=x86_64
+          arch_build=x86_64
+          compiler=gcc
+          compiler.version=${GCC_MAJOR}
+          compiler.libcxx=libstdc++11
+          compiler.threads=posix
+          compiler.exception=seh
+          build_type=Release
+          [options]
+          [conf]
+          [build_requires]
+          [env]
+          EOF
           echo "--- conan profile show default ---"
           ~/.conan-venv/bin/conan profile show default
 
