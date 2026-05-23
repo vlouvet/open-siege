@@ -12,7 +12,7 @@
 // In both modes the loop maintains a `net20::GhostRegistry` and the
 // render thread reads a thread-safe snapshot via `snapshot_registry()`.
 
-#include "../net-test-client/ghost_types.hpp"
+#include <osengine/ghost_types.hpp>
 
 #include <atomic>
 #include <memory>

@@ -49,7 +49,8 @@
 #include "jitter_buffer.hpp"
 #include "camera.hpp"
 #include "height_sampler.hpp"
-#include "mission_bounds.hpp"
+#include <osengine/mission_bounds.hpp>
+#include "mission_bounds_vis.hpp"
 #include "walk_camera.hpp"
 #include "skybox_renderer.hpp"
 #include "particles.hpp"

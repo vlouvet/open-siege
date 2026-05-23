@@ -14,7 +14,7 @@
 // yaw follows the camera. Don't model aerodynamics.
 
 #include <glm/glm.hpp>
-#include "entity_renderer.hpp"
+#include "osengine/entity_state.hpp"
 
 namespace dts_viewer
 {

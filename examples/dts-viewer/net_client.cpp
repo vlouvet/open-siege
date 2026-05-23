@@ -14,10 +14,10 @@
 
 #include "net_client.hpp"
 
-#include "../net-test-client/client_events.hpp"
-#include "../net-test-client/ghost_stream.hpp"
-#include "../net-test-client/movecommand.hpp"
-#include "../net-test-client/reliable_acks.hpp"
+#include <osengine/client_events.hpp>
+#include <osengine/ghost_stream.hpp>
+#include <osengine/movecommand.hpp>
+#include <osengine/reliable_acks.hpp>
 
 #include "content/net/udp_socket.hpp"
 

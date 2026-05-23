@@ -1,24 +1,24 @@
-#ifndef DTS_VIEWER_MISSION_BOUNDS_HPP
-#define DTS_VIEWER_MISSION_BOUNDS_HPP
+#ifndef OSENGINE_MISSION_BOUNDS_HPP
+#define OSENGINE_MISSION_BOUNDS_HPP
 
 // Mission playable-area bounds — Spec 06 (07-mission track).
 //
 // Combines the terrain's quad-grid extent (authoritative for X/Z playable
 // area) with `node_sim_terrain` fog/visibility values to recommend a far
-// plane.  `MissionCenterPos` is a minimap rectangle, not a physics bound;
+// plane. `MissionCenterPos` is a minimap rectangle, not a physics bound;
 // it's NOT used for the hard X/Z clamp here.
 //
 // Y axis is treated separately: world_min.y is the terrain heightmap
 // minimum; world_max.y is the recommended_far_plane scaled by 0.5 (so the
 // camera can climb high enough to see the whole map but not fly to infinity).
+//
+// 2026-05-23 (track 26 spec 01): moved here from
+// examples/dts-viewer/mission_bounds.hpp; the GL `draw_bounds_debug` helper
+// split to apps/dts-viewer/src/mission_bounds_vis.cpp.
 
 #include "content/mission/scene.hpp"
 
 #include <array>
-
-#define GL_SILENCE_DEPRECATION
-#include "gl_includes.hpp"
-#include <glm/glm.hpp>
 
 namespace dts_viewer
 {
@@ -51,16 +51,6 @@ std::array<float, 3> clamp_to_bounds(
     const MissionBounds& b,
     bool* did_clamp_out = nullptr);
 
-// Draws an axis-aligned line-loop on the ground (y = world_min.y) showing
-// the playable boundary.  Caller must have a flat-color shader bound.
-//   u_mvp_loc — uniform location of the mat4 MVP
-//   u_color_loc — uniform location of a vec3 colour (may be -1)
-void draw_bounds_debug(
-    const MissionBounds& b,
-    GLint u_mvp_loc,
-    GLint u_color_loc,
-    const glm::mat4& view_proj);
-
 } // namespace dts_viewer
 
-#endif // DTS_VIEWER_MISSION_BOUNDS_HPP
+#endif // OSENGINE_MISSION_BOUNDS_HPP
