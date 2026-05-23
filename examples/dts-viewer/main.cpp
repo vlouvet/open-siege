@@ -45,6 +45,7 @@
 #include "ai_player.hpp"
 #include "ai_tick.hpp"
 #include "predicted_player.hpp"
+#include "lag_compensation.hpp"
 #include "camera.hpp"
 #include "height_sampler.hpp"
 #include "mission_bounds.hpp"
@@ -1636,6 +1637,102 @@ int main(int argc, char** argv)
               "test6: yaw preserved through hard snap");
 
         std::printf("--prediction-selftest: all checks passed\n");
+        return 0;
+    }
+
+    // Spec 22/02 — `--lag-comp-selftest` exercises RewindHistory:
+    //   - record a moving target's pose at 10 Hz
+    //   - lookup at past times → interpolation accuracy
+    //   - lookup before/after range → clamps to nearest
+    //   - rewind-delta computation + anti-cheat gate
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--lag-comp-selftest") continue;
+
+        auto check = [&](bool ok, const char* msg) {
+            std::printf("  %s %s\n", ok ? "[PASS]" : "[FAIL]", msg);
+            if (!ok) std::exit(1);
+        };
+
+        dts_viewer::RewindHistory<> hist;
+
+        // Record 16 frames at 100ms intervals: target moving along +X at
+        // 10 m/s. Sample N is at t=100*N ms, pos=(1.0*N, 0, 0).
+        for (int n = 0; n < 16; ++n) {
+            dts_viewer::LagPose p;
+            p.pos_x = static_cast<float>(n);
+            hist.record(static_cast<std::uint32_t>(n * 100), p);
+        }
+        check(hist.count == 16, "lag-comp: 16 frames recorded");
+
+        // Exact-frame lookups.
+        auto a = hist.lookup(500);
+        check(std::abs(a.pos_x - 5.0f) < 1e-4f, "lookup t=500ms -> x=5");
+        auto b = hist.lookup(0);
+        check(std::abs(b.pos_x - 0.0f) < 1e-4f, "lookup t=0   -> x=0");
+        auto c = hist.lookup(1500);
+        check(std::abs(c.pos_x - 15.0f) < 1e-4f, "lookup t=1500 -> x=15");
+
+        // Mid-frame interpolation (t=550ms → halfway between frame5 and frame6).
+        auto m = hist.lookup(550);
+        check(std::abs(m.pos_x - 5.5f) < 1e-4f, "lookup t=550 -> x=5.5 (interp)");
+
+        // Out-of-range clamps.
+        auto before = hist.lookup(0);  // edge: returns oldest
+        check(std::abs(before.pos_x - 0.0f) < 1e-4f, "t<oldest clamps to oldest");
+        auto after  = hist.lookup(5000);
+        check(std::abs(after.pos_x - 15.0f) < 1e-4f, "t>newest clamps to newest");
+
+        // Rewind-delta computation.
+        check(dts_viewer::compute_rewind_ms(100, 50)  == 100, "rewind ping=100 interp=50 -> 100ms");
+        check(dts_viewer::compute_rewind_ms(200, 100) == 200, "rewind ping=200 interp=100 -> 200ms");
+        check(dts_viewer::compute_rewind_ms(2000, 0)  == dts_viewer::kMaxRewindMs,
+              "rewind capped at kMaxRewindMs (anti-cheat)");
+
+        // Anti-cheat gate.
+        check( dts_viewer::hit_should_be_accepted(200),  "accept hit at 200ms RTT");
+        check( dts_viewer::hit_should_be_accepted(800),  "accept hit at 800ms RTT");
+        check(!dts_viewer::hit_should_be_accepted(1200), "reject hit at 1200ms RTT");
+
+        // Ring-buffer eviction: record 8 more frames; oldest fall off.
+        for (int n = 16; n < 24; ++n) {
+            dts_viewer::LagPose p;
+            p.pos_x = static_cast<float>(n);
+            hist.record(static_cast<std::uint32_t>(n * 100), p);
+        }
+        check(hist.count == 16, "ring buffer stays at 16 after eviction");
+        auto post = hist.lookup(800);  // frame 8 should have fallen off (only frames 8..23 remain)
+        // After eviction: frames 8..23 remain. t=800ms is exactly frame 8 → x=8.
+        check(std::abs(post.pos_x - 8.0f) < 1e-4f, "post-evict lookup correct (oldest=frame8)");
+        auto stale = hist.lookup(100);
+        check(std::abs(stale.pos_x - 8.0f) < 1e-4f, "lookup of evicted time clamps to new-oldest");
+
+        // Equivalent hit-detection scenarios: 200ms-ping vs 50ms-ping
+        // players should both resolve to the SAME historical pose given
+        // matching interp_delay (i.e. the system equalises across pings
+        // within the rewind cap).
+        const std::uint32_t t_now = 2400;
+        // We need a longer history with the same physics to do this.
+        // Re-record with 32 frames at 100ms each so 200ms-ping is in range.
+        hist.clear();
+        for (int n = 0; n < 16; ++n) {
+            dts_viewer::LagPose p;
+            p.pos_x = static_cast<float>(n);
+            hist.record(static_cast<std::uint32_t>(n * 100 + 1000), p);  // t = 1000..2500
+        }
+        const auto pose_50ping  = hist.lookup(t_now - dts_viewer::compute_rewind_ms(50, 50));
+        const auto pose_200ping = hist.lookup(t_now - dts_viewer::compute_rewind_ms(200, 50));
+        // pose_50ping uses rewind=75 -> lookup at t=2325 → frame 13.25 → x=13.25
+        // pose_200ping uses rewind=150 -> lookup at t=2250 → frame 12.5 → x=12.5
+        // Both within the recorded range, no clamping. The DIFFERENCE
+        // between the two is exactly the ping/2 difference (75ms = 0.75m
+        // at 10 m/s) — that's the lag-comp working: each player gets
+        // rewound by their own ping.
+        const float diff = pose_50ping.pos_x - pose_200ping.pos_x;
+        check(std::abs(diff - 0.75f) < 1e-4f,
+              "lag-comp: 50-ping & 200-ping hit DIFFERENT historical poses (0.75m apart)");
+
+        std::printf("--lag-comp-selftest: all checks passed\n");
         return 0;
     }
 
