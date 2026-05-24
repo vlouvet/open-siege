@@ -31,6 +31,7 @@ add_library(osengine STATIC
     src/ai_player.cpp
     src/ai_tick.cpp
     src/bot_paths.cpp
+    src/chat_channel.cpp
     src/client_events.cpp
     src/cscript_host.cpp
     src/damage_resolver.cpp
@@ -60,6 +61,7 @@ add_library(osengine STATIC
     src/projectile_world.cpp
     src/player_simobject.cpp
     src/reliable_acks.cpp
+    src/scoreboard.cpp
     src/vehicle.cpp
     src/wav_loader.cpp
     src/weapons.cpp)

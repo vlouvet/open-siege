@@ -6,6 +6,7 @@
 // once spec 07 wires the engine's ghost_stream to a real socket loop.
 
 #include <osengine/audio_sink.hpp>
+#include <osengine/chat_channel.hpp>
 #include <osengine/damage_resolver.hpp>
 #include <osengine/flag_state.hpp>
 #include <osengine/ghost_emitter.hpp>
@@ -15,6 +16,7 @@
 #include <osengine/mission_sounds.hpp>
 #include <osengine/paths.hpp>
 #include <osengine/projectile_world.hpp>
+#include <osengine/scoreboard.hpp>
 #include <osengine/server_listener.hpp>
 #include <osengine/session_table.hpp>
 #include <osengine/team_assigner.hpp>
@@ -69,6 +71,8 @@ void print_usage()
         "  --damage-selftest         Run damage_resolver selftest and exit\n"
         "  --flag-selftest           Run flag_state selftest and exit\n"
         "  --match-selftest          Run match_state selftest and exit\n"
+        "  --chat-selftest           Run chat_channel selftest and exit\n"
+        "  --scoreboard-selftest     Run scoreboard selftest and exit\n"
         "  --cap-limit <n>           Captures to win the match (default 5)\n"
         "  --time-limit <min>        Match time limit in minutes (default 25)\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
@@ -120,6 +124,8 @@ int main(int argc, char** argv)
     bool damage_selftest = false;
     bool flag_selftest = false;
     bool match_selftest = false;
+    bool chat_selftest = false;
+    bool scoreboard_selftest = false;
     int  cap_limit  = 5;
     int  time_limit_min = 25;
     bool skip_mission = false;
@@ -138,6 +144,8 @@ int main(int argc, char** argv)
         if (a == "--damage-selftest") { damage_selftest = true; continue; }
         if (a == "--flag-selftest") { flag_selftest = true; continue; }
         if (a == "--match-selftest") { match_selftest = true; continue; }
+        if (a == "--chat-selftest") { chat_selftest = true; continue; }
+        if (a == "--scoreboard-selftest") { scoreboard_selftest = true; continue; }
         if (a == "--cap-limit" && i + 1 < argc) { cap_limit = std::atoi(argv[++i]); continue; }
         if (a == "--time-limit" && i + 1 < argc) { time_limit_min = std::atoi(argv[++i]); continue; }
         if (a == "--team-balance" && i + 1 < argc) {
@@ -198,6 +206,14 @@ int main(int argc, char** argv)
 
     if (match_selftest) {
         return dts_viewer::MatchState::selftest();
+    }
+
+    if (chat_selftest) {
+        return dts_viewer::ChatChannel::selftest();
+    }
+
+    if (scoreboard_selftest) {
+        return dts_viewer::scoreboard_selftest();
     }
 
     if (world_tick_selftest) {
@@ -330,6 +346,8 @@ int main(int argc, char** argv)
     match_cfg.time_limit_ms = static_cast<std::uint32_t>(
         std::max(1, time_limit_min)) * 60u * 1000u;
     dts_viewer::MatchState match(match_cfg);
+    dts_viewer::ChatChannel chat;
+    auto prev_phase = match.phase();
     // Future: populate world_ctx.terrain + world_ctx.bounds from the
     // loaded mission. v1: empty HeightSampler (sample() returns 0) so
     // players free-fall onto the implicit y=0 plane and walk on it.
@@ -374,6 +392,38 @@ int main(int argc, char** argv)
                 match.on_capture(cap, now_ms);
             }
             match.tick(listener->sessions(), now_ms);
+            // Spec 28/10 — feed system events into the chat channel.
+            for (const auto& k : tick_kills) {
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                    "Slot %u killed Slot %u",
+                    (unsigned)k.killer_slot, (unsigned)k.victim_slot);
+                chat.emit_system(buf, now_ms);
+            }
+            for (const auto& cap : tick_captures) {
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                    "Slot %u captured %s flag",
+                    (unsigned)cap.capturer_slot,
+                    (cap.flag_taken == dts_viewer::Team::Red ? "Red" : "Blue"));
+                chat.emit_system(buf, now_ms);
+            }
+            if (match.phase() != prev_phase) {
+                if (match.phase() == dts_viewer::MatchPhase::Live) {
+                    chat.emit_system("Match begins!", now_ms);
+                } else if (match.phase() == dts_viewer::MatchPhase::EndHold) {
+                    char buf[128];
+                    const auto w = match.winner();
+                    std::snprintf(buf, sizeof(buf),
+                        "Match over — winner: %s (Red %u | Blue %u)",
+                        (w == dts_viewer::Team::Red  ? "Red"  :
+                         w == dts_viewer::Team::Blue ? "Blue" : "Draw"),
+                        (unsigned)match.red_score(),
+                        (unsigned)match.blue_score());
+                    chat.emit_system(buf, now_ms);
+                }
+                prev_phase = match.phase();
+            }
         }
 
         const auto now = std::chrono::steady_clock::now();
