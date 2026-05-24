@@ -189,6 +189,119 @@ void NetClient::set_input(const net20::MoveInput& input)
     pending_input_.jump = pending_input_.jump || pending_jump;
 }
 
+std::optional<ServerInfo> NetClient::server_info() const
+{
+    std::lock_guard<std::mutex> g(mu_);
+    return server_info_;
+}
+
+// -------------------- spec 29/02b — server_info codec ---------------
+
+std::vector<std::uint8_t> encode_server_info(const ServerInfo& info,
+                                              std::uint16_t vc_send_seq,
+                                              bool vc_parity)
+{
+    net20::VcHeaderInputs hdr;
+    hdr.send_seq             = vc_send_seq & 0x1FFu;
+    hdr.connect_parity       = vc_parity;
+    hdr.highest_acked_of_mine = 0;
+    hdr.type_word            = kServerInfoTypeWord;
+    auto buf = net20::encode_vc_header(hdr);
+
+    const std::string& name = info.mission_short_name;
+    const std::size_t name_len = std::min<std::size_t>(name.size(), 64);
+
+    const std::size_t body_off = buf.size();
+    buf.resize(body_off + 13 + name_len);
+    std::uint8_t* p = buf.data() + body_off;
+    p[0] = 'S'; p[1] = 'I'; p[2] = 'N'; p[3] = 'F';
+    p[4] = 0x01;
+    p[5] = static_cast<std::uint8_t>(info.player_slot & 0xFFu);
+    p[6] = static_cast<std::uint8_t>((info.player_slot >> 8) & 0xFFu);
+    p[7] = info.team_raw;
+    p[8]  = static_cast<std::uint8_t>(info.server_tick & 0xFFu);
+    p[9]  = static_cast<std::uint8_t>((info.server_tick >> 8) & 0xFFu);
+    p[10] = static_cast<std::uint8_t>((info.server_tick >> 16) & 0xFFu);
+    p[11] = static_cast<std::uint8_t>((info.server_tick >> 24) & 0xFFu);
+    p[12] = static_cast<std::uint8_t>(name_len);
+    if (name_len > 0) std::memcpy(p + 13, name.data(), name_len);
+    return buf;
+}
+
+std::optional<ServerInfo> decode_server_info(const std::uint8_t* data,
+                                              std::size_t size)
+{
+    if (!data || size < 4) return std::nullopt;
+    // Scan the first few bytes for the SINF magic — VC header is
+    // variable-length (3-8 bytes typically). Body must fit after.
+    std::size_t off = 0;
+    bool found = false;
+    for (std::size_t i = 0; i + 13 <= size && i < 16; ++i) {
+        if (data[i] == 'S' && data[i+1] == 'I'
+            && data[i+2] == 'N' && data[i+3] == 'F') {
+            off = i;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return std::nullopt;
+    const std::uint8_t* p = data + off;
+    if (p[4] != 0x01) return std::nullopt;
+    const std::size_t name_len = p[12];
+    if (off + 13 + name_len > size) return std::nullopt;
+    if (name_len > 64) return std::nullopt;
+
+    ServerInfo out;
+    out.player_slot = static_cast<std::uint16_t>(p[5] | (std::uint32_t(p[6]) << 8));
+    out.team_raw    = p[7];
+    out.server_tick = static_cast<std::uint32_t>(p[8])
+                    | (static_cast<std::uint32_t>(p[9]) << 8)
+                    | (static_cast<std::uint32_t>(p[10]) << 16)
+                    | (static_cast<std::uint32_t>(p[11]) << 24);
+    if (name_len > 0) {
+        out.mission_short_name.assign(
+            reinterpret_cast<const char*>(p + 13), name_len);
+    }
+    return out;
+}
+
+int server_info_roundtrip_selftest()
+{
+    ServerInfo in;
+    in.mission_short_name = "5_CTF_Bedlam";
+    in.player_slot = 7;
+    in.team_raw    = 1;       // Red
+    in.server_tick = 0xABCD1234u;
+    const auto bytes = encode_server_info(in, /*seq*/ 3, /*parity*/ true);
+    auto out = decode_server_info(bytes.data(), bytes.size());
+    if (!out) {
+        std::fputs("[server-info-selftest] decode returned nullopt\n", stderr);
+        return 1;
+    }
+    if (out->mission_short_name != in.mission_short_name
+        || out->player_slot != in.player_slot
+        || out->team_raw    != in.team_raw
+        || out->server_tick != in.server_tick) {
+        std::fprintf(stderr,
+            "[server-info-selftest] roundtrip mismatch: name='%s' slot=%u team=%u tick=%u\n",
+            out->mission_short_name.c_str(),
+            (unsigned)out->player_slot, (unsigned)out->team_raw,
+            (unsigned)out->server_tick);
+        return 1;
+    }
+    // Empty mission name corner case.
+    ServerInfo in2;
+    in2.player_slot = 0;
+    const auto bytes2 = encode_server_info(in2, 1, false);
+    auto out2 = decode_server_info(bytes2.data(), bytes2.size());
+    if (!out2 || !out2->mission_short_name.empty()) {
+        std::fputs("[server-info-selftest] empty-name corner failed\n", stderr);
+        return 1;
+    }
+    std::fputs("[server-info-selftest] OK — roundtrip + empty name\n", stderr);
+    return 0;
+}
+
 bool NetClient::start_replay(const std::string& path)
 {
     {
@@ -483,6 +596,24 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
                 buf.data(), buf.size(), hdr_in);
             if (parsed_hdr && hdr_in.base_type != net20::pkt_type::kPing) {
                 ack.on_receive(hdr_in.send_seq);
+            }
+            // Spec 29/02b — server_info dispatch. The type-word lives
+            // in the same 5-bit field as kDataPacket / kPureAck / etc;
+            // a non-DataPacket type-word with the SINF magic is our
+            // out-of-band server bootstrap.
+            if (parsed_hdr && hdr_in.type_word == kServerInfoTypeWord) {
+                auto si = decode_server_info(buf.data(), buf.size());
+                if (si) {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    server_info_ = *si;
+                    std::fprintf(stderr,
+                        "[net-client/live] server_info: mission='%s' slot=%u team=%u tick=%u\n",
+                        si->mission_short_name.c_str(),
+                        (unsigned)si->player_slot,
+                        (unsigned)si->team_raw,
+                        (unsigned)si->server_tick);
+                }
+                continue;     // not a DataPacket; skip typed-packet parse
             }
             auto td = net20::parse_typed_packet(buf.data(), buf.size(), reg);
             (void)td;

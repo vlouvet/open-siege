@@ -2,6 +2,7 @@
 
 #include <osengine/ghost_emitter.hpp>
 #include <osengine/movecommand.hpp>
+#include <osengine/net_client.hpp>     // spec 29/02b — server_info codec
 #include <osengine/server_world_snapshot.hpp>
 #include <osengine/session_table.hpp>
 #include <osengine/team_assigner.hpp>
@@ -158,6 +159,7 @@ struct ServerListener::Impl
     std::unordered_map<EmitterKey, std::unique_ptr<GhostEmitter>,
                        EmitterKeyHash>  emitters;
     std::vector<SpawnPoint>         spawns;       // spec 28/05
+    std::string                     mission_name; // spec 29/02b
 };
 
 void ServerListener::set_spawn_points(std::vector<SpawnPoint> spawns)
@@ -168,6 +170,11 @@ void ServerListener::set_spawn_points(std::vector<SpawnPoint> spawns)
 const std::vector<SpawnPoint>& ServerListener::spawn_points() const
 {
     return impl_->spawns;
+}
+
+void ServerListener::set_mission_name(std::string name)
+{
+    impl_->mission_name = std::move(name);
 }
 
 ServerListener::ServerListener(ServerListenerConfig cfg)
@@ -274,6 +281,24 @@ void ServerListener::run()
                             "[listener] RequestConnect from %s:%u -> slot %u, replied AcceptConnect (nonce %02x%02x%02x)\n",
                             peer.host.c_str(), peer.port, sess->player_slot,
                             sess->nonce[0], sess->nonce[1], sess->nonce[2]);
+                        // Spec 29/02b — publish mission/slot/team to the
+                        // new client right after AcceptConnect. Skip when
+                        // no mission is set (listener selftest path).
+                        if (was_new && !impl_->mission_name.empty()) {
+                            ServerInfo si;
+                            si.mission_short_name = impl_->mission_name;
+                            si.player_slot = sess->player_slot;
+                            si.team_raw = static_cast<std::uint8_t>(sess->team);
+                            si.server_tick = static_cast<std::uint32_t>(
+                                impl_->tick_counter);
+                            const auto si_bytes = encode_server_info(
+                                si, sess->next_send_seq, /*parity*/ false);
+                            impl_->socket.send_to(peer, si_bytes.data(),
+                                                  si_bytes.size());
+                            sess->next_send_seq = static_cast<std::uint16_t>(
+                                (sess->next_send_seq + 1) & 0x1FFu);
+                            if (sess->next_send_seq == 0) sess->next_send_seq = 1;
+                        }
                     } else {
                         impl_->last_error = impl_->socket.last_error();
                         std::fprintf(stderr,

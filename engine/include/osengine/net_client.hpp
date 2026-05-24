@@ -16,10 +16,51 @@
 #include <osengine/movecommand.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <vector>
+
+// Spec 29/02b — server_info packet shape. Sent once by the server
+// right after AcceptConnect; the client surfaces the decoded fields
+// via NetClient::server_info().
+namespace dts_viewer {
+
+struct ServerInfo {
+    std::string   mission_short_name;
+    std::uint16_t player_slot = 0;
+    std::uint8_t  team_raw    = 0;     // matches dts_viewer::Team
+    std::uint32_t server_tick = 0;
+};
+
+// VC packet-type word for server_info. Chosen above the standard
+// VC type-word range (0..31) so it doesn't collide with kDataPacket,
+// kPureAck, kPing, kAcceptConnect, etc. See reliable_acks.hpp pkt_type.
+constexpr std::uint8_t kServerInfoTypeWord = 0x12;
+
+// Wire layout (after the variable-length VC header):
+//   offset 0..3  : 'S','I','N','F' magic
+//   offset 4     : version (currently 0x01)
+//   offset 5..6  : player_slot (u16 LE)
+//   offset 7     : team_raw
+//   offset 8..11 : server_tick (u32 LE)
+//   offset 12    : mission_short_name length (u8, 0..64)
+//   offset 13..  : mission_short_name bytes (utf-8, no terminator)
+std::vector<std::uint8_t> encode_server_info(const ServerInfo& info,
+                                             std::uint16_t vc_send_seq,
+                                             bool vc_parity);
+
+// Best-effort decoder. Returns nullopt if the packet doesn't look
+// like a server_info (wrong magic, wrong version, length out of range).
+std::optional<ServerInfo> decode_server_info(const std::uint8_t* data,
+                                             std::size_t size);
+
+int server_info_roundtrip_selftest();
+
+}  // namespace dts_viewer
 
 namespace dts_viewer {
 
@@ -61,6 +102,11 @@ public:
     // sample mouse motion every frame without losing pixels.
     void set_input(const net20::MoveInput& input);
 
+    // Spec 29/02b — server-info accessor. Populated when the IO thread
+    // receives a packet with type_word == kServerInfoTypeWord. Returns
+    // nullopt until the server's first server_info reaches us.
+    std::optional<ServerInfo> server_info() const;
+
     // Diagnostics.
     bool   running() const { return running_.load(std::memory_order_relaxed); }
     int    packets_seen() const { return packets_seen_.load(std::memory_order_relaxed); }
@@ -78,6 +124,7 @@ private:
     net20::GhostRegistry   registry_;
     std::string            last_error_;
     net20::MoveInput       pending_input_;       // spec 29/03
+    std::optional<ServerInfo> server_info_;       // spec 29/02b
 
     std::thread            io_thread_;
     std::atomic<bool>      running_       { false };

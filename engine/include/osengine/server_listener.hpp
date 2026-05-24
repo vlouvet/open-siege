@@ -88,6 +88,10 @@ public:
     // each tick with the current spawn list.
     const std::vector<struct SpawnPoint>& spawn_points() const;
 
+    // Spec 29/02b — current mission name; published to clients in the
+    // server_info packet sent after each new-session AcceptConnect.
+    void set_mission_name(std::string name);
+
 private:
     void run();
 

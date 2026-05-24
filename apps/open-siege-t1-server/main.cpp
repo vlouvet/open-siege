@@ -15,6 +15,7 @@
 #include <osengine/map_cycle.hpp>
 #include <osengine/match_state.hpp>
 #include <osengine/mission_loader.hpp>
+#include <osengine/net_client.hpp>
 #include <osengine/mission_sounds.hpp>
 #include <osengine/paths.hpp>
 #include <osengine/projectile_world.hpp>
@@ -76,6 +77,7 @@ void print_usage()
         "  --chat-selftest           Run chat_channel selftest and exit\n"
         "  --scoreboard-selftest     Run scoreboard selftest and exit\n"
         "  --mapcycle-selftest       Run map_cycle selftest and exit\n"
+        "  --server-info-selftest    Run server_info codec selftest and exit\n"
         "  --map-cycle <n1>,<n2>,..  Comma-separated mission rotation (default: --mission)\n"
         "  --cap-limit <n>           Captures to win the match (default 5)\n"
         "  --time-limit <min>        Match time limit in minutes (default 25)\n"
@@ -133,6 +135,7 @@ int main(int argc, char** argv)
     bool chat_selftest = false;
     bool scoreboard_selftest = false;
     bool mapcycle_selftest = false;
+    bool server_info_selftest = false;
     std::string map_cycle_csv;
     int  cap_limit  = 5;
     int  time_limit_min = 25;
@@ -156,6 +159,7 @@ int main(int argc, char** argv)
         if (a == "--chat-selftest") { chat_selftest = true; continue; }
         if (a == "--scoreboard-selftest") { scoreboard_selftest = true; continue; }
         if (a == "--mapcycle-selftest") { mapcycle_selftest = true; continue; }
+        if (a == "--server-info-selftest") { server_info_selftest = true; continue; }
         if (a == "--map-cycle" && i + 1 < argc) { map_cycle_csv = argv[++i]; continue; }
         if (a == "--cap-limit" && i + 1 < argc) { cap_limit = std::atoi(argv[++i]); continue; }
         if (a == "--time-limit" && i + 1 < argc) { time_limit_min = std::atoi(argv[++i]); continue; }
@@ -233,6 +237,10 @@ int main(int argc, char** argv)
 
     if (mapcycle_selftest) {
         return dts_viewer::MapCycle::selftest();
+    }
+
+    if (server_info_selftest) {
+        return dts_viewer::server_info_roundtrip_selftest();
     }
 
     if (world_tick_selftest) {
@@ -332,6 +340,7 @@ int main(int argc, char** argv)
         listener_cfg.enable_ghost_emit   = !no_ghost_emit;
         listener_cfg.team_balance        = team_balance;
         listener = std::make_unique<dts_viewer::ServerListener>(listener_cfg);
+        listener->set_mission_name(mission_name);   // spec 29/02b
         if (mission) {
             auto spawns = dts_viewer::extract_spawn_points(*mission);
             std::fprintf(stderr,
