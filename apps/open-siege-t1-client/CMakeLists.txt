@@ -42,6 +42,7 @@ add_executable(open-siege-t1-client
     spawn_ui.cpp
     flag_ui.cpp
     chat_ui.cpp
+    pause_menu.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

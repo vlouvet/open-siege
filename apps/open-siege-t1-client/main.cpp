@@ -29,6 +29,7 @@
 #include "spawn_ui.hpp"            // spec 29/06
 #include "flag_ui.hpp"             // spec 29/07
 #include "chat_ui.hpp"             // spec 29/08
+#include "pause_menu.hpp"          // spec 29/09
 
 #include <SDL2/SDL.h>
 
@@ -262,6 +263,9 @@ int main(int argc, char** argv)
     // Spec 29/08 — chat input capture state.
     open_siege::ChatUiState chat_ui;
 
+    // Spec 29/09 — pause overlay state.
+    open_siege::PauseMenuState pause_ui;
+
     // Spec 29/04 — jitter buffer for remote-player smoothing. We record
     // every Player ghost's pos/yaw into the registry indexed by ghost_id
     // and sample at (now_ms - default_display_delay_ms) when rendering.
@@ -311,8 +315,23 @@ int main(int argc, char** argv)
                     continue;     // swallow from gameplay
                 }
             }
-            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE)
-                g_quit.store(true);
+            // Spec 29/09 — Esc + arrow keys + Enter route into the
+            // pause menu while visible. Esc otherwise toggles it open.
+            if (pause_ui.visible) {
+                if (ev.type == SDL_KEYDOWN) {
+                    auto act = open_siege::handle_key(pause_ui, ev.key.keysym.sym);
+                    if (act == open_siege::PauseAction::Disconnect) {
+                        net.stop();
+                    } else if (act == open_siege::PauseAction::Quit) {
+                        g_quit.store(true);
+                    }
+                    continue;     // swallow nav keys from gameplay
+                }
+            } else if (ev.type == SDL_KEYDOWN && !ev.key.repeat
+                       && ev.key.keysym.sym == SDLK_ESCAPE) {
+                open_siege::toggle(pause_ui);
+                continue;
+            }
             // Spec 29/05 — Tab toggles scoreboard. Hold to show; release
             // to hide (matches Tribes 1 muscle memory).
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_TAB)
@@ -357,7 +376,7 @@ int main(int argc, char** argv)
         // WASD typing doesn't move the avatar.
         if (net.running()) {
             net20::MoveInput in;
-            if (!chat_ui.capturing) {
+            if (!chat_ui.capturing && !pause_ui.visible) {
                 const Uint8* keys = SDL_GetKeyboardState(nullptr);
                 in.forward  = keys[SDL_SCANCODE_W] ? 1.0f : 0.0f;
                 in.backward = keys[SDL_SCANCODE_S] ? 1.0f : 0.0f;
@@ -466,6 +485,8 @@ int main(int argc, char** argv)
             open_siege::draw_flag_carrier_hud(0, width, height);
             open_siege::draw_match_end_banner(flag_ui, t_ms, width, height);
             open_siege::draw_input_box(chat_ui, width, height);
+            open_siege::draw_disconnected_banner(pause_ui, width, height);
+            open_siege::draw(pause_ui, width, height);
         }
 
         // Flush ImGui draw lists (HUD text + overlays) on top of the
