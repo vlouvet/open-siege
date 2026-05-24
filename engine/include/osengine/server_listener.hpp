@@ -31,6 +31,7 @@ struct ServerListenerStats
     std::uint64_t request_connects_received = 0;
     std::uint64_t accept_connects_sent      = 0;
     std::uint64_t data_packets_received     = 0;
+    std::uint64_t ghost_bursts_sent         = 0;
     std::uint64_t unknown_packets_received  = 0;
 };
 

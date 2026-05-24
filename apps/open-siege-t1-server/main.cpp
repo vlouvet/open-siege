@@ -189,11 +189,12 @@ int main(int argc, char** argv)
             if (listener) {
                 const auto s = listener->stats();
                 std::fprintf(stderr,
-                    "[server] tick %llu  net: req=%llu acc=%llu data=%llu unk=%llu\n",
+                    "[server] tick %llu  net: req=%llu acc=%llu data=%llu ghost=%llu unk=%llu\n",
                     (unsigned long long)tick,
                     (unsigned long long)s.request_connects_received,
                     (unsigned long long)s.accept_connects_sent,
                     (unsigned long long)s.data_packets_received,
+                    (unsigned long long)s.ghost_bursts_sent,
                     (unsigned long long)s.unknown_packets_received);
             } else {
                 std::fprintf(stderr, "[server] tick %llu\n", (unsigned long long)tick);

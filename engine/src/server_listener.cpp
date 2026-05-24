@@ -26,6 +26,32 @@ constexpr std::uint8_t kAcceptConnectTemplate[16] = {
     0x12, 0x01, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00,
 };
 
+// First-ghost-burst template captured from the same handshake (third
+// packet, server->client, 223 bytes, type byte 0x0b = data_with_payload
+// in VC framing). Sent back to the client when we observe its first
+// DataPacket so phase-3 counts at least one ghost packet — spec 26/11.
+constexpr std::uint8_t kFirstGhostBurstTemplate[223] = {
+    0x0b, 0x08, 0x09, 0x00, 0x5c, 0xc0, 0x13, 0x00, 0x00, 0x00, 0xe0, 0xff,
+    0xff, 0xff, 0xff, 0x81, 0x23, 0x4a, 0xf4, 0x21, 0xc1, 0x2e, 0xdb, 0xff,
+    0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x21, 0x62, 0xa8,
+    0x86, 0x8b, 0x67, 0x3f, 0xbe, 0xc1, 0xee, 0xb3, 0x1f, 0xff, 0x27, 0x00,
+    0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0xc0, 0x06, 0x5f, 0x4e, 0xa4, 0x14,
+    0x6e, 0x5a, 0xa8, 0x85, 0x06, 0xa1, 0x15, 0x6a, 0xe1, 0xcb, 0x00, 0x04,
+    0x00, 0x00, 0x00, 0x12, 0xec, 0xb2, 0x3d, 0x00, 0xff, 0xff, 0xff, 0xff,
+    0x8e, 0x30, 0x0d, 0xa6, 0xeb, 0x1e, 0x45, 0x9b, 0x1e, 0x10, 0xcb, 0x35,
+    0x36, 0xac, 0xba, 0xa2, 0x22, 0xe2, 0xd3, 0x9b, 0xbe, 0x49, 0x6f, 0x09,
+    0x76, 0xd9, 0x7e, 0x8e, 0xef, 0x6f, 0xe9, 0x06, 0xdc, 0xaa, 0x2b, 0x2a,
+    0x22, 0x3e, 0xbd, 0xf6, 0x26, 0xbd, 0x5d, 0x7b, 0x70, 0xd5, 0xba, 0x3a,
+    0x03, 0x62, 0x5a, 0x7b, 0x72, 0xa7, 0x09, 0x69, 0x41, 0xeb, 0x8a, 0xa3,
+    0xe4, 0xb1, 0xf6, 0xe4, 0x4e, 0x13, 0xd2, 0x82, 0x00, 0x1c, 0x21, 0x1e,
+    0x78, 0xd7, 0xf4, 0x8d, 0xa2, 0x4d, 0x01, 0x1c, 0x21, 0x1e, 0xd4, 0xe5,
+    0xf1, 0x72, 0xef, 0x92, 0x07, 0x70, 0x2c, 0xa0, 0x00, 0x00, 0x02, 0x00,
+    0x01, 0x00, 0x40, 0x82, 0x02, 0x00, 0x30, 0x0a, 0x1d, 0x0b, 0x28, 0x04,
+    0x00, 0x00, 0x00, 0xc7, 0x02, 0x0a, 0x02, 0x02, 0x00, 0xc0, 0xb1, 0x80,
+    0xc2, 0x00, 0x08, 0x00, 0x04, 0x00, 0x00, 0x05, 0x0a, 0x00, 0x00, 0x22,
+    0x24, 0xfc, 0xff, 0xff, 0xff, 0x6b, 0x3a,
+};
+
 // 27-byte vanilla RequestConnect detection: starts with 0x07.
 bool looks_like_vanilla_request_connect(const std::vector<std::uint8_t>& pkt)
 {
@@ -162,11 +188,26 @@ void ServerListener::run()
                     peer.host.c_str(), peer.port);
             }
             else if (looks_like_first_data_packet(buf)) {
+                // Spec 26/11: reply with the captured 223-byte ghost burst
+                // so the client's phase-3 counter ticks up. v1 sends the
+                // burst on every observed DataPacket from this peer; spec
+                // 26/12 will track per-peer state and only send once.
+                const bool ok = impl_->socket.send_to(
+                    peer, kFirstGhostBurstTemplate, sizeof(kFirstGhostBurstTemplate));
                 std::lock_guard<std::mutex> lk(impl_->mu);
                 ++impl_->stats.data_packets_received;
-                std::fprintf(stderr,
-                    "[listener] DataPacket %02x%02x%02x%02x from %s:%u (v1: no ghost burst yet)\n",
-                    buf[0], buf[1], buf[2], buf[3], peer.host.c_str(), peer.port);
+                if (ok) {
+                    ++impl_->stats.ghost_bursts_sent;
+                    std::fprintf(stderr,
+                        "[listener] DataPacket %02x%02x%02x%02x from %s:%u, replied ghost burst (%zuB)\n",
+                        buf[0], buf[1], buf[2], buf[3], peer.host.c_str(), peer.port,
+                        sizeof(kFirstGhostBurstTemplate));
+                } else {
+                    impl_->last_error = impl_->socket.last_error();
+                    std::fprintf(stderr,
+                        "[listener] DataPacket from %s:%u, send_to(ghost burst) failed: %s\n",
+                        peer.host.c_str(), peer.port, impl_->last_error.c_str());
+                }
             }
             else {
                 char hexbuf[64] = {};
@@ -253,7 +294,50 @@ int server_listener_selftest()
         std::fprintf(stderr, "[listener-selftest] reply bytes mismatch\n");
         return 1;
     }
-    std::fprintf(stderr, "[listener-selftest] OK — handshake reply byte-equal to template\n");
+
+    // Phase 2: send the first DataPacket (07 08 09 80) and expect the
+    // 223-byte ghost burst per spec 26/11. Listener already stopped
+    // above — restart for the second leg with a fresh ephemeral port.
+    UdpSocket bind_probe2;
+    if (!bind_probe2.bind(0)) {
+        std::fprintf(stderr, "[listener-selftest] phase2 bind_probe failed\n");
+        return 1;
+    }
+    listener_port = bind_probe2.local_port();
+    bind_probe2.close();
+    ServerListener listener2(ServerListenerConfig{listener_port, 200});
+    if (!listener2.start()) {
+        std::fprintf(stderr, "[listener-selftest] phase2 listener.start failed: %s\n",
+                     listener2.last_error().c_str());
+        return 1;
+    }
+    Endpoint target2{"127.0.0.1", listener_port};
+    const std::uint8_t data_packet[4] = { 0x07, 0x08, 0x09, 0x80 };
+    if (!probe.send_to(target2, data_packet, sizeof(data_packet))) {
+        std::fprintf(stderr, "[listener-selftest] phase2 probe.send_to failed\n");
+        listener2.stop();
+        return 1;
+    }
+    reply_buf.clear();
+    for (int i = 0; i < 200; ++i) {
+        if (probe.try_recv(reply_buf, reply_peer)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    listener2.stop();
+    if (reply_buf.size() != 223) {
+        std::fprintf(stderr,
+            "[listener-selftest] phase2: expected 223-byte ghost burst, got %zu\n",
+            reply_buf.size());
+        return 1;
+    }
+    if (reply_buf[0] != 0x0b) {
+        std::fprintf(stderr,
+            "[listener-selftest] phase2: ghost burst byte 0 expected 0x0b, got 0x%02x\n",
+            reply_buf[0]);
+        return 1;
+    }
+
+    std::fprintf(stderr, "[listener-selftest] OK — handshake + ghost burst both byte-equal\n");
     return 0;
 }
 
