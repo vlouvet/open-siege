@@ -13,6 +13,7 @@
 // render thread reads a thread-safe snapshot via `snapshot_registry()`.
 
 #include <osengine/ghost_types.hpp>
+#include <osengine/movecommand.hpp>
 
 #include <atomic>
 #include <memory>
@@ -53,6 +54,13 @@ public:
     // render path can iterate without holding the lock.
     net20::GhostRegistry snapshot_registry() const;
 
+    // Spec 29/03 — push the local input state. The IO thread reads
+    // this when assembling each ~33 Hz movecommand. yaw_delta and
+    // pitch_delta are CONSUMED by the next emit_move and reset to 0;
+    // calls in between accumulate into the same window so caller can
+    // sample mouse motion every frame without losing pixels.
+    void set_input(const net20::MoveInput& input);
+
     // Diagnostics.
     bool   running() const { return running_.load(std::memory_order_relaxed); }
     int    packets_seen() const { return packets_seen_.load(std::memory_order_relaxed); }
@@ -69,6 +77,7 @@ private:
     mutable std::mutex     mu_;
     net20::GhostRegistry   registry_;
     std::string            last_error_;
+    net20::MoveInput       pending_input_;       // spec 29/03
 
     std::thread            io_thread_;
     std::atomic<bool>      running_       { false };

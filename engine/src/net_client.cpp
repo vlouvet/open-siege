@@ -173,6 +173,22 @@ void NetClient::set_last_error(const std::string& s)
     last_error_ = s;
 }
 
+void NetClient::set_input(const net20::MoveInput& input)
+{
+    std::lock_guard<std::mutex> g(mu_);
+    // Replace axes/triggers wholesale. Accumulate mouse deltas so
+    // sub-frame motion isn't lost between the main thread's input
+    // sampling and the IO thread's emit_move drain.
+    const float pending_yaw   = pending_input_.yaw_delta;
+    const float pending_pitch = pending_input_.pitch_delta;
+    const bool  pending_jump  = pending_input_.jump;
+    pending_input_ = input;
+    pending_input_.yaw_delta   += pending_yaw;
+    pending_input_.pitch_delta += pending_pitch;
+    // jump latches across calls until consumed by emit_move.
+    pending_input_.jump = pending_input_.jump || pending_jump;
+}
+
 bool NetClient::start_replay(const std::string& path)
 {
     {
@@ -431,8 +447,20 @@ void NetClient::live_thread_main(std::string host, std::uint16_t port,
         in.ack_runs = net20::build_ack_runs(ack.received,
                                              ack.highest_recv_mod32);
         in.first_move_seq = move_seq_counter;
-        // Single idle move per emit: all axes 0, no flags, no pitch/turn.
+        // Spec 29/03 — copy + reset the latest pushed input state.
+        // yaw_delta / pitch_delta are mouse-look accumulators; they
+        // get cleared on read so the next frame's motion lands in a
+        // fresh window.
         net20::MoveInput m;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            m = pending_input_;
+            pending_input_.yaw_delta   = 0.0f;
+            pending_input_.pitch_delta = 0.0f;
+            // jump is edge-triggered: clear after one emit so a single
+            // keypress doesn't repeat fire.
+            pending_input_.jump = false;
+        }
         in.moves.push_back(m);
         const auto wire = net20::encode_movecommand(in);
         if (!sock.send_to(*dst, wire.data(), wire.size())) return;

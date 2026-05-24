@@ -18,6 +18,7 @@
 //     asset_cache pipeline is wired (also part of 29/02b).
 
 #include <osengine/audio_sink.hpp>
+#include <osengine/movecommand.hpp>
 #include <osengine/net_client.hpp>
 #include <osengine/ghost_types.hpp>
 
@@ -230,19 +231,62 @@ int main(int argc, char** argv)
         std::fputs("[client] no --server: rendering idle\n", stderr);
     }
 
+    // Spec 29/03 — mouse-look. Relative mode hides the cursor and
+    // delivers per-frame motion deltas; Tab releases it so the user
+    // can switch windows during testing.
+    bool mouse_captured = true;
+    SDL_SetRelativeMouseMode(SDL_TRUE);
+    constexpr float kMouseSensitivity = 0.0025f;   // rad / pixel
+    bool jump_edge_pending = false;
+
     auto last_log = std::chrono::steady_clock::now();
     int last_render_count = -1;
     while (!g_quit.load()) {
+        float mouse_dx_accum = 0.0f, mouse_dy_accum = 0.0f;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) g_quit.store(true);
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE)
                 g_quit.store(true);
+            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_TAB) {
+                mouse_captured = !mouse_captured;
+                SDL_SetRelativeMouseMode(mouse_captured ? SDL_TRUE : SDL_FALSE);
+            }
+            // Edge-trigger jump on key-down so a single press registers
+            // even if the IO thread drains it between SDL polls.
+            if (ev.type == SDL_KEYDOWN && !ev.key.repeat
+                && ev.key.keysym.sym == SDLK_SPACE) {
+                jump_edge_pending = true;
+            }
+            if (ev.type == SDL_MOUSEMOTION && mouse_captured) {
+                mouse_dx_accum += float(ev.motion.xrel);
+                mouse_dy_accum += float(ev.motion.yrel);
+            }
             if (ev.type == SDL_WINDOWEVENT
                 && ev.window.event == SDL_WINDOWEVENT_RESIZED) {
                 width  = ev.window.data1;
                 height = ev.window.data2;
             }
+        }
+
+        // Spec 29/03 — sample keyboard state once per frame and push
+        // into NetClient. The IO thread reads pending_input every 33 ms.
+        if (net.running()) {
+            const Uint8* keys = SDL_GetKeyboardState(nullptr);
+            net20::MoveInput in;
+            in.forward  = keys[SDL_SCANCODE_W] ? 1.0f : 0.0f;
+            in.backward = keys[SDL_SCANCODE_S] ? 1.0f : 0.0f;
+            in.left     = keys[SDL_SCANCODE_A] ? 1.0f : 0.0f;
+            in.right    = keys[SDL_SCANCODE_D] ? 1.0f : 0.0f;
+            in.jet      = keys[SDL_SCANCODE_SPACE] ? true : false;
+            in.crouch   = keys[SDL_SCANCODE_LCTRL] ? true : false;
+            in.jump     = jump_edge_pending;
+            jump_edge_pending = false;
+            const Uint32 buttons = SDL_GetMouseState(nullptr, nullptr);
+            in.trigger  = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+            in.yaw_delta   =  mouse_dx_accum * kMouseSensitivity;
+            in.pitch_delta = -mouse_dy_accum * kMouseSensitivity;  // up = +pitch
+            net.set_input(in);
         }
 
         // Camera + projection. Overhead default: high up on +Y, looking
