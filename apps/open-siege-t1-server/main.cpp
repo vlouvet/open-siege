@@ -6,6 +6,7 @@
 // once spec 07 wires the engine's ghost_stream to a real socket loop.
 
 #include <osengine/audio_sink.hpp>
+#include <osengine/damage_resolver.hpp>
 #include <osengine/ghost_emitter.hpp>
 #include <osengine/listen_server.hpp>
 #include <osengine/mission_loader.hpp>
@@ -63,6 +64,7 @@ void print_usage()
         "  --team-balance off        Disable round-robin team assignment\n"
         "  --team-assigner-selftest  Run team_assigner selftest and exit\n"
         "  --projectile-selftest     Run projectile_world selftest and exit\n"
+        "  --damage-selftest         Run damage_resolver selftest and exit\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
@@ -109,6 +111,7 @@ int main(int argc, char** argv)
     bool team_balance = true;
     bool team_assigner_selftest = false;
     bool projectile_selftest = false;
+    bool damage_selftest = false;
     bool skip_mission = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -122,6 +125,7 @@ int main(int argc, char** argv)
         if (a == "--no-ghost-emit") { no_ghost_emit = true; continue; }
         if (a == "--team-assigner-selftest") { team_assigner_selftest = true; continue; }
         if (a == "--projectile-selftest") { projectile_selftest = true; continue; }
+        if (a == "--damage-selftest") { damage_selftest = true; continue; }
         if (a == "--team-balance" && i + 1 < argc) {
             const std::string v = argv[++i];
             team_balance = !(v == "off" || v == "false" || v == "0");
@@ -168,6 +172,10 @@ int main(int argc, char** argv)
 
     if (projectile_selftest) {
         return dts_viewer::ProjectileWorld::selftest();
+    }
+
+    if (damage_selftest) {
+        return dts_viewer::damage_resolver_selftest();
     }
 
     if (world_tick_selftest) {
@@ -289,7 +297,9 @@ int main(int argc, char** argv)
     const float dt_sec = 1.0f / static_cast<float>(std::max(1, tick_hz));
     dts_viewer::WorldTickContext world_ctx{};
     dts_viewer::ProjectileWorld projectiles;
-    std::vector<dts_viewer::HitEvent> tick_hits;
+    std::vector<dts_viewer::HitEvent>  tick_hits;
+    std::vector<dts_viewer::KillEvent> tick_kills;
+    dts_viewer::DamageRules            damage_rules;
     // Future: populate world_ctx.terrain + world_ctx.bounds from the
     // loaded mission. v1: empty HeightSampler (sample() returns 0) so
     // players free-fall onto the implicit y=0 plane and walk on it.
@@ -303,11 +313,18 @@ int main(int argc, char** argv)
         // session's queued movecommands.
         if (listener) {
             dts_viewer::world_tick(listener->sessions(), world_ctx, dt_sec);
-            // Spec 28/06 — projectile sim + hit detection. Hits are
-            // collected here; spec 28/07 will route them through damage.
+            // Spec 28/06 — projectile sim + hit detection.
             tick_hits.clear();
             projectiles.tick_fires(listener->sessions(), dt_sec);
             projectiles.tick_motion(listener->sessions(), dt_sec, tick_hits);
+            // Spec 28/07 — damage + respawn.
+            tick_kills.clear();
+            const std::uint64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            dts_viewer::apply_hits(listener->sessions(), tick_hits, tick_kills,
+                                   now_ms, damage_rules);
+            dts_viewer::respawn_due(listener->sessions(), listener->spawn_points(),
+                                    now_ms, damage_rules);
         }
 
         const auto now = std::chrono::steady_clock::now();

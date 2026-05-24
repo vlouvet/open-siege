@@ -65,6 +65,14 @@ struct Session
     Team       team         = Team::Spectator;
     glm::vec3  spawn_pos    {0.0f, 0.0f, 0.0f};
     float      spawn_yaw    = 0.0f;
+
+    // Spec 28/07 — life-state + scoring.
+    enum class LifeState : std::uint8_t { Alive = 0, Dead = 1 };
+    LifeState     life          = LifeState::Alive;
+    std::uint64_t died_at_ms    = 0;
+    std::uint16_t kills         = 0;
+    std::uint16_t deaths        = 0;
+    std::uint16_t last_killer   = 0xFFFF;
 };
 
 class SessionTable

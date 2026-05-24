@@ -165,6 +165,11 @@ void ServerListener::set_spawn_points(std::vector<SpawnPoint> spawns)
     impl_->spawns = std::move(spawns);
 }
 
+const std::vector<SpawnPoint>& ServerListener::spawn_points() const
+{
+    return impl_->spawns;
+}
+
 ServerListener::ServerListener(ServerListenerConfig cfg)
     : cfg_(cfg), impl_(std::make_unique<Impl>())
 {

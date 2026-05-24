@@ -33,6 +33,7 @@ add_library(osengine STATIC
     src/bot_paths.cpp
     src/client_events.cpp
     src/cscript_host.cpp
+    src/damage_resolver.cpp
     src/entity_state.cpp
     src/ghost_emitter.cpp
     src/ghost_stream.cpp

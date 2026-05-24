@@ -84,6 +84,10 @@ public:
     // an empty list disables placement (sessions stay at origin).
     void set_spawn_points(std::vector<struct SpawnPoint> spawns);
 
+    // Spec 28/07 — main loop reads this so it can call respawn_due
+    // each tick with the current spawn list.
+    const std::vector<struct SpawnPoint>& spawn_points() const;
+
 private:
     void run();
 
