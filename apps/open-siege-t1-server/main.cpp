@@ -22,6 +22,7 @@
 #include <osengine/scoreboard.hpp>
 #include <osengine/server_listener.hpp>
 #include <osengine/session_table.hpp>
+#include <osengine/tah_vc_outbound.hpp>
 #include <osengine/team_assigner.hpp>
 #include <osengine/world_tick.hpp>
 #include <glm/glm.hpp>
@@ -87,6 +88,7 @@ void print_usage()
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
         "  --ghost-emit-selftest     Run ghost emitter selftest and exit\n"
         "  --ghost-encoder-selftest  Run ghost encoder round-trip selftest and exit\n"
+        "  --tah-vc-outbound-selftest  Run per-session VC outbound header selftest and exit\n"
         "  --help                    This message\n",
         stderr);
 }
@@ -138,6 +140,7 @@ int main(int argc, char** argv)
     bool mapcycle_selftest = false;
     bool server_info_selftest = false;
     bool groove_handshake_selftest = false;
+    bool tah_vc_outbound_selftest_flag = false;
     std::string map_cycle_csv;
     int  cap_limit  = 5;
     int  time_limit_min = 25;
@@ -163,6 +166,7 @@ int main(int argc, char** argv)
         if (a == "--mapcycle-selftest") { mapcycle_selftest = true; continue; }
         if (a == "--server-info-selftest") { server_info_selftest = true; continue; }
         if (a == "--groove-handshake-selftest") { groove_handshake_selftest = true; continue; }
+        if (a == "--tah-vc-outbound-selftest") { tah_vc_outbound_selftest_flag = true; continue; }
         if (a == "--map-cycle" && i + 1 < argc) { map_cycle_csv = argv[++i]; continue; }
         if (a == "--cap-limit" && i + 1 < argc) { cap_limit = std::atoi(argv[++i]); continue; }
         if (a == "--time-limit" && i + 1 < argc) { time_limit_min = std::atoi(argv[++i]); continue; }
@@ -212,6 +216,10 @@ int main(int argc, char** argv)
 
     if (ghost_encoder_selftest) {
         return net20::ghost_encoder_roundtrip_selftest();
+    }
+
+    if (tah_vc_outbound_selftest_flag) {
+        return dts_viewer::tah_vc_outbound_selftest();
     }
 
     if (team_assigner_selftest) {

@@ -59,6 +59,13 @@ struct Session
     net20::AckTracker ack;
     bool          connect_parity = false;     // last AC parity bit; echoed
                                               // in our outbound headers
+    // 26/14c — full 32-bit per-session connect handle, copied from the
+    // client's RequestConnect body. Used to (a) populate `connect_parity`
+    // (its LSB) and (b) embed in the body of the four connection-control
+    // packet types (Accept/Reject/Disconnect/RequestConnect) per the
+    // TRIBES-VC-OUTBOUND clean-room spec §2. Zero by default for sessions
+    // built by paths that pre-date this field (handshake selftests, etc.).
+    std::uint32_t connect_handle = 0;
     std::uint64_t last_outbound_ms = 0;       // for 250ms keep-alive tick
 
     // Spec 28/02 — pending input from this peer. Drained by the per-tick
