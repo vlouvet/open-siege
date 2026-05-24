@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -83,12 +84,14 @@ int main(int argc, char** argv)
     bool listen_server_selftest = false;
     bool listener_selftest = false;
     bool no_listener = false;
+    bool skip_mission = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--help") { print_usage(); return 0; }
         if (a == "--listen-server-selftest") { listen_server_selftest = true; continue; }
         if (a == "--listener-selftest") { listener_selftest = true; continue; }
         if (a == "--no-listener") { no_listener = true; continue; }
+        if (a == "--skip-mission") { skip_mission = true; continue; }
         if (a == "--mission" && i + 1 < argc) { mission_name = argv[++i]; continue; }
         if (a == "--tribes-dir" && i + 1 < argc) { tribes_dir = argv[++i]; continue; }
         if (a == "--port" && i + 1 < argc) { port = std::atoi(argv[++i]); continue; }
@@ -118,11 +121,12 @@ int main(int argc, char** argv)
         return dts_viewer::server_listener_selftest();
     }
 
-    if (tribes_dir.empty()) {
+    if (tribes_dir.empty() && !skip_mission) {
         tribes_dir = os_paths::assets_dir();
         if (tribes_dir.empty()) {
             std::fprintf(stderr,
-                "[server] --tribes-dir not given and no %s/tribes-dir.txt found\n",
+                "[server] --tribes-dir not given and no %s/tribes-dir.txt found "
+                "(use --skip-mission for listener-only mode)\n",
                 os_paths::config_dir("shared").string().c_str());
             return 2;
         }
@@ -135,21 +139,28 @@ int main(int argc, char** argv)
     std::signal(SIGTERM, on_sigint);
 #endif
 
-    const auto missions_dir = tribes_dir / "base" / "missions";
-    const auto base_dir     = tribes_dir / "base";
-    auto mission = dts_viewer::load_mission(missions_dir, base_dir, mission_name);
-    if (!mission) {
-        std::fprintf(stderr, "[server] failed to load mission: %s\n", mission_name.c_str());
-        return 1;
-    }
-    std::fprintf(stderr, "[server] mission loaded: %s (port %d, %d Hz tick)\n",
-                 mission_name.c_str(), port, tick_hz);
-
     auto& sink = dts_viewer::null_audio_sink();
-    auto mission_audio = dts_viewer::mission_sounds_load(
-        mission->scene, base_dir, sink);
-    std::fprintf(stderr, "[server] %zu ambient voices registered (null sink)\n",
-                 mission_audio.voices.size());
+    std::optional<dts_viewer::LoadedMission> mission;
+    dts_viewer::MissionSoundsState mission_audio;
+    if (!skip_mission) {
+        const auto missions_dir = tribes_dir / "base" / "missions";
+        const auto base_dir     = tribes_dir / "base";
+        mission = dts_viewer::load_mission(missions_dir, base_dir, mission_name);
+        if (!mission) {
+            std::fprintf(stderr, "[server] failed to load mission: %s\n", mission_name.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "[server] mission loaded: %s (port %d, %d Hz tick)\n",
+                     mission_name.c_str(), port, tick_hz);
+        mission_audio = dts_viewer::mission_sounds_load(
+            mission->scene, base_dir, sink);
+        std::fprintf(stderr, "[server] %zu ambient voices registered (null sink)\n",
+                     mission_audio.voices.size());
+    } else {
+        std::fprintf(stderr,
+            "[server] --skip-mission: listener-only mode (port %d, %d Hz tick)\n",
+            port, tick_hz);
+    }
 
     std::unique_ptr<dts_viewer::ServerListener> listener;
     if (!no_listener) {
@@ -193,7 +204,7 @@ int main(int argc, char** argv)
     }
 
     if (listener) listener->stop();
-    dts_viewer::mission_sounds_unload(mission_audio, sink);
+    if (!skip_mission) dts_viewer::mission_sounds_unload(mission_audio, sink);
     std::fputs("[server] shutting down\n", stderr);
     return 0;
 }
