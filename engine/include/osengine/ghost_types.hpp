@@ -322,6 +322,18 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                                      std::size_t length,
                                      GhostRegistry& registry);
 
+// Spec 28/04b helper: same decode pipeline but skips the heuristic
+// scanner in parse_ghost_packet and walks the per-object loop directly
+// from `ghost_stream_start_bit`. Required for self-tests + future
+// own-client integration where we know exactly where the ghost
+// sub-stream begins. The framing fields (VC header, rate prefix)
+// in the returned struct are LEFT EMPTY — caller decoded those
+// upstream.
+TypedPacketDecode parse_typed_packet_at_offset(const std::uint8_t* data,
+                                               std::size_t length,
+                                               std::size_t ghost_stream_start_bit,
+                                               GhostRegistry& registry);
+
 // Convenience: apply a decoded record to the registry. parse_typed_packet
 // calls this internally; exposed for tests.
 void apply_update(GhostRegistry& reg, const TypedRecord& rec);

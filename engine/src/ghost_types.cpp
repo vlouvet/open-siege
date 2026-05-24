@@ -719,25 +719,12 @@ void apply_update(GhostRegistry& reg, const TypedRecord& rec) {
     }
 }
 
-TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
-                                     std::size_t length,
-                                     GhostRegistry& registry)
+namespace {
+
+void walk_typed_records_from(BitReader& br,
+                             GhostRegistry& registry,
+                             TypedPacketDecode& out)
 {
-    TypedPacketDecode out;
-    // Spec 29: pass the registry so the scanner can accept normal-mode
-    // delta candidates whose first ghost_id is already known.
-    out.framing = parse_ghost_packet(data, length, &registry);
-    if (!out.framing.ghost_stream_start_bit.has_value()) {
-        out.note = out.framing.note.empty()
-                   ? std::string("no ghost stream found")
-                   : out.framing.note;
-        return out;
-    }
-    const std::size_t ghost_start_bit = *out.framing.ghost_stream_start_bit;
-
-    BitReader br(data, length);
-    br.pos = ghost_start_bit;
-
     // mode + selector are part of the framing parser's "first candidate"
     // discovery but were not advanced past — re-read them here so our
     // cursor lands at the first object-present bit.
@@ -746,7 +733,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
     const unsigned id_width = static_cast<unsigned>(selector + 3);
     if (br.overrun || id_width < 3 || id_width > 10) {
         out.note = "mode/selector read overran";
-        return out;
+        return;
     }
 
     // Walk the per-object loop. Each iteration:
@@ -763,19 +750,19 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
         const bool present = br.read_flag();
         if (br.overrun) {
             out.note = "object-present read overran";
-            return out;
+            return;
         }
         if (!present) {
             if (mode_scope_always) {
                 (void)br.read_flag();  // scope-always-complete bit
             }
             out.walked_full_stream = true;
-            return out;
+            return;
         }
 
         if (br.pos + id_width + 1 > br.bit_length) {
             out.note = "id/kill read would overrun";
-            return out;
+            return;
         }
         const std::uint32_t ghost_id = br.read_bits(id_width);
         const bool kill = br.read_flag();
@@ -812,14 +799,14 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
         if (full_update) {
             if (br.pos + 32 + 10 > br.bit_length) {
                 out.note = "obj_id/class_tag read would overrun";
-                return out;
+                return;
             }
             const std::uint32_t obj_id = br.read_bits(32);
             const std::uint16_t class_tag =
                 static_cast<std::uint16_t>(br.read_bits(10));
             if (class_tag == 0 || class_tag > 1023) {
                 out.note = "class_tag out of range (1..1023)";
-                return out;
+                return;
             }
             rec.class_tag = class_tag;
 
@@ -893,13 +880,13 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                 }
                 default:
                     out.note = "unknown class kind for tag";
-                    return out;
+                    return;
             }
             if (!ok) {
                 out.note = "per-class introduction payload overran";
                 rec.end_bit = br.pos;
                 out.records.push_back(std::move(rec));
-                return out;
+                return;
             }
 
             // Apply / register the kind+tag for future delta lookups.
@@ -914,7 +901,7 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                 out.note = "delta update for unknown ghost_id";
                 rec.end_bit = br.pos;
                 out.records.push_back(std::move(rec));
-                return out;
+                return;
             }
             rec.kind = kit->second;
             auto ctit = registry.ghost_class_tags.find(rec.ghost_id);
@@ -968,13 +955,13 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
                 }
                 default:
                     out.note = "delta for unknown kind";
-                    return out;
+                    return;
             }
             if (!ok) {
                 out.note = "per-class delta payload overran";
                 rec.end_bit = br.pos;
                 out.records.push_back(std::move(rec));
-                return out;
+                return;
             }
         }
         rec.end_bit = br.pos;
@@ -982,6 +969,38 @@ TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
         out.records.push_back(std::move(rec));
     }
     out.note = "hit record cap (256)";
+}
+
+}  // anonymous namespace
+
+TypedPacketDecode parse_typed_packet(const std::uint8_t* data,
+                                     std::size_t length,
+                                     GhostRegistry& registry)
+{
+    TypedPacketDecode out;
+    out.framing = parse_ghost_packet(data, length, &registry);
+    if (!out.framing.ghost_stream_start_bit.has_value()) {
+        out.note = out.framing.note.empty()
+                   ? std::string("no ghost stream found")
+                   : out.framing.note;
+        return out;
+    }
+    BitReader br(data, length);
+    br.pos = *out.framing.ghost_stream_start_bit;
+    walk_typed_records_from(br, registry, out);
+    return out;
+}
+
+TypedPacketDecode parse_typed_packet_at_offset(const std::uint8_t* data,
+                                               std::size_t length,
+                                               std::size_t ghost_stream_start_bit,
+                                               GhostRegistry& registry)
+{
+    TypedPacketDecode out;
+    out.framing.ghost_stream_start_bit = ghost_stream_start_bit;
+    BitReader br(data, length);
+    br.pos = ghost_stream_start_bit;
+    walk_typed_records_from(br, registry, out);
     return out;
 }
 

@@ -38,6 +38,7 @@ add_library(osengine STATIC
     src/entity_state.cpp
     src/flag_state.cpp
     src/ghost_emitter.cpp
+    src/ghost_encoder.cpp
     src/ghost_stream.cpp
     src/ghost_types.cpp
     src/hud_bindings.cpp

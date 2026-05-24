@@ -10,6 +10,7 @@
 #include <osengine/damage_resolver.hpp>
 #include <osengine/flag_state.hpp>
 #include <osengine/ghost_emitter.hpp>
+#include <osengine/ghost_encoder.hpp>
 #include <osengine/listen_server.hpp>
 #include <osengine/map_cycle.hpp>
 #include <osengine/match_state.hpp>
@@ -82,6 +83,7 @@ void print_usage()
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
         "  --ghost-emit-selftest     Run ghost emitter selftest and exit\n"
+        "  --ghost-encoder-selftest  Run ghost encoder round-trip selftest and exit\n"
         "  --help                    This message\n",
         stderr);
 }
@@ -118,6 +120,7 @@ int main(int argc, char** argv)
     bool listener_selftest = false;
     bool world_tick_selftest = false;
     bool ghost_emit_selftest = false;
+    bool ghost_encoder_selftest = false;
     bool no_listener = false;
     bool no_canned_burst = false;
     bool no_ghost_emit = false;
@@ -141,6 +144,7 @@ int main(int argc, char** argv)
         if (a == "--listener-selftest") { listener_selftest = true; continue; }
         if (a == "--world-tick-selftest") { world_tick_selftest = true; continue; }
         if (a == "--ghost-emit-selftest") { ghost_emit_selftest = true; continue; }
+        if (a == "--ghost-encoder-selftest") { ghost_encoder_selftest = true; continue; }
         if (a == "--no-listener") { no_listener = true; continue; }
         if (a == "--no-canned-burst") { no_canned_burst = true; continue; }
         if (a == "--no-ghost-emit") { no_ghost_emit = true; continue; }
@@ -193,6 +197,10 @@ int main(int argc, char** argv)
 
     if (ghost_emit_selftest) {
         return dts_viewer::ghost_emitter_selftest();
+    }
+
+    if (ghost_encoder_selftest) {
+        return net20::ghost_encoder_roundtrip_selftest();
     }
 
     if (team_assigner_selftest) {
