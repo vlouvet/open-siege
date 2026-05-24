@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace dts_viewer { class SessionTable; }
 
