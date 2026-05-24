@@ -28,6 +28,9 @@ struct ServerListenerConfig
     int           tick_hz      = 32;
     std::uint16_t max_players  = 32;          // spec 28/01
     std::uint64_t session_timeout_ms = 5000;  // spec 28/01
+    bool          enable_ghost_emit = true;   // spec 28/04 — OSGB stream
+    bool          enable_canned_burst = true; // spec 26/11 backstop
+    int           ghost_emit_tick_div = 2;    // emit every Nth tick (32/2 = 16 Hz)
 };
 
 struct ServerListenerStats
@@ -42,6 +45,9 @@ struct ServerListenerStats
     std::uint64_t sessions_dropped          = 0;     // spec 28/01
     std::uint64_t movecommands_received     = 0;     // spec 28/02
     std::uint64_t malformed_movecommands    = 0;     // spec 28/02
+    std::uint64_t ghost_emit_packets        = 0;     // spec 28/04
+    std::uint64_t ghost_emit_records        = 0;     // spec 28/04
+    std::uint64_t ghost_emit_bytes          = 0;     // spec 28/04
 };
 
 class ServerListener

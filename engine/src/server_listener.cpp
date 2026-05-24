@@ -1,6 +1,8 @@
 #include <osengine/server_listener.hpp>
 
+#include <osengine/ghost_emitter.hpp>
 #include <osengine/movecommand.hpp>
+#include <osengine/server_world_snapshot.hpp>
 #include <osengine/session_table.hpp>
 #include "content/net/udp_socket.hpp"
 
@@ -9,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace dts_viewer
@@ -125,6 +128,24 @@ void build_accept_connect_reply(const std::uint8_t nonce[3], std::uint8_t out[16
     out[6] = nonce[2];
 }
 
+namespace
+{
+struct EmitterKey
+{
+    std::string host;
+    std::uint16_t port = 0;
+    bool operator==(const EmitterKey& o) const noexcept {
+        return port == o.port && host == o.host;
+    }
+};
+struct EmitterKeyHash
+{
+    std::size_t operator()(const EmitterKey& k) const noexcept {
+        return std::hash<std::string>{}(k.host) ^ (std::size_t(k.port) * 0x9E3779B97F4A7C15ull);
+    }
+};
+} // namespace
+
 struct ServerListener::Impl
 {
     studio::content::net::UdpSocket socket;
@@ -132,6 +153,9 @@ struct ServerListener::Impl
     ServerListenerStats             stats;
     std::string                     last_error;
     std::unique_ptr<SessionTable>   sessions;
+    std::uint64_t                   tick_counter = 0;
+    std::unordered_map<EmitterKey, std::unique_ptr<GhostEmitter>,
+                       EmitterKeyHash>  emitters;
 };
 
 ServerListener::ServerListener(ServerListenerConfig cfg)
@@ -266,7 +290,8 @@ void ServerListener::run()
                     continue;
                 }
                 impl_->sessions->touch(peer, now_ms);
-                bool should_send = !sess->ghost_burst_sent;
+                bool should_send = cfg_.enable_canned_burst
+                    && !sess->ghost_burst_sent;
                 if (should_send) {
                     sess->ghost_burst_sent = true;
                     const bool ok = impl_->socket.send_to(
@@ -351,6 +376,71 @@ void ServerListener::run()
             }
         }
 
+        // Spec 28/04 — per-tick OSGB emission. Throttle to every Nth
+        // tick so 32 Hz tick → ~16 Hz net (close to T1's 30 Hz).
+        ++impl_->tick_counter;
+        if (cfg_.enable_ghost_emit
+            && cfg_.ghost_emit_tick_div > 0
+            && (impl_->tick_counter % static_cast<std::uint64_t>(cfg_.ghost_emit_tick_div)) == 0)
+        {
+            auto active = impl_->sessions->active_sessions();
+            // Drop emitters whose session no longer exists.
+            for (auto it = impl_->emitters.begin(); it != impl_->emitters.end(); ) {
+                bool alive = false;
+                for (auto* s : active) {
+                    if (s && s->peer.host == it->first.host
+                        && s->peer.port == it->first.port) {
+                        alive = true; break;
+                    }
+                }
+                if (!alive) it = impl_->emitters.erase(it);
+                else ++it;
+            }
+            // Build the snapshot once; share by const-ref with every emitter.
+            ServerWorldSnapshot world;
+            world.tick = impl_->tick_counter;
+            world.server_time_ms = now_ms;
+            world.players.reserve(active.size());
+            for (auto* s : active) world.players.push_back(s);
+            // Sink closure — captures `this` so we can route through the
+            // listener's socket + stats counters.
+            auto sink = [this](const Endpoint& dst, const std::uint8_t* data,
+                               std::size_t size) -> bool {
+                const bool ok = impl_->socket.send_to(dst, data, size);
+                if (ok) {
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    impl_->stats.ghost_emit_packets += 1;
+                    impl_->stats.ghost_emit_bytes   += size;
+                } else {
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    impl_->last_error = impl_->socket.last_error();
+                }
+                return ok;
+            };
+            std::uint64_t records_before_total = 0;
+            for (auto& kv : impl_->emitters) {
+                records_before_total += kv.second->stats().records_emitted;
+            }
+            for (auto* s : active) {
+                EmitterKey key{s->peer.host, s->peer.port};
+                auto it = impl_->emitters.find(key);
+                if (it == impl_->emitters.end()) {
+                    it = impl_->emitters.emplace(
+                        key, std::make_unique<GhostEmitter>(s, sink)).first;
+                }
+                it->second->emit(world);
+            }
+            std::uint64_t records_after_total = 0;
+            for (auto& kv : impl_->emitters) {
+                records_after_total += kv.second->stats().records_emitted;
+            }
+            const std::uint64_t delta = records_after_total - records_before_total;
+            if (delta > 0) {
+                std::lock_guard<std::mutex> lk(impl_->mu);
+                impl_->stats.ghost_emit_records += delta;
+            }
+        }
+
         // Publish live session count.
         {
             std::lock_guard<std::mutex> lk(impl_->mu);
@@ -387,7 +477,11 @@ int server_listener_selftest()
     listener_port = bind_probe.local_port();
     bind_probe.close();  // release so ServerListener can grab it
 
-    ServerListener listener(ServerListenerConfig{listener_port, 200});
+    ServerListenerConfig cfg1{};
+    cfg1.port = listener_port;
+    cfg1.tick_hz = 200;
+    cfg1.enable_ghost_emit = false;  // phases 1-5 test handshake / canned burst / moves
+    ServerListener listener(cfg1);
     if (!listener.start()) {
         std::fprintf(stderr, "[listener-selftest] start failed: %s\n",
                      listener.last_error().c_str());
@@ -442,7 +536,11 @@ int server_listener_selftest()
     }
     listener_port = bind_probe2.local_port();
     bind_probe2.close();
-    ServerListener listener2(ServerListenerConfig{listener_port, 200});
+    ServerListenerConfig cfg2{};
+    cfg2.port = listener_port;
+    cfg2.tick_hz = 200;
+    cfg2.enable_ghost_emit = false;
+    ServerListener listener2(cfg2);
     if (!listener2.start()) {
         std::fprintf(stderr, "[listener-selftest] phase2 listener.start failed: %s\n",
                      listener2.last_error().c_str());
@@ -511,6 +609,7 @@ int server_listener_selftest()
     cfg3.port = listener_port;
     cfg3.tick_hz = 200;
     cfg3.max_players = 8;
+    cfg3.enable_ghost_emit = false;
     ServerListener listener3(cfg3);
     if (!listener3.start()) {
         std::fprintf(stderr, "[listener-selftest] phase3 start failed: %s\n",
@@ -595,6 +694,7 @@ int server_listener_selftest()
     cfg4.port = listener_port;
     cfg4.tick_hz = 200;
     cfg4.max_players = 2;
+    cfg4.enable_ghost_emit = false;
     ServerListener listener4(cfg4);
     if (!listener4.start()) {
         std::fprintf(stderr, "[listener-selftest] phase4 start failed\n");
@@ -709,6 +809,7 @@ int server_listener_selftest()
         cfg5.port = lp;
         cfg5.tick_hz = 200;
         cfg5.max_players = 4;
+        cfg5.enable_ghost_emit = false;
         ServerListener l5(cfg5);
         if (!l5.start()) {
             std::fprintf(stderr, "[listener-selftest] phase5b start failed\n");

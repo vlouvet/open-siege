@@ -6,6 +6,7 @@
 // once spec 07 wires the engine's ghost_stream to a real socket loop.
 
 #include <osengine/audio_sink.hpp>
+#include <osengine/ghost_emitter.hpp>
 #include <osengine/listen_server.hpp>
 #include <osengine/mission_loader.hpp>
 #include <osengine/mission_sounds.hpp>
@@ -55,9 +56,12 @@ void print_usage()
         "  --tick-hz <n>             Tick rate (default 32)\n"
         "  --max-players <n>         Max concurrent sessions (default 32)\n"
         "  --no-listener             Skip the UDP bind (server tick-only)\n"
+        "  --no-canned-burst         Disable spec 26/11 captured-burst reply\n"
+        "  --no-ghost-emit           Disable spec 28/04 OSGB ghost streaming\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
+        "  --ghost-emit-selftest     Run ghost emitter selftest and exit\n"
         "  --help                    This message\n",
         stderr);
 }
@@ -93,7 +97,10 @@ int main(int argc, char** argv)
     bool listen_server_selftest = false;
     bool listener_selftest = false;
     bool world_tick_selftest = false;
+    bool ghost_emit_selftest = false;
     bool no_listener = false;
+    bool no_canned_burst = false;
+    bool no_ghost_emit = false;
     bool skip_mission = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -101,7 +108,10 @@ int main(int argc, char** argv)
         if (a == "--listen-server-selftest") { listen_server_selftest = true; continue; }
         if (a == "--listener-selftest") { listener_selftest = true; continue; }
         if (a == "--world-tick-selftest") { world_tick_selftest = true; continue; }
+        if (a == "--ghost-emit-selftest") { ghost_emit_selftest = true; continue; }
         if (a == "--no-listener") { no_listener = true; continue; }
+        if (a == "--no-canned-burst") { no_canned_burst = true; continue; }
+        if (a == "--no-ghost-emit") { no_ghost_emit = true; continue; }
         if (a == "--skip-mission") { skip_mission = true; continue; }
         if (a == "--mission" && i + 1 < argc) { mission_name = argv[++i]; continue; }
         if (a == "--tribes-dir" && i + 1 < argc) { tribes_dir = argv[++i]; continue; }
@@ -131,6 +141,10 @@ int main(int argc, char** argv)
 
     if (listener_selftest) {
         return dts_viewer::server_listener_selftest();
+    }
+
+    if (ghost_emit_selftest) {
+        return dts_viewer::ghost_emitter_selftest();
     }
 
     if (world_tick_selftest) {
@@ -226,6 +240,8 @@ int main(int argc, char** argv)
         listener_cfg.port = static_cast<std::uint16_t>(port);
         listener_cfg.tick_hz = tick_hz;
         listener_cfg.max_players = static_cast<std::uint16_t>(max_players);
+        listener_cfg.enable_canned_burst = !no_canned_burst;
+        listener_cfg.enable_ghost_emit   = !no_ghost_emit;
         listener = std::make_unique<dts_viewer::ServerListener>(listener_cfg);
         if (!listener->start()) {
             std::fprintf(stderr, "[server] listener failed to start: %s\n",
@@ -261,7 +277,7 @@ int main(int argc, char** argv)
             if (listener) {
                 const auto s = listener->stats();
                 std::fprintf(stderr,
-                    "[server] tick %llu  net: req=%llu acc=%llu rej=%llu data=%llu ghost=%llu unk=%llu  moves=%llu (bad=%llu)  sessions=%llu (dropped=%llu)\n",
+                    "[server] tick %llu  net: req=%llu acc=%llu rej=%llu data=%llu ghost=%llu unk=%llu  moves=%llu (bad=%llu)  osgb=%llup/%llur/%lluB  sessions=%llu (dropped=%llu)\n",
                     (unsigned long long)tick,
                     (unsigned long long)s.request_connects_received,
                     (unsigned long long)s.accept_connects_sent,
@@ -271,6 +287,9 @@ int main(int argc, char** argv)
                     (unsigned long long)s.unknown_packets_received,
                     (unsigned long long)s.movecommands_received,
                     (unsigned long long)s.malformed_movecommands,
+                    (unsigned long long)s.ghost_emit_packets,
+                    (unsigned long long)s.ghost_emit_records,
+                    (unsigned long long)s.ghost_emit_bytes,
                     (unsigned long long)s.sessions_active,
                     (unsigned long long)s.sessions_dropped);
                 auto active = listener->sessions().active_sessions();

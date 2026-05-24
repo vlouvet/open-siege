@@ -34,6 +34,7 @@ add_library(osengine STATIC
     src/client_events.cpp
     src/cscript_host.cpp
     src/entity_state.cpp
+    src/ghost_emitter.cpp
     src/ghost_stream.cpp
     src/ghost_types.cpp
     src/hud_bindings.cpp
