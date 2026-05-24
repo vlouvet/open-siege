@@ -24,6 +24,7 @@
 #include <osengine/ghost_types.hpp>
 
 #include <entity_renderer.hpp>     // from dts_viewer_render
+#include "client_imgui.hpp"        // spec 29/05b
 
 #include <SDL2/SDL.h>
 
@@ -214,6 +215,10 @@ int main(int argc, char** argv)
 
     glEnable(GL_DEPTH_TEST);
 
+    // Spec 29/05b — ImGui init. Provides the foreground draw list that
+    // text_renderer + future overlay windows render onto.
+    open_siege::imgui_init(win, gl);
+
     dts_viewer::NetClient net;
     if (!server_arg.empty()) {
         std::string host; std::uint16_t port = 0;
@@ -260,7 +265,15 @@ int main(int argc, char** argv)
         float mouse_dx_accum = 0.0f, mouse_dy_accum = 0.0f;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            // Always forward to ImGui first; capture flags are honoured
+            // below for keyboard/mouse routing.
+            const bool imgui_capt = open_siege::imgui_process_event(ev);
             if (ev.type == SDL_QUIT) g_quit.store(true);
+            if (imgui_capt && (ev.type == SDL_KEYDOWN || ev.type == SDL_KEYUP
+                || ev.type == SDL_MOUSEMOTION || ev.type == SDL_MOUSEBUTTONDOWN
+                || ev.type == SDL_MOUSEBUTTONUP || ev.type == SDL_TEXTINPUT)) {
+                continue;
+            }
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE)
                 g_quit.store(true);
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_TAB) {
@@ -324,6 +337,10 @@ int main(int argc, char** argv)
         const glm::mat4 view = glm::lookAt(eye, look_at, up);
         const glm::mat4 vp   = proj * view;
 
+        // ImGui frame begins before the world render so text_renderer's
+        // foreground draw list (called from hud2d_render later) is open.
+        open_siege::imgui_begin_frame();
+
         glViewport(0, 0, width, height);
         glClearColor(0.10f, 0.12f, 0.16f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -370,6 +387,10 @@ int main(int argc, char** argv)
             }
         }
 
+        // Flush ImGui draw lists (HUD text + overlays) on top of the
+        // already-rendered 3D scene.
+        open_siege::imgui_end_frame();
+
         SDL_GL_SwapWindow(win);
 
         const auto now = std::chrono::steady_clock::now();
@@ -388,6 +409,7 @@ int main(int argc, char** argv)
     }
 
     glDeleteProgram(flat_prog);
+    open_siege::imgui_shutdown();
     net.stop();
     SDL_GL_DeleteContext(gl);
     SDL_DestroyWindow(win);

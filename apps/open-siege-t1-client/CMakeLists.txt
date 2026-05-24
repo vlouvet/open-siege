@@ -28,9 +28,27 @@ if(NOT TARGET dts_viewer_render)
                      ${CMAKE_CURRENT_BINARY_DIR}/dts-viewer)
 endif()
 
-add_executable(open-siege-t1-client main.cpp)
+# Spec 29/05b — ImGui sources live in the dts-viewer subdirectory but
+# aren't part of the dts_viewer_render library (the library is GL-only).
+# Pull them in here so the client can drive its own ImGui lifecycle
+# (init/NewFrame/Render/shutdown) without touching the dts-viewer
+# editor stack.
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../examples/dts-viewer/third_party/imgui)
 
-target_include_directories(open-siege-t1-client PRIVATE ${SDL2_INCLUDE_DIRS})
+add_executable(open-siege-t1-client
+    main.cpp
+    client_imgui.cpp
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+
+target_include_directories(open-siege-t1-client PRIVATE
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+    ${SDL2_INCLUDE_DIRS})
 
 # Link order: dts_viewer_render -> lib3space -> cscript_core -> SDL2
 # (see engine/CMakeLists.txt header comment about ld.bfd single-pass
