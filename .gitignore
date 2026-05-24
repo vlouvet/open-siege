@@ -52,3 +52,5 @@ packaging/linux/linuxdeploy-*.AppImage
 packaging/linux/appimagetool-*.AppImage
 Open-Siege-*.AppImage
 scripts/fleet.toml
+logs/fleet-build/
+../captures/cross-os/*.pcapng
