@@ -44,7 +44,7 @@ for os in "${TARGETS[@]}"; do
     [ "$os" = "windows" ] && bin="${bin}.exe"
 
     out=""
-    out=$(fleet_ssh "$os" -- "$bin --template-paste --host $SERVER_IP --port $PORT --listen-seconds $TIMEOUT 2>&1" || true)
+    out=$(fleet_run "$os" -- "$bin --template-paste --host $SERVER_IP --port $PORT --listen-seconds $TIMEOUT 2>&1" || true)
 
     if echo "$out" | grep -qE 'phase-3: [1-9][0-9]* ghost packets'; then
         n=$(echo "$out" | grep -oE 'phase-3: [0-9]+ ghost packets' | head -1)

@@ -42,6 +42,24 @@ fleet_default_field() {
 
 fleet_all_oses() { echo macos windows linux; }
 
+# Returns 0 if the host for <os> is the machine the script is running on.
+# Lets probe/run-scenario work even when the local box (typically macOS)
+# doesn't have Remote Login / SSH server enabled.
+fleet_is_local() {
+    local os="$1"
+    local host
+    host=$(fleet_host_field "$os" ssh_host)
+    [ -z "$host" ] && return 1
+    local local_short local_long
+    local_short=$(hostname -s 2>/dev/null || hostname)
+    local_long=$(hostname 2>/dev/null)
+    case "$host" in
+        "$local_short"|"$local_short".local|"$local_long"|localhost|127.0.0.1)
+            return 0 ;;
+    esac
+    return 1
+}
+
 # fleet_ssh <os> [--] <cmd...>  -> runs cmd over ssh with batch-mode + 5s timeout
 fleet_ssh() {
     local os="$1"; shift
@@ -51,4 +69,15 @@ fleet_ssh() {
     host=$(fleet_host_field "$os" ssh_host)
     [ -z "$user" ] || [ -z "$host" ] && { echo "fleet_lib: no ssh creds for $os" >&2; return 1; }
     ssh -o BatchMode=yes -o ConnectTimeout=5 "$user@$host" "$@"
+}
+
+# fleet_run <os> [--] <cmd...> — fleet_ssh if remote, local bash if local.
+fleet_run() {
+    local os="$1"; shift
+    [ "${1:-}" = "--" ] && shift
+    if fleet_is_local "$os"; then
+        bash -c "$*"
+    else
+        fleet_ssh "$os" -- "$@"
+    fi
 }
