@@ -214,6 +214,15 @@ jobs:
         run: |
           ./build/open-siege-t1-server.exe --listen-server-selftest
 
+      - name: Server UDP listener self-test
+        working-directory: apps/open-siege-t1-server
+        # Exercises the spec 26/10 UDP listener: binds an ephemeral
+        # port, sends a synthetic RequestConnect, asserts the
+        # AcceptConnect reply is byte-equal to the captured template
+        # with the nonce correctly echoed at offsets 4..6.
+        run: |
+          ./build/open-siege-t1-server.exe --listener-selftest
+
       - name: Smoke test (header-only self-tests)
         working-directory: examples/dts-viewer
         # dts-viewer doesn't have a --help flag (it treats unknown args
