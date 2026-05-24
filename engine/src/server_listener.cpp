@@ -4,6 +4,7 @@
 #include <osengine/movecommand.hpp>
 #include <osengine/server_world_snapshot.hpp>
 #include <osengine/session_table.hpp>
+#include <osengine/team_assigner.hpp>
 #include "content/net/udp_socket.hpp"
 
 #include <algorithm>
@@ -156,7 +157,13 @@ struct ServerListener::Impl
     std::uint64_t                   tick_counter = 0;
     std::unordered_map<EmitterKey, std::unique_ptr<GhostEmitter>,
                        EmitterKeyHash>  emitters;
+    std::vector<SpawnPoint>         spawns;       // spec 28/05
 };
+
+void ServerListener::set_spawn_points(std::vector<SpawnPoint> spawns)
+{
+    impl_->spawns = std::move(spawns);
+}
 
 ServerListener::ServerListener(ServerListenerConfig cfg)
     : cfg_(cfg), impl_(std::make_unique<Impl>())
@@ -231,8 +238,24 @@ void ServerListener::run()
         while (impl_->socket.try_recv(buf, peer)) {
             if (looks_like_vanilla_request_connect(buf)) {
                 const std::uint8_t nonce[3] = { buf[7], buf[8], buf[9] };
+                const bool was_new = impl_->sessions->find(peer) == nullptr;
                 Session* sess = impl_->sessions->allocate(peer, nonce, now_ms);
                 if (sess) {
+                    // Spec 28/05 — only assign on first allocation; a
+                    // RequestConnect retransmit must not re-randomise
+                    // the player's spawn.
+                    if (was_new) {
+                        sess->team = pick_team(*impl_->sessions, cfg_.team_balance);
+                        place_at_spawn(*sess, impl_->spawns);
+                        const char* tn = (sess->team == Team::Red)  ? "red"
+                                       : (sess->team == Team::Blue) ? "blue"
+                                       : "spec";
+                        std::fprintf(stderr,
+                            "[spawn] slot %u -> team %s at (%.1f, %.1f, %.1f) yaw=%.2f\n",
+                            sess->player_slot, tn,
+                            sess->spawn_pos.x, sess->spawn_pos.y, sess->spawn_pos.z,
+                            sess->spawn_yaw);
+                    }
                     // New or retransmit — reply with AcceptConnect using
                     // the session's nonce (so retransmits reuse it).
                     build_accept_connect_reply(sess->nonce, accept_reply);

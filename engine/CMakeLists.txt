@@ -50,6 +50,7 @@ add_library(osengine STATIC
     src/paths.cpp
     src/server_listener.cpp
     src/session_table.cpp
+    src/team_assigner.cpp
     src/world_tick.cpp
     src/physics_capsule.cpp
     src/player_controller.cpp

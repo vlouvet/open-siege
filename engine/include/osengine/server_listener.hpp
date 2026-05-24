@@ -31,6 +31,7 @@ struct ServerListenerConfig
     bool          enable_ghost_emit = true;   // spec 28/04 — OSGB stream
     bool          enable_canned_burst = true; // spec 26/11 backstop
     int           ghost_emit_tick_div = 2;    // emit every Nth tick (32/2 = 16 Hz)
+    bool          team_balance = true;        // spec 28/05 round-robin
 };
 
 struct ServerListenerStats
@@ -77,6 +78,11 @@ public:
     // logical "tick thread" (which IS the listener thread today —
     // spec 28/03 calls world_tick from inside the listener's tick).
     SessionTable&       sessions();
+
+    // Spec 28/05 — the listener applies a spawn-point list to every
+    // newly-allocated session. Caller sets this once after construction;
+    // an empty list disables placement (sessions stay at origin).
+    void set_spawn_points(std::vector<struct SpawnPoint> spawns);
 
 private:
     void run();

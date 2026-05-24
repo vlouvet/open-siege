@@ -21,12 +21,22 @@
 
 #include <cstdint>
 #include <deque>
+#include <glm/glm.hpp>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
 
 namespace dts_viewer
 {
+
+// Spec 28/05 — team membership. Spectator means the session is
+// connected but not placed on the map; deathmatch missions still
+// assign Red/Blue for color bookkeeping.
+enum class Team : std::uint8_t {
+    Spectator = 0,
+    Red       = 1,
+    Blue      = 2,
+};
 
 struct Session
 {
@@ -47,6 +57,14 @@ struct Session
     // Spec 28/03 — server-authoritative player state for this session.
     // Advanced by world_tick(); ghost-emitted to clients in spec 28/04.
     PlayerState                  player_state{};
+
+    // Spec 28/05 — team + spawn placement. Filled in by team_assigner
+    // on session allocate; spawn_pos is also written into
+    // player_state.pos so the first world_tick sees the player at the
+    // chosen drop point.
+    Team       team         = Team::Spectator;
+    glm::vec3  spawn_pos    {0.0f, 0.0f, 0.0f};
+    float      spawn_yaw    = 0.0f;
 };
 
 class SessionTable

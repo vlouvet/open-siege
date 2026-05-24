@@ -13,6 +13,7 @@
 #include <osengine/paths.hpp>
 #include <osengine/server_listener.hpp>
 #include <osengine/session_table.hpp>
+#include <osengine/team_assigner.hpp>
 #include <osengine/world_tick.hpp>
 #include <glm/glm.hpp>
 #include <glm/geometric.hpp>
@@ -58,6 +59,8 @@ void print_usage()
         "  --no-listener             Skip the UDP bind (server tick-only)\n"
         "  --no-canned-burst         Disable spec 26/11 captured-burst reply\n"
         "  --no-ghost-emit           Disable spec 28/04 OSGB ghost streaming\n"
+        "  --team-balance off        Disable round-robin team assignment\n"
+        "  --team-assigner-selftest  Run team_assigner selftest and exit\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
@@ -101,6 +104,8 @@ int main(int argc, char** argv)
     bool no_listener = false;
     bool no_canned_burst = false;
     bool no_ghost_emit = false;
+    bool team_balance = true;
+    bool team_assigner_selftest = false;
     bool skip_mission = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -112,6 +117,12 @@ int main(int argc, char** argv)
         if (a == "--no-listener") { no_listener = true; continue; }
         if (a == "--no-canned-burst") { no_canned_burst = true; continue; }
         if (a == "--no-ghost-emit") { no_ghost_emit = true; continue; }
+        if (a == "--team-assigner-selftest") { team_assigner_selftest = true; continue; }
+        if (a == "--team-balance" && i + 1 < argc) {
+            const std::string v = argv[++i];
+            team_balance = !(v == "off" || v == "false" || v == "0");
+            continue;
+        }
         if (a == "--skip-mission") { skip_mission = true; continue; }
         if (a == "--mission" && i + 1 < argc) { mission_name = argv[++i]; continue; }
         if (a == "--tribes-dir" && i + 1 < argc) { tribes_dir = argv[++i]; continue; }
@@ -145,6 +156,10 @@ int main(int argc, char** argv)
 
     if (ghost_emit_selftest) {
         return dts_viewer::ghost_emitter_selftest();
+    }
+
+    if (team_assigner_selftest) {
+        return dts_viewer::team_assigner_selftest();
     }
 
     if (world_tick_selftest) {
@@ -242,7 +257,15 @@ int main(int argc, char** argv)
         listener_cfg.max_players = static_cast<std::uint16_t>(max_players);
         listener_cfg.enable_canned_burst = !no_canned_burst;
         listener_cfg.enable_ghost_emit   = !no_ghost_emit;
+        listener_cfg.team_balance        = team_balance;
         listener = std::make_unique<dts_viewer::ServerListener>(listener_cfg);
+        if (mission) {
+            auto spawns = dts_viewer::extract_spawn_points(*mission);
+            std::fprintf(stderr,
+                "[server] extracted %zu spawn points from mission\n",
+                spawns.size());
+            listener->set_spawn_points(std::move(spawns));
+        }
         if (!listener->start()) {
             std::fprintf(stderr, "[server] listener failed to start: %s\n",
                          listener->last_error().c_str());
