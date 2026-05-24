@@ -373,6 +373,20 @@ void ServerListener::run()
 
         // Drain inbound queue. try_recv returns false when queue empty.
         while (impl_->socket.try_recv(buf, peer)) {
+            // 26/14a — if this packet is from an established session
+            // and looks like a VC datagram, decode its send_seq and
+            // mark the slot for ack-back. Handshake packets handled
+            // below have their own ack semantics (the AC reply takes
+            // care of the RequestConnect's seq), so we skip them here.
+            if (buf.size() >= 4 && (buf[0] & 1) && impl_->sessions->find(peer)) {
+                net20::ParsedIncomingHeader ph;
+                if (net20::parse_incoming_header(buf.data(), buf.size(), ph)
+                    && ph.base_type != net20::pkt_type::kPing) {
+                    Session* sess = impl_->sessions->find(peer);
+                    sess->ack.on_receive(ph.send_seq);
+                }
+            }
+
             if (looks_like_vanilla_request_connect(buf)) {
                 const std::uint8_t nonce[3] = { buf[7], buf[8], buf[9] };
                 const bool was_new = impl_->sessions->find(peer) == nullptr;
@@ -396,8 +410,10 @@ void ServerListener::run()
                     // New or retransmit — reply with AcceptConnect using
                     // the session's nonce (so retransmits reuse it).
                     build_accept_connect_reply(sess->nonce, accept_reply);
+                    sess->connect_parity = (accept_reply[0] & 0x02) != 0;
                     const bool ok = impl_->socket.send_to(
                         peer, accept_reply, sizeof(accept_reply));
+                    if (ok) sess->last_outbound_ms = now_ms;
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.request_connects_received;
                     if (ok) {
@@ -472,8 +488,10 @@ void ServerListener::run()
                             sess->spawn_yaw);
                     }
                     build_groove_accept_connect_reply(sess->nonce, groove_reply);
+                    sess->connect_parity = (groove_reply[0] & 0x02) != 0;
                     const bool ok = impl_->socket.send_to(
                         peer, groove_reply, sizeof(groove_reply));
+                    if (ok) sess->last_outbound_ms = now_ms;
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.request_connects_received;
                     if (ok) {
@@ -553,8 +571,10 @@ void ServerListener::run()
                             sess->spawn_yaw);
                     }
                     build_tah_accept_connect_reply(sess->nonce, req_parity, tah_reply);
+                    sess->connect_parity = (tah_reply[0] & 0x02) != 0;
                     const bool ok = impl_->socket.send_to(
                         peer, tah_reply, sizeof(tah_reply));
+                    if (ok) sess->last_outbound_ms = now_ms;
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.request_connects_received;
                     if (ok) {
@@ -622,6 +642,7 @@ void ServerListener::run()
                             pkt_count = 1;
                         }
                     }
+                    if (pkt_count > 0) sess->last_outbound_ms = now_ms;
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.data_packets_received;
                     if (pkt_count > 0) {
@@ -698,6 +719,7 @@ void ServerListener::run()
                                 pkt_count = 1;
                             }
                         }
+                        if (pkt_count > 0) sess->last_outbound_ms = now_ms;
                         std::lock_guard<std::mutex> lk(impl_->mu);
                         ++impl_->stats.data_packets_received;
                         if (pkt_count > 0) {
@@ -755,6 +777,34 @@ void ServerListener::run()
                 std::fprintf(stderr,
                     "[listener] session timeout for slot %u (%s:%u)\n",
                     s.player_slot, s.peer.host.c_str(), s.peer.port);
+            }
+        }
+
+        // 26/14a — per-tick pure-ack tick. For each active session,
+        // emit a 4-byte pure-ack if EITHER (a) 12+ acks are pending
+        // (§14.5 force-emit rule), OR (b) 250ms have elapsed since
+        // our last outbound to this peer. This keeps TAH from
+        // retransmitting its own packets thinking the server is dead.
+        for (auto* s : impl_->sessions->active_sessions()) {
+            if (!s) continue;
+            const bool force   = s->ack.should_force_ack();
+            const bool quiet   = (now_ms - s->last_outbound_ms) > 250;
+            const bool pending = s->ack.pending_count() > 0;
+            if (!(force || (quiet && pending))) continue;
+
+            net20::VcHeaderInputs hdr;
+            hdr.send_seq               = s->next_send_seq;
+            hdr.connect_parity         = s->connect_parity;
+            hdr.highest_acked_of_mine  = s->ack.highest_recv_mod32;
+            hdr.ack_runs               = net20::build_ack_runs(
+                s->ack.received, s->ack.highest_recv_mod32);
+            hdr.type_word              = net20::pkt_type::kPureAck;
+            const auto wire            = net20::encode_vc_header(hdr);
+            if (impl_->socket.send_to(s->peer, wire.data(), wire.size())) {
+                s->ack.clear_pending();
+                s->ack.total_acks_sent += 1;
+                s->last_outbound_ms     = now_ms;
+                // pure-ack doesn't bump send_seq (§14.2)
             }
         }
 

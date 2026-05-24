@@ -18,6 +18,7 @@
 #include "content/net/udp_socket.hpp"
 #include <osengine/movecommand.hpp>
 #include <osengine/player_controller.hpp>
+#include <osengine/reliable_acks.hpp>
 
 #include <cstdint>
 #include <deque>
@@ -53,6 +54,12 @@ struct Session
     // canned-burst selection: TAH gets the captured TAH-server burst
     // (10 packets / 2228B), vanilla gets the 223B vanilla burst.
     bool          is_tah_session = false;
+    // 26/14a — per-session ack-window over inbound seqs from this peer,
+    // and timestamps for the outbound pure-ack tick.
+    net20::AckTracker ack;
+    bool          connect_parity = false;     // last AC parity bit; echoed
+                                              // in our outbound headers
+    std::uint64_t last_outbound_ms = 0;       // for 250ms keep-alive tick
 
     // Spec 28/02 — pending input from this peer. Drained by the per-tick
     // world step (spec 28/03). Bounded by sanity at ~64 entries.
