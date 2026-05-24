@@ -25,6 +25,7 @@
 
 #include <entity_renderer.hpp>     // from dts_viewer_render
 #include "client_imgui.hpp"        // spec 29/05b
+#include "hud_glue.hpp"            // spec 29/05
 
 #include <SDL2/SDL.h>
 
@@ -245,6 +246,9 @@ int main(int argc, char** argv)
     constexpr float kMouseSensitivity = 0.0025f;   // rad / pixel
     bool jump_edge_pending = false;
 
+    // Spec 29/05 — HUD state (scoreboard toggle + message feed).
+    open_siege::HudGlueState hud_ui;
+
     // Spec 29/04 — jitter buffer for remote-player smoothing. We record
     // every Player ghost's pos/yaw into the registry indexed by ghost_id
     // and sample at (now_ms - default_display_delay_ms) when rendering.
@@ -276,7 +280,14 @@ int main(int argc, char** argv)
             }
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE)
                 g_quit.store(true);
-            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_TAB) {
+            // Spec 29/05 — Tab toggles scoreboard. Hold to show; release
+            // to hide (matches Tribes 1 muscle memory).
+            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_TAB)
+                hud_ui.scoreboard_visible = true;
+            if (ev.type == SDL_KEYUP   && ev.key.keysym.sym == SDLK_TAB)
+                hud_ui.scoreboard_visible = false;
+            // F1 toggles mouse capture (dev convenience while testing).
+            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_F1) {
                 mouse_captured = !mouse_captured;
                 SDL_SetRelativeMouseMode(mouse_captured ? SDL_TRUE : SDL_FALSE);
             }
@@ -385,6 +396,13 @@ int main(int argc, char** argv)
                     u_mvp_loc, u_color_loc, vp);
                 ++rendered;
             }
+        }
+
+        // Spec 29/05 — populate HUD overlays from the current net state.
+        if (net.running()) {
+            int my_slot = -1;
+            if (auto si = net.server_info()) my_slot = int(si->player_slot);
+            open_siege::render_net_hud(net, hud_ui, my_slot, width, height);
         }
 
         // Flush ImGui draw lists (HUD text + overlays) on top of the

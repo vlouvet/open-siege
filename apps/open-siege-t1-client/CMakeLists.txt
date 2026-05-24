@@ -38,6 +38,7 @@ set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../examples/dts-viewer/third_party/
 add_executable(open-siege-t1-client
     main.cpp
     client_imgui.cpp
+    hud_glue.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
