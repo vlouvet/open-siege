@@ -27,6 +27,7 @@
 #include "client_imgui.hpp"        // spec 29/05b
 #include "hud_glue.hpp"            // spec 29/05
 #include "spawn_ui.hpp"            // spec 29/06
+#include "flag_ui.hpp"             // spec 29/07
 
 #include <SDL2/SDL.h>
 
@@ -253,6 +254,10 @@ int main(int argc, char** argv)
     // Spec 29/06 — death overlay state. dead_since_ms is local-clock.
     open_siege::SpawnUiState spawn_ui;
 
+    // Spec 29/07 — flag UI state (match-end banner placeholder until
+    // a server-broadcast match-state event lands).
+    open_siege::FlagUiState flag_ui;
+
     // Spec 29/04 — jitter buffer for remote-player smoothing. We record
     // every Player ghost's pos/yaw into the registry indexed by ghost_id
     // and sample at (now_ms - default_display_delay_ms) when rendering.
@@ -402,18 +407,24 @@ int main(int argc, char** argv)
             }
         }
 
-        // Spec 29/05 + 29/06 — overlays driven from net state. Both
-        // need the local slot from server_info; spawn_ui falls back to
-        // Alive when the server hasn't told us our slot yet.
+        // Spec 29/05 + 29/06 + 29/07 — HUD / death / flag overlays
+        // driven from net state. Local slot from server_info; falls
+        // back to alive/no-bars when server hasn't assigned a slot yet.
         {
             int my_slot = -1;
             if (auto si = net.server_info()) my_slot = int(si->player_slot);
             const std::uint32_t t_ms = now_ms_since_start();
             if (net.running()) {
                 open_siege::render_net_hud(net, hud_ui, my_slot, width, height);
+                // Flag pillars use the same flat shader bound above for
+                // ghost cubes.
+                open_siege::render_flag_pillars(net,
+                    std::uint32_t(u_mvp_loc), std::uint32_t(u_color_loc), vp);
             }
             open_siege::update_spawn_ui(spawn_ui, net, my_slot, t_ms);
             open_siege::draw_spawn_ui(spawn_ui, t_ms, width, height);
+            open_siege::draw_flag_carrier_hud(0, width, height);
+            open_siege::draw_match_end_banner(flag_ui, t_ms, width, height);
         }
 
         // Flush ImGui draw lists (HUD text + overlays) on top of the

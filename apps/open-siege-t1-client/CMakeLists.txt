@@ -40,6 +40,7 @@ add_executable(open-siege-t1-client
     client_imgui.cpp
     hud_glue.cpp
     spawn_ui.cpp
+    flag_ui.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
