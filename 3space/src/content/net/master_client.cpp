@@ -1,5 +1,12 @@
 #include "content/net/master_client.hpp"
 
+// gcc 15 on Linux: std::strerror / std::snprintf used inside the platform
+// #ifdef helpers below need <cstring> / <cstdio> visible before the inline
+// definitions. apple-clang was transitively pulling them in.
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
 #  include <winsock2.h>
@@ -29,8 +36,6 @@
    static inline void sock_close_fd(int fd) { ::close(fd); }
 #endif
 
-#include <cerrno>
-#include <cstring>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
