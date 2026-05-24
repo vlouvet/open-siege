@@ -28,7 +28,11 @@ struct ServerListenerConfig
     std::uint16_t port         = 28000;
     int           tick_hz      = 32;
     std::uint16_t max_players  = 32;          // spec 28/01
-    std::uint64_t session_timeout_ms = 5000;  // spec 28/01
+    std::uint64_t session_timeout_ms = 30000; // spec 28/01 (bumped from
+                                              // 5s -> 30s in 26/10b
+                                              // follow-up so TAH clients
+                                              // get time to chew the
+                                              // 8.8kB burst)
     bool          enable_ghost_emit = true;   // spec 28/04 — OSGB stream
     bool          enable_canned_burst = true; // spec 26/11 backstop
     int           ghost_emit_tick_div = 2;    // emit every Nth tick (32/2 = 16 Hz)
@@ -115,6 +119,14 @@ void build_accept_connect_reply(const std::uint8_t nonce[3],
 // 3-byte per-session nonce at offsets 4..6, identical to vanilla.
 void build_groove_accept_connect_reply(const std::uint8_t nonce[3],
                                        std::uint8_t out[18]);
+
+// 18-byte TribesAfterHope AcceptConnect builder (53B RC handler).
+// Per-session nonce at reply offsets 4..6; byte 8 is a parity bit
+// derived from request byte 10 (the parity byte that TAH alternates
+// across retransmits).
+void build_tah_accept_connect_reply(const std::uint8_t nonce[3],
+                                    std::uint8_t      request_parity_byte,
+                                    std::uint8_t      out[18]);
 
 // Spec 26/10b — round-trip selftest: replay the captured Groove
 // RequestConnect, assert the listener responds with the correct

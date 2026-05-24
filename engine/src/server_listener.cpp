@@ -1,6 +1,7 @@
 #include <osengine/server_listener.hpp>
 
 #include <osengine/ghost_emitter.hpp>
+#include <osengine/tah_ghost_burst.hpp>
 #include <osengine/movecommand.hpp>
 #include <osengine/net_client.hpp>     // spec 29/02b — server_info codec
 #include <osengine/server_world_snapshot.hpp>
@@ -37,12 +38,31 @@ constexpr std::uint8_t kAcceptConnectTemplate[16] = {
 // captures/real-tribes/groove-session-20260522-124329.json packet 1.
 // Bytes 4..6 = per-session nonce echo (mirrors vanilla layout). The
 // trailing 11 bytes are constants from the capture; meaning not
-// independently verified, but bit-exact replay works with both the
-// existing net-test-client --groove probe and TribesAfterHope.exe.
+// independently verified, but bit-exact replay works with the
+// net-test-client --groove probe.
 constexpr std::uint8_t kGrooveAcceptConnectTemplate[18] = {
     0x07, 0x00, 0x09, 0x60,
     0x00, 0x00, 0x00,                // <- nonce slot (bytes 4..6)
     0x00, 0x02,
+    0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x80, 0x01, 0x01,
+};
+
+// 18-byte TribesAfterHope AcceptConnect template — discovered 2026-05-24
+// by probing a real TAH dedicated server (127.0.0.1:28001) with the
+// 53-byte 0x05-leading "browser-ping" packet and capturing its reply.
+// Wire shape:
+//   05 00 09 60  <nonce 3B>  08 <parity> 08 00 00 00 08 00 80 01 01
+// Differences vs the Groove template above:
+//   * Byte 0 = 0x05 (Groove had 0x07).
+//   * Byte 7 = 0x08 (Groove had 0x00).
+//   * Byte 8 = parity bit derived from request byte 10:
+//       request[10] == 0x18 -> reply[8] = 0x02
+//       request[10] == 0x58 -> reply[8] = 0x01
+//     other values: unverified; default to 0x02.
+constexpr std::uint8_t kTahAcceptConnectTemplate[18] = {
+    0x05, 0x00, 0x09, 0x60,
+    0x00, 0x00, 0x00,                // <- nonce slot (bytes 4..6)
+    0x08, 0x02,                       // <- byte 8 overwritten per request
     0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x80, 0x01, 0x01,
 };
 
@@ -90,10 +110,71 @@ bool looks_like_groove_request_connect(const std::vector<std::uint8_t>& pkt)
     return pkt.size() == 45 && (pkt[0] == 0x05 || pkt[0] == 0x07);
 }
 
-// 4-byte DataPacket / first ack (0x07 0x08 0x09 0x80 per BREAKTHROUGH).
+// TribesAfterHope RequestConnect family. TAH cycles through multiple
+// connect-handshake shapes when probing a server; all three observed
+// shapes share the same logical fields (parity byte then 3-byte nonce)
+// at different offsets. The server replies with the same 18B AC for
+// all of them.
+//
+// Variants (verified by capture against TAH at 192.168.1.101):
+//
+//   Shape A — 53B, leading 0x05  (prefix bytes 0..9 = 05 00 21 41 61
+//     81 a1 c1 e1 01; parity@10; nonce@11..13). Cross-verified against
+//     real TAH dedicated server: replies with 18B AC.
+//
+//   Shape B — 51B, leading 0x05  (prefix bytes 0..7 = 05 00 25 61 81
+//     a2 c1 e5; parity@8; nonce@9..11). Observed 2026-05-24.
+//
+//   Shape C — 53B, leading 0x07  (prefix bytes 0..9 = 07 00 21 41 61
+//     81 a1 c1 e1 01; parity@10; nonce@11..13). Observed 2026-05-24
+//     interleaved with shape B in same TAH session.
+//
+// out_parity_off / out_nonce_off set on match.
+bool looks_like_tah_request_connect(const std::vector<std::uint8_t>& pkt,
+                                    std::size_t* out_parity_off,
+                                    std::size_t* out_nonce_off)
+{
+    static const std::uint8_t prefix_a[10] = {
+        0x05, 0x00, 0x21, 0x41, 0x61, 0x81, 0xa1, 0xc1, 0xe1, 0x01,
+    };
+    static const std::uint8_t prefix_b[8] = {
+        0x05, 0x00, 0x25, 0x61, 0x81, 0xa2, 0xc1, 0xe5,
+    };
+    static const std::uint8_t prefix_c[10] = {
+        0x07, 0x00, 0x21, 0x41, 0x61, 0x81, 0xa1, 0xc1, 0xe1, 0x01,
+    };
+    if (pkt.size() == 53 && std::memcmp(pkt.data(), prefix_a, 10) == 0) {
+        if (out_parity_off) *out_parity_off = 10;
+        if (out_nonce_off)  *out_nonce_off  = 11;
+        return true;
+    }
+    if (pkt.size() == 51 && std::memcmp(pkt.data(), prefix_b, 8) == 0) {
+        if (out_parity_off) *out_parity_off = 8;
+        if (out_nonce_off)  *out_nonce_off  = 9;
+        return true;
+    }
+    if (pkt.size() == 53 && std::memcmp(pkt.data(), prefix_c, 10) == 0) {
+        if (out_parity_off) *out_parity_off = 10;
+        if (out_nonce_off)  *out_nonce_off  = 11;
+        return true;
+    }
+    return false;
+}
+
+// 4-byte DataPacket / pure-ack shapes. Bytes 0..2 are mostly fixed
+// (`?? 08 09 ??`); byte 0 high nibble = parity, byte 3 encodes the
+// 5-bit packet type at bits 27..31.
+//   * vanilla Tribes 1.41: 07 08 09 80 (type=16, Ack)
+//   * vanilla parity=0:    05 08 09 80
+//   * TAH client:          07 08 09 38 (type=7)
+//   * TAH parity=0:        05 08 09 38
+// Recognise all of them as session-keep-alive pure-acks.
 bool looks_like_first_data_packet(const std::vector<std::uint8_t>& pkt)
 {
-    return pkt.size() == 4 && pkt[0] == 0x07 && pkt[1] == 0x08;
+    return pkt.size() == 4
+        && (pkt[0] == 0x07 || pkt[0] == 0x05)
+        && pkt[1] == 0x08 && pkt[2] == 0x09
+        && (pkt[3] == 0x80 || pkt[3] == 0x38);
 }
 
 // RejectConnect template for "Server is full." (spec 28/01). Per the
@@ -129,7 +210,7 @@ std::uint64_t steady_now_ms()
 
 void hex_prefix(const std::vector<std::uint8_t>& pkt, char* buf, std::size_t bufsz)
 {
-    const std::size_t n = std::min(pkt.size(), std::size_t{16});
+    const std::size_t n = std::min(pkt.size(), std::size_t{64});
     std::size_t off = 0;
     for (std::size_t i = 0; i < n && off + 3 < bufsz; ++i) {
         int w = std::snprintf(buf + off, bufsz - off, "%02x ", pkt[i]);
@@ -156,6 +237,21 @@ void build_groove_accept_connect_reply(const std::uint8_t nonce[3],
     out[4] = nonce[0];
     out[5] = nonce[1];
     out[6] = nonce[2];
+}
+
+void build_tah_accept_connect_reply(const std::uint8_t nonce[3],
+                                    std::uint8_t      request_parity_byte,
+                                    std::uint8_t      out[18])
+{
+    std::memcpy(out, kTahAcceptConnectTemplate, 18);
+    out[4] = nonce[0];
+    out[5] = nonce[1];
+    out[6] = nonce[2];
+    // Mirror the TAH server's behaviour: parity byte 8 of the AC
+    // reflects request byte 10 (0x18 -> 0x02, 0x58 -> 0x01).
+    if      (request_parity_byte == 0x58) out[8] = 0x01;
+    else if (request_parity_byte == 0x18) out[8] = 0x02;
+    else                                  out[8] = 0x02;  // default
 }
 
 namespace
@@ -188,6 +284,7 @@ struct ServerListener::Impl
                        EmitterKeyHash>  emitters;
     std::vector<SpawnPoint>         spawns;       // spec 28/05
     std::string                     mission_name; // spec 29/02b
+    std::uint8_t                    last_keepalive_byte3 = 0xff; // 26/10b dedup
 };
 
 void ServerListener::set_spawn_points(std::vector<SpawnPoint> spawns)
@@ -361,6 +458,7 @@ void ServerListener::run()
                 Session* sess = impl_->sessions->allocate(peer, nonce, now_ms);
                 std::uint8_t groove_reply[18];
                 if (sess) {
+                    sess->is_tah_session = true;
                     if (was_new) {
                         sess->team = pick_team(*impl_->sessions, cfg_.team_balance);
                         place_at_spawn(*sess, impl_->spawns);
@@ -426,6 +524,69 @@ void ServerListener::run()
                     }
                 }
             }
+            else if (std::size_t parity_off = 0, nonce_off = 0;
+                     looks_like_tah_request_connect(buf, &parity_off, &nonce_off)) {
+                // Spec 26/10b follow-up — TribesAfterHope connect family
+                // (51B/53B, 0x05/0x07 leading). Per-shape nonce + parity
+                // offsets supplied by the predicate; reply is always the
+                // 18B AC with parity-byte 8 derived from the request's
+                // parity byte.
+                const std::uint8_t nonce[3] = {
+                    buf[nonce_off], buf[nonce_off + 1], buf[nonce_off + 2],
+                };
+                const std::uint8_t req_parity = buf[parity_off];
+                const bool was_new = impl_->sessions->find(peer) == nullptr;
+                Session* sess = impl_->sessions->allocate(peer, nonce, now_ms);
+                std::uint8_t tah_reply[18];
+                if (sess) {
+                    sess->is_tah_session = true;
+                    if (was_new) {
+                        sess->team = pick_team(*impl_->sessions, cfg_.team_balance);
+                        place_at_spawn(*sess, impl_->spawns);
+                        const char* tn = (sess->team == Team::Red)  ? "red"
+                                       : (sess->team == Team::Blue) ? "blue"
+                                       : "spec";
+                        std::fprintf(stderr,
+                            "[spawn] slot %u -> team %s at (%.1f, %.1f, %.1f) yaw=%.2f\n",
+                            sess->player_slot, tn,
+                            sess->spawn_pos.x, sess->spawn_pos.y, sess->spawn_pos.z,
+                            sess->spawn_yaw);
+                    }
+                    build_tah_accept_connect_reply(sess->nonce, req_parity, tah_reply);
+                    const bool ok = impl_->socket.send_to(
+                        peer, tah_reply, sizeof(tah_reply));
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.request_connects_received;
+                    if (ok) {
+                        ++impl_->stats.accept_connects_sent;
+                        std::fprintf(stderr,
+                            "[listener] (TAH) RequestConnect from %s:%u -> slot %u, replied AcceptConnect (nonce %02x%02x%02x parity=%02x)\n",
+                            peer.host.c_str(), peer.port, sess->player_slot,
+                            sess->nonce[0], sess->nonce[1], sess->nonce[2],
+                            req_parity);
+                        if (was_new && !impl_->mission_name.empty()) {
+                            ServerInfo si;
+                            si.mission_short_name = impl_->mission_name;
+                            si.player_slot = sess->player_slot;
+                            si.team_raw = static_cast<std::uint8_t>(sess->team);
+                            si.server_tick = static_cast<std::uint32_t>(
+                                impl_->tick_counter);
+                            const auto si_bytes = encode_server_info(
+                                si, sess->next_send_seq, /*parity*/ false);
+                            impl_->socket.send_to(peer, si_bytes.data(),
+                                                  si_bytes.size());
+                            sess->next_send_seq = static_cast<std::uint16_t>(
+                                (sess->next_send_seq + 1) & 0x1FFu);
+                            if (sess->next_send_seq == 0) sess->next_send_seq = 1;
+                        }
+                    } else {
+                        impl_->last_error = impl_->socket.last_error();
+                        std::fprintf(stderr,
+                            "[listener] (TAH) send_to %s:%u failed: %s\n",
+                            peer.host.c_str(), peer.port, impl_->last_error.c_str());
+                    }
+                }
+            }
             else if (looks_like_first_data_packet(buf)) {
                 Session* sess = impl_->sessions->find(peer);
                 if (!sess) {
@@ -444,16 +605,32 @@ void ServerListener::run()
                     && !sess->ghost_burst_sent;
                 if (should_send) {
                     sess->ghost_burst_sent = true;
-                    const bool ok = impl_->socket.send_to(
-                        peer, kFirstGhostBurstTemplate, sizeof(kFirstGhostBurstTemplate));
+                    std::size_t total_sent = 0;
+                    std::size_t pkt_count = 0;
+                    if (sess->is_tah_session) {
+                        for (std::size_t i = 0; i < kTahFirstGhostBurstCount; ++i) {
+                            const auto& p = kTahFirstGhostBurst[i];
+                            if (impl_->socket.send_to(peer, p.data, p.size)) {
+                                total_sent += p.size;
+                                ++pkt_count;
+                            }
+                        }
+                    } else {
+                        if (impl_->socket.send_to(peer, kFirstGhostBurstTemplate,
+                                                  sizeof(kFirstGhostBurstTemplate))) {
+                            total_sent = sizeof(kFirstGhostBurstTemplate);
+                            pkt_count = 1;
+                        }
+                    }
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.data_packets_received;
-                    if (ok) {
-                        ++impl_->stats.ghost_bursts_sent;
+                    if (pkt_count > 0) {
+                        impl_->stats.ghost_bursts_sent += pkt_count;
                         std::fprintf(stderr,
-                            "[listener] DataPacket from %s:%u (slot %u), replied ghost burst (%zuB)\n",
+                            "[listener] DataPacket from %s:%u (slot %u, %s), replied ghost burst (%zu pkts / %zuB)\n",
                             peer.host.c_str(), peer.port, sess->player_slot,
-                            sizeof(kFirstGhostBurstTemplate));
+                            sess->is_tah_session ? "TAH" : "vanilla",
+                            pkt_count, total_sent);
                     } else {
                         impl_->last_error = impl_->socket.last_error();
                     }
@@ -492,16 +669,71 @@ void ServerListener::run()
                         ++seq;
                     }
                 } else if (sess) {
-                    std::lock_guard<std::mutex> lk(impl_->mu);
-                    ++impl_->stats.malformed_movecommands;
-                    char hexbuf[64] = {};
-                    hex_prefix(buf, hexbuf, sizeof(hexbuf));
-                    std::fprintf(stderr,
-                        "[listener] malformed movecommand %zuB from %s:%u (slot %u): %s\n",
-                        buf.size(), peer.host.c_str(), peer.port,
-                        sess->player_slot, hexbuf);
+                    // 26/10b follow-up — TAH's connection-progression
+                    // events (and any other non-movecommand DataPacket
+                    // shape from an established session) should keep
+                    // the session alive AND, if we haven't sent the
+                    // canned burst yet, trigger it. Otherwise TAH
+                    // stays in "waiting for ghost burst" forever and
+                    // we time out.
+                    impl_->sessions->touch(peer, now_ms);
+                    bool should_send = cfg_.enable_canned_burst
+                        && !sess->ghost_burst_sent;
+                    if (should_send) {
+                        sess->ghost_burst_sent = true;
+                        std::size_t total_sent = 0;
+                        std::size_t pkt_count = 0;
+                        if (sess->is_tah_session) {
+                            for (std::size_t i = 0; i < kTahFirstGhostBurstCount; ++i) {
+                                const auto& p = kTahFirstGhostBurst[i];
+                                if (impl_->socket.send_to(peer, p.data, p.size)) {
+                                    total_sent += p.size;
+                                    ++pkt_count;
+                                }
+                            }
+                        } else {
+                            if (impl_->socket.send_to(peer, kFirstGhostBurstTemplate,
+                                                      sizeof(kFirstGhostBurstTemplate))) {
+                                total_sent = sizeof(kFirstGhostBurstTemplate);
+                                pkt_count = 1;
+                            }
+                        }
+                        std::lock_guard<std::mutex> lk(impl_->mu);
+                        ++impl_->stats.data_packets_received;
+                        if (pkt_count > 0) {
+                            impl_->stats.ghost_bursts_sent += pkt_count;
+                            std::fprintf(stderr,
+                                "[listener] non-movecmd DataPacket %zuB from %s:%u (slot %u, %s), replied ghost burst (%zu pkts / %zuB)\n",
+                                buf.size(), peer.host.c_str(), peer.port,
+                                sess->player_slot,
+                                sess->is_tah_session ? "TAH" : "vanilla",
+                                pkt_count, total_sent);
+                        }
+                    } else {
+                        // Burst already sent — treat unknown shapes as
+                        // session keep-alive (TAH alternates several
+                        // pure-ack flavours). Touch but log once per
+                        // distinct prefix to avoid spam.
+                        impl_->sessions->touch(peer, now_ms);
+                        std::lock_guard<std::mutex> lk(impl_->mu);
+                        ++impl_->stats.malformed_movecommands;
+                        // Suppress repeated identical lines: only log
+                        // when the byte-3 value differs from the last
+                        // seen (rough but good enough to spot novel
+                        // packet shapes).
+                        const std::uint8_t b3 = buf.size() >= 4 ? buf[3] : 0;
+                        if (b3 != impl_->last_keepalive_byte3) {
+                            impl_->last_keepalive_byte3 = b3;
+                            char hexbuf[256] = {};
+                            hex_prefix(buf, hexbuf, sizeof(hexbuf));
+                            std::fprintf(stderr,
+                                "[listener] keep-alive %zuB from %s:%u (slot %u): %s\n",
+                                buf.size(), peer.host.c_str(), peer.port,
+                                sess->player_slot, hexbuf);
+                        }
+                    }
                 } else {
-                    char hexbuf[64] = {};
+                    char hexbuf[256] = {};
                     hex_prefix(buf, hexbuf, sizeof(hexbuf));
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.unknown_packets_received;

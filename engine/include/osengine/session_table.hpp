@@ -48,6 +48,11 @@ struct Session
     std::uint16_t next_send_seq = 1;       // server replies start at seq 1
     std::uint16_t last_acked_recv_seq = 0;
     bool          ghost_burst_sent = false;
+    // 26/10b follow-up — set on session allocate when the inbound
+    // RequestConnect was a TAH (Groove/TribesNext) shape. Drives the
+    // canned-burst selection: TAH gets the captured TAH-server burst
+    // (10 packets / 2228B), vanilla gets the 223B vanilla burst.
+    bool          is_tah_session = false;
 
     // Spec 28/02 — pending input from this peer. Drained by the per-tick
     // world step (spec 28/03). Bounded by sanity at ~64 entries.
