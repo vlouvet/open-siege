@@ -10,6 +10,7 @@
 #include <osengine/flag_state.hpp>
 #include <osengine/ghost_emitter.hpp>
 #include <osengine/listen_server.hpp>
+#include <osengine/match_state.hpp>
 #include <osengine/mission_loader.hpp>
 #include <osengine/mission_sounds.hpp>
 #include <osengine/paths.hpp>
@@ -67,6 +68,9 @@ void print_usage()
         "  --projectile-selftest     Run projectile_world selftest and exit\n"
         "  --damage-selftest         Run damage_resolver selftest and exit\n"
         "  --flag-selftest           Run flag_state selftest and exit\n"
+        "  --match-selftest          Run match_state selftest and exit\n"
+        "  --cap-limit <n>           Captures to win the match (default 5)\n"
+        "  --time-limit <min>        Match time limit in minutes (default 25)\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
@@ -115,6 +119,9 @@ int main(int argc, char** argv)
     bool projectile_selftest = false;
     bool damage_selftest = false;
     bool flag_selftest = false;
+    bool match_selftest = false;
+    int  cap_limit  = 5;
+    int  time_limit_min = 25;
     bool skip_mission = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -130,6 +137,9 @@ int main(int argc, char** argv)
         if (a == "--projectile-selftest") { projectile_selftest = true; continue; }
         if (a == "--damage-selftest") { damage_selftest = true; continue; }
         if (a == "--flag-selftest") { flag_selftest = true; continue; }
+        if (a == "--match-selftest") { match_selftest = true; continue; }
+        if (a == "--cap-limit" && i + 1 < argc) { cap_limit = std::atoi(argv[++i]); continue; }
+        if (a == "--time-limit" && i + 1 < argc) { time_limit_min = std::atoi(argv[++i]); continue; }
         if (a == "--team-balance" && i + 1 < argc) {
             const std::string v = argv[++i];
             team_balance = !(v == "off" || v == "false" || v == "0");
@@ -184,6 +194,10 @@ int main(int argc, char** argv)
 
     if (flag_selftest) {
         return dts_viewer::FlagWorld::selftest();
+    }
+
+    if (match_selftest) {
+        return dts_viewer::MatchState::selftest();
     }
 
     if (world_tick_selftest) {
@@ -311,6 +325,11 @@ int main(int argc, char** argv)
     dts_viewer::DamageRules               damage_rules;
     dts_viewer::FlagWorld                 flags;
     if (mission) flags.load_from_mission(*mission);
+    dts_viewer::MatchConfig match_cfg;
+    match_cfg.cap_limit     = static_cast<std::uint16_t>(std::max(1, cap_limit));
+    match_cfg.time_limit_ms = static_cast<std::uint32_t>(
+        std::max(1, time_limit_min)) * 60u * 1000u;
+    dts_viewer::MatchState match(match_cfg);
     // Future: populate world_ctx.terrain + world_ctx.bounds from the
     // loaded mission. v1: empty HeightSampler (sample() returns 0) so
     // players free-fall onto the implicit y=0 plane and walk on it.
@@ -350,6 +369,11 @@ int main(int argc, char** argv)
                                     now_ms, damage_rules);
             tick_captures.clear();
             flags.tick(listener->sessions(), tick_captures, now_ms);
+            // Spec 28/09 — score captures and drive match phase.
+            for (const auto& cap : tick_captures) {
+                match.on_capture(cap, now_ms);
+            }
+            match.tick(listener->sessions(), now_ms);
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -389,6 +413,14 @@ int main(int argc, char** argv)
                     (unsigned long long)pjs.hits,
                     (unsigned long long)pjs.expired,
                     (unsigned long long)pjs.active);
+                const char* phn = (match.phase() == dts_viewer::MatchPhase::Warmup)  ? "WARMUP"
+                                : (match.phase() == dts_viewer::MatchPhase::Live)    ? "LIVE"
+                                : "ENDHOLD";
+                std::fprintf(stderr,
+                    "[server]   match: %s  R=%u  B=%u\n",
+                    phn,
+                    (unsigned)match.red_score(),
+                    (unsigned)match.blue_score());
             } else {
                 std::fprintf(stderr, "[server] tick %llu\n", (unsigned long long)tick);
             }
