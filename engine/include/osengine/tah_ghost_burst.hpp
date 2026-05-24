@@ -17,9 +17,11 @@ struct TahBurstPacket {
     std::size_t         size;
 };
 
-// 31 packets / 8809B total — captured initial-state dump from the
-// real TAH dedicated server with proper ack-runs (see tah_ghost_burst.cpp).
-extern const TahBurstPacket kTahFirstGhostBurst[31];
+// 10 packets / ~2.2kB total — clean baseline capture from real TAH
+// dedicated server. The previous 31-packet capture had session-polluted
+// bytes (verified by diff against ground-truth pcap). cap1's bytes
+// match ground-truth to within one 12-byte session-keyed insert.
+extern const TahBurstPacket kTahFirstGhostBurst[10];
 extern const std::size_t    kTahFirstGhostBurstCount;
 
 }  // namespace dts_viewer
