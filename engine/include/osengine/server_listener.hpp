@@ -17,6 +17,8 @@
 #include <string>
 #include <thread>
 
+namespace dts_viewer { class SessionTable; }
+
 namespace dts_viewer
 {
 
@@ -61,6 +63,14 @@ public:
     bool                running()   const { return running_.load(); }
     ServerListenerStats stats()     const;
     std::string         last_error() const;
+
+    // Spec 28/03 — the server's tick loop reads this to drive
+    // world_tick(); spec 28/04's emitter reads it to iterate ghosts.
+    // The listener thread mutates pending_moves under its own internal
+    // serialization; callers must only invoke this from the same
+    // logical "tick thread" (which IS the listener thread today —
+    // spec 28/03 calls world_tick from inside the listener's tick).
+    SessionTable&       sessions();
 
 private:
     void run();

@@ -216,12 +216,18 @@ jobs:
 
       - name: Server UDP listener self-test
         working-directory: apps/open-siege-t1-server
-        # Exercises the spec 26/10 UDP listener: binds an ephemeral
-        # port, sends a synthetic RequestConnect, asserts the
-        # AcceptConnect reply is byte-equal to the captured template
-        # with the nonce correctly echoed at offsets 4..6.
+        # Exercises the spec 26/10 UDP listener + spec 28/01 session
+        # table + spec 28/02 movecommand decoder. Binds ephemeral
+        # ports, runs handshake / max-players / ingestion phases.
         run: |
           ./build/open-siege-t1-server.exe --listener-selftest
+
+      - name: Server world-tick self-test
+        working-directory: apps/open-siege-t1-server
+        # Exercises spec 28/03: two sessions, one walking forward,
+        # one stationary; verify per-session player state diverges.
+        run: |
+          ./build/open-siege-t1-server.exe --world-tick-selftest
 
       - name: Smoke test (header-only self-tests)
         working-directory: examples/dts-viewer

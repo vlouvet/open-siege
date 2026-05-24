@@ -183,6 +183,11 @@ std::string ServerListener::last_error() const
     return impl_->last_error;
 }
 
+SessionTable& ServerListener::sessions()
+{
+    return *impl_->sessions;
+}
+
 void ServerListener::run()
 {
     using namespace std::chrono;

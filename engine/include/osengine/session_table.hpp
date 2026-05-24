@@ -17,6 +17,7 @@
 
 #include "content/net/udp_socket.hpp"
 #include <osengine/movecommand.hpp>
+#include <osengine/player_controller.hpp>
 
 #include <cstdint>
 #include <deque>
@@ -42,6 +43,10 @@ struct Session
     // world step (spec 28/03). Bounded by sanity at ~64 entries.
     std::deque<net20::MoveInput> pending_moves;
     std::uint32_t                last_applied_move_seq = 0;
+
+    // Spec 28/03 — server-authoritative player state for this session.
+    // Advanced by world_tick(); ghost-emitted to clients in spec 28/04.
+    PlayerState                  player_state{};
 };
 
 class SessionTable

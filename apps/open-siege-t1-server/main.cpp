@@ -11,6 +11,12 @@
 #include <osengine/mission_sounds.hpp>
 #include <osengine/paths.hpp>
 #include <osengine/server_listener.hpp>
+#include <osengine/session_table.hpp>
+#include <osengine/world_tick.hpp>
+#include <glm/glm.hpp>
+#include <glm/geometric.hpp>
+#include "content/net/udp_socket.hpp"
+#include <cmath>
 
 #include <atomic>
 #include <chrono>
@@ -51,6 +57,7 @@ void print_usage()
         "  --no-listener             Skip the UDP bind (server tick-only)\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
+        "  --world-tick-selftest     Run world_tick selftest and exit\n"
         "  --help                    This message\n",
         stderr);
 }
@@ -85,6 +92,7 @@ int main(int argc, char** argv)
 
     bool listen_server_selftest = false;
     bool listener_selftest = false;
+    bool world_tick_selftest = false;
     bool no_listener = false;
     bool skip_mission = false;
     for (int i = 1; i < argc; ++i) {
@@ -92,6 +100,7 @@ int main(int argc, char** argv)
         if (a == "--help") { print_usage(); return 0; }
         if (a == "--listen-server-selftest") { listen_server_selftest = true; continue; }
         if (a == "--listener-selftest") { listener_selftest = true; continue; }
+        if (a == "--world-tick-selftest") { world_tick_selftest = true; continue; }
         if (a == "--no-listener") { no_listener = true; continue; }
         if (a == "--skip-mission") { skip_mission = true; continue; }
         if (a == "--mission" && i + 1 < argc) { mission_name = argv[++i]; continue; }
@@ -122,6 +131,52 @@ int main(int argc, char** argv)
 
     if (listener_selftest) {
         return dts_viewer::server_listener_selftest();
+    }
+
+    if (world_tick_selftest) {
+        // Spec 28/03 selftest: two sessions with different inputs,
+        // 10 ticks each, verify positions diverge as expected.
+        dts_viewer::SessionTable table(4);
+        const std::uint8_t n1[3] = { 0xa, 0xb, 0xc };
+        const std::uint8_t n2[3] = { 0x1, 0x2, 0x3 };
+        studio::content::net::Endpoint p1{"127.0.0.1", 50001};
+        studio::content::net::Endpoint p2{"127.0.0.1", 50002};
+        auto* s1 = table.allocate(p1, n1, 0);
+        auto* s2 = table.allocate(p2, n2, 0);
+        if (!s1 || !s2) { std::fputs("[world-tick-selftest] allocate failed\n", stderr); return 1; }
+        // s1 walks forward (look down +Z which is default yaw=0).
+        // s2 stays still.
+        for (int i = 0; i < 32; ++i) {
+            net20::MoveInput m{};
+            m.forward = 1.0f;
+            s1->pending_moves.push_back(m);
+        }
+        dts_viewer::WorldTickContext ctx{};
+        ctx.max_moves_per_tick = 32;
+        for (int i = 0; i < 32; ++i) {
+            dts_viewer::world_tick(table, ctx, 1.0f / 32.0f);
+        }
+        const float dist_s1 = glm::length(s1->player_state.pos);
+        const float dist_s2 = glm::length(s2->player_state.pos);
+        std::fprintf(stderr,
+            "[world-tick-selftest] s1 pos=(%.2f,%.2f,%.2f) |d|=%.2f  s2 pos=(%.2f,%.2f,%.2f) |d|=%.2f\n",
+            s1->player_state.pos.x, s1->player_state.pos.y, s1->player_state.pos.z, dist_s1,
+            s2->player_state.pos.x, s2->player_state.pos.y, s2->player_state.pos.z, dist_s2);
+        if (dist_s1 < 1.0f) {
+            std::fputs("[world-tick-selftest] s1 did not move forward (expected |d| > 1m)\n", stderr);
+            return 1;
+        }
+        if (dist_s2 > 0.5f) {
+            // s2 may fall under gravity to y=0 from the spawn — that's fine.
+            // Just ensure it doesn't walk horizontally.
+            if (std::abs(s2->player_state.pos.x) > 0.1f ||
+                std::abs(s2->player_state.pos.z) > 0.1f) {
+                std::fputs("[world-tick-selftest] s2 drifted horizontally (expected stationary)\n", stderr);
+                return 1;
+            }
+        }
+        std::fputs("[world-tick-selftest] OK\n", stderr);
+        return 0;
     }
 
     if (tribes_dir.empty() && !skip_mission) {
@@ -184,11 +239,22 @@ int main(int argc, char** argv)
     const auto period = std::chrono::milliseconds(1000 / std::max(1, tick_hz));
     auto last_log = std::chrono::steady_clock::now();
     std::uint64_t tick = 0;
+    const float dt_sec = 1.0f / static_cast<float>(std::max(1, tick_hz));
+    dts_viewer::WorldTickContext world_ctx{};
+    // Future: populate world_ctx.terrain + world_ctx.bounds from the
+    // loaded mission. v1: empty HeightSampler (sample() returns 0) so
+    // players free-fall onto the implicit y=0 plane and walk on it.
 
     while (!g_quit.load()) {
         const auto t0 = std::chrono::steady_clock::now();
         ++tick;
         if (poll_stdin_quit()) g_quit.store(true);
+
+        // Spec 28/03: advance authoritative player state from each
+        // session's queued movecommands.
+        if (listener) {
+            dts_viewer::world_tick(listener->sessions(), world_ctx, dt_sec);
+        }
 
         const auto now = std::chrono::steady_clock::now();
         if (now - last_log >= std::chrono::seconds(1)) {
