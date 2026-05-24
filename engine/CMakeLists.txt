@@ -35,6 +35,7 @@ add_library(osengine STATIC
     src/cscript_host.cpp
     src/damage_resolver.cpp
     src/entity_state.cpp
+    src/flag_state.cpp
     src/ghost_emitter.cpp
     src/ghost_stream.cpp
     src/ghost_types.cpp

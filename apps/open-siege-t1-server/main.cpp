@@ -7,6 +7,7 @@
 
 #include <osengine/audio_sink.hpp>
 #include <osengine/damage_resolver.hpp>
+#include <osengine/flag_state.hpp>
 #include <osengine/ghost_emitter.hpp>
 #include <osengine/listen_server.hpp>
 #include <osengine/mission_loader.hpp>
@@ -65,6 +66,7 @@ void print_usage()
         "  --team-assigner-selftest  Run team_assigner selftest and exit\n"
         "  --projectile-selftest     Run projectile_world selftest and exit\n"
         "  --damage-selftest         Run damage_resolver selftest and exit\n"
+        "  --flag-selftest           Run flag_state selftest and exit\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
@@ -112,6 +114,7 @@ int main(int argc, char** argv)
     bool team_assigner_selftest = false;
     bool projectile_selftest = false;
     bool damage_selftest = false;
+    bool flag_selftest = false;
     bool skip_mission = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -126,6 +129,7 @@ int main(int argc, char** argv)
         if (a == "--team-assigner-selftest") { team_assigner_selftest = true; continue; }
         if (a == "--projectile-selftest") { projectile_selftest = true; continue; }
         if (a == "--damage-selftest") { damage_selftest = true; continue; }
+        if (a == "--flag-selftest") { flag_selftest = true; continue; }
         if (a == "--team-balance" && i + 1 < argc) {
             const std::string v = argv[++i];
             team_balance = !(v == "off" || v == "false" || v == "0");
@@ -176,6 +180,10 @@ int main(int argc, char** argv)
 
     if (damage_selftest) {
         return dts_viewer::damage_resolver_selftest();
+    }
+
+    if (flag_selftest) {
+        return dts_viewer::FlagWorld::selftest();
     }
 
     if (world_tick_selftest) {
@@ -297,9 +305,12 @@ int main(int argc, char** argv)
     const float dt_sec = 1.0f / static_cast<float>(std::max(1, tick_hz));
     dts_viewer::WorldTickContext world_ctx{};
     dts_viewer::ProjectileWorld projectiles;
-    std::vector<dts_viewer::HitEvent>  tick_hits;
-    std::vector<dts_viewer::KillEvent> tick_kills;
-    dts_viewer::DamageRules            damage_rules;
+    std::vector<dts_viewer::HitEvent>     tick_hits;
+    std::vector<dts_viewer::KillEvent>    tick_kills;
+    std::vector<dts_viewer::CaptureEvent> tick_captures;
+    dts_viewer::DamageRules               damage_rules;
+    dts_viewer::FlagWorld                 flags;
+    if (mission) flags.load_from_mission(*mission);
     // Future: populate world_ctx.terrain + world_ctx.bounds from the
     // loaded mission. v1: empty HeightSampler (sample() returns 0) so
     // players free-fall onto the implicit y=0 plane and walk on it.
@@ -323,8 +334,22 @@ int main(int argc, char** argv)
                 std::chrono::steady_clock::now().time_since_epoch()).count();
             dts_viewer::apply_hits(listener->sessions(), tick_hits, tick_kills,
                                    now_ms, damage_rules);
+            // Spec 28/08 — flags must hear about kills before respawn moves
+            // the corpse (so the drop position matches the death position).
+            for (const auto& k : tick_kills) {
+                // The session's player_state still holds the death pos
+                // because respawn_due hasn't fired yet this tick.
+                for (auto* s : listener->sessions().active_sessions()) {
+                    if (s && s->player_slot == k.victim_slot) {
+                        flags.on_player_died(k.victim_slot, s->player_state.pos, now_ms);
+                        break;
+                    }
+                }
+            }
             dts_viewer::respawn_due(listener->sessions(), listener->spawn_points(),
                                     now_ms, damage_rules);
+            tick_captures.clear();
+            flags.tick(listener->sessions(), tick_captures, now_ms);
         }
 
         const auto now = std::chrono::steady_clock::now();
