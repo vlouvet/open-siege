@@ -5,6 +5,15 @@ if(NOT DEFINED CI)
     set(CI false)
 endif()
 
+# Default to Release. cscript_core defines TORQUE_DEBUG iff NDEBUG is unset,
+# and an empty CMAKE_BUILD_TYPE flips that on — which shifts SimObject's
+# vtable by 16 bytes and surfaces as a "non-virtual thunk to
+# SimObject::onTamlCustomRead" link error from any consumer built Release.
+# Pinning here keeps every subdirectory in sync.
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 # Track 26 spec 09: opt-in toggles for the upstream wxWidgets-based tools
 # (don't build on macOS — see CLAUDE.md) and our reverse-engineered apps
 # (dts-viewer + open-siege-t1-{client,server} + net-test-client). Default
