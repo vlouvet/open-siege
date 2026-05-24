@@ -107,6 +107,11 @@ public:
     // nullopt until the server's first server_info reaches us.
     std::optional<ServerInfo> server_info() const;
 
+    // Spec 29/08 — queue an outgoing chat line. scope: 0=Global, 1=Team.
+    // v1 stub: logs to stderr. Will encode + send via the event
+    // sub-stream once spec 28/10b lands the wire format.
+    void send_chat(const std::string& text, std::uint8_t scope);
+
     // Diagnostics.
     bool   running() const { return running_.load(std::memory_order_relaxed); }
     int    packets_seen() const { return packets_seen_.load(std::memory_order_relaxed); }

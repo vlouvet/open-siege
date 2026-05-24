@@ -28,6 +28,7 @@
 #include "hud_glue.hpp"            // spec 29/05
 #include "spawn_ui.hpp"            // spec 29/06
 #include "flag_ui.hpp"             // spec 29/07
+#include "chat_ui.hpp"             // spec 29/08
 
 #include <SDL2/SDL.h>
 
@@ -258,6 +259,9 @@ int main(int argc, char** argv)
     // a server-broadcast match-state event lands).
     open_siege::FlagUiState flag_ui;
 
+    // Spec 29/08 — chat input capture state.
+    open_siege::ChatUiState chat_ui;
+
     // Spec 29/04 — jitter buffer for remote-player smoothing. We record
     // every Player ghost's pos/yaw into the registry indexed by ghost_id
     // and sample at (now_ms - default_display_delay_ms) when rendering.
@@ -287,6 +291,26 @@ int main(int argc, char** argv)
                 || ev.type == SDL_MOUSEBUTTONUP || ev.type == SDL_TEXTINPUT)) {
                 continue;
             }
+            // Spec 29/08 — when chat is capturing, route SDL_KEYDOWN /
+            // SDL_TEXTINPUT to the chat box first; only when capture
+            // exits do we fall through to gameplay keys.
+            if (chat_ui.capturing) {
+                using CR = open_siege::CaptureResult;
+                auto r = open_siege::feed_event(chat_ui, ev);
+                if (r == CR::Submitted) {
+                    if (!chat_ui.buffer.empty()) {
+                        net.send_chat(chat_ui.buffer,
+                                      std::uint8_t(chat_ui.scope));
+                    }
+                    open_siege::clear_capture(chat_ui);
+                } else if (r == CR::Aborted) {
+                    open_siege::clear_capture(chat_ui);
+                }
+                if (ev.type == SDL_KEYDOWN || ev.type == SDL_TEXTINPUT
+                    || ev.type == SDL_KEYUP) {
+                    continue;     // swallow from gameplay
+                }
+            }
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE)
                 g_quit.store(true);
             // Spec 29/05 — Tab toggles scoreboard. Hold to show; release
@@ -295,6 +319,16 @@ int main(int argc, char** argv)
                 hud_ui.scoreboard_visible = true;
             if (ev.type == SDL_KEYUP   && ev.key.keysym.sym == SDLK_TAB)
                 hud_ui.scoreboard_visible = false;
+            // Spec 29/08 — T = global, Y = team. Begin capture; the
+            // next pumped events go to the chat box (handled above).
+            if (ev.type == SDL_KEYDOWN && !ev.key.repeat) {
+                if (ev.key.keysym.sym == SDLK_t)
+                    open_siege::begin_capture(chat_ui,
+                        open_siege::ChatScope::Global);
+                else if (ev.key.keysym.sym == SDLK_y)
+                    open_siege::begin_capture(chat_ui,
+                        open_siege::ChatScope::Team);
+            }
             // F1 toggles mouse capture (dev convenience while testing).
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_F1) {
                 mouse_captured = !mouse_captured;
@@ -319,21 +353,27 @@ int main(int argc, char** argv)
 
         // Spec 29/03 — sample keyboard state once per frame and push
         // into NetClient. The IO thread reads pending_input every 33 ms.
+        // 29/08: zero the movement input while chat is capturing so
+        // WASD typing doesn't move the avatar.
         if (net.running()) {
-            const Uint8* keys = SDL_GetKeyboardState(nullptr);
             net20::MoveInput in;
-            in.forward  = keys[SDL_SCANCODE_W] ? 1.0f : 0.0f;
-            in.backward = keys[SDL_SCANCODE_S] ? 1.0f : 0.0f;
-            in.left     = keys[SDL_SCANCODE_A] ? 1.0f : 0.0f;
-            in.right    = keys[SDL_SCANCODE_D] ? 1.0f : 0.0f;
-            in.jet      = keys[SDL_SCANCODE_SPACE] ? true : false;
-            in.crouch   = keys[SDL_SCANCODE_LCTRL] ? true : false;
-            in.jump     = jump_edge_pending;
-            jump_edge_pending = false;
-            const Uint32 buttons = SDL_GetMouseState(nullptr, nullptr);
-            in.trigger  = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
-            in.yaw_delta   =  mouse_dx_accum * kMouseSensitivity;
-            in.pitch_delta = -mouse_dy_accum * kMouseSensitivity;  // up = +pitch
+            if (!chat_ui.capturing) {
+                const Uint8* keys = SDL_GetKeyboardState(nullptr);
+                in.forward  = keys[SDL_SCANCODE_W] ? 1.0f : 0.0f;
+                in.backward = keys[SDL_SCANCODE_S] ? 1.0f : 0.0f;
+                in.left     = keys[SDL_SCANCODE_A] ? 1.0f : 0.0f;
+                in.right    = keys[SDL_SCANCODE_D] ? 1.0f : 0.0f;
+                in.jet      = keys[SDL_SCANCODE_SPACE] ? true : false;
+                in.crouch   = keys[SDL_SCANCODE_LCTRL] ? true : false;
+                in.jump     = jump_edge_pending;
+                jump_edge_pending = false;
+                const Uint32 buttons = SDL_GetMouseState(nullptr, nullptr);
+                in.trigger  = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+                in.yaw_delta   =  mouse_dx_accum * kMouseSensitivity;
+                in.pitch_delta = -mouse_dy_accum * kMouseSensitivity;  // up = +pitch
+            } else {
+                jump_edge_pending = false;
+            }
             net.set_input(in);
         }
 
@@ -425,6 +465,7 @@ int main(int argc, char** argv)
             open_siege::draw_spawn_ui(spawn_ui, t_ms, width, height);
             open_siege::draw_flag_carrier_hud(0, width, height);
             open_siege::draw_match_end_banner(flag_ui, t_ms, width, height);
+            open_siege::draw_input_box(chat_ui, width, height);
         }
 
         // Flush ImGui draw lists (HUD text + overlays) on top of the

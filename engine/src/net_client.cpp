@@ -195,6 +195,15 @@ std::optional<ServerInfo> NetClient::server_info() const
     return server_info_;
 }
 
+void NetClient::send_chat(const std::string& text, std::uint8_t scope)
+{
+    // v1 stub — the wire format lives in spec 28/10b. Log for now so
+    // local-loopback testing still shows the chat capture working.
+    std::fprintf(stderr, "[net-client/chat] scope=%u len=%zu: %.*s\n",
+                 unsigned(scope), text.size(),
+                 int(text.size()), text.c_str());
+}
+
 // -------------------- spec 29/02b — server_info codec ---------------
 
 std::vector<std::uint8_t> encode_server_info(const ServerInfo& info,
