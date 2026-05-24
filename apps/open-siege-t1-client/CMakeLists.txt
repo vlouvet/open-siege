@@ -19,13 +19,25 @@ if(UNIX AND NOT APPLE OR WIN32)
     find_package(GLEW REQUIRED)
 endif()
 
+# Spec 29/01 — pull in the shared dts_viewer_render library so the
+# client can call the same GL renderers (entity, terrain, hud, ...)
+# dts-viewer uses. Guarded for top-level builds that already added
+# examples/dts-viewer separately.
+if(NOT TARGET dts_viewer_render)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../examples/dts-viewer
+                     ${CMAKE_CURRENT_BINARY_DIR}/dts-viewer)
+endif()
+
 add_executable(open-siege-t1-client main.cpp)
 
 target_include_directories(open-siege-t1-client PRIVATE ${SDL2_INCLUDE_DIRS})
 
-# Link order: lib3space -> cscript_core -> SDL2 (see engine/CMakeLists.txt
-# header comment about ld.bfd single-pass on MinGW).
+# Link order: dts_viewer_render -> lib3space -> cscript_core -> SDL2
+# (see engine/CMakeLists.txt header comment about ld.bfd single-pass
+# on MinGW). osengine + the .a's must come AFTER dts_viewer_render so
+# the library's references resolve forwards into them.
 target_link_libraries(open-siege-t1-client PRIVATE
+    dts_viewer_render
     osengine
     ${OSENGINE_LIB3SPACE_A}
     ${OSENGINE_CSCRIPT_CORE_A}

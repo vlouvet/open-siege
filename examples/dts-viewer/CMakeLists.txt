@@ -31,9 +31,20 @@ endif()
 
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
 
-add_executable(dts-viewer
-    main.cpp
-    # Viewer-only renderers (GL):
+# Spec 29/01 — promote GL-only renderers + HUD + asset glue into a
+# shared static library so apps/open-siege-t1-client can link the same
+# rendering code dts-viewer uses. Editor-only ImGui sources (asset
+# browser, inspector, help menu, mission switcher) stay in the
+# dts-viewer executable; the t1-client doesn't need them.
+#
+# Headers in examples/dts-viewer/ become PUBLIC include dirs of the
+# library so consumers can `#include "entity_renderer.hpp"` directly.
+# The library itself does NOT carry SDL2 / GL / cscript_core / lib3space
+# in its link line — those are resolved by the consuming executable so
+# the ld.bfd single-pass ordering (lib3space -> cscript_core -> SDL2)
+# stays the executable's responsibility (see top comment in this file).
+add_library(dts_viewer_render STATIC
+    # Viewer renderers (GL):
     interior_renderer.cpp
     skybox_renderer.cpp
     lighting.cpp
@@ -42,6 +53,32 @@ add_executable(dts-viewer
     screenshot.cpp
     entity_renderer.cpp
     mission_bounds_vis.cpp
+    # HUD + audio:
+    hud.cpp
+    audio.cpp
+    # Asset glue:
+    asset_resolver.cpp
+    asset_cache.cpp
+    open_url.cpp
+    # Engine-tied script wrappers:
+    entity_bindings.cpp
+    projectile.cpp)
+
+target_include_directories(dts_viewer_render PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+    ${SDL2_INCLUDE_DIRS})
+
+# Transitive osengine dependency: text_renderer / hud / entity_renderer
+# all use osengine types (cscript_host, mission_loader, paths, etc.).
+target_link_libraries(dts_viewer_render PUBLIC osengine OpenGL::GL)
+if(UNIX AND NOT APPLE OR WIN32)
+    target_link_libraries(dts_viewer_render PUBLIC GLEW::GLEW)
+endif()
+
+add_executable(dts-viewer
+    main.cpp
     # Editor UI (ImGui):
     imgui_layer.cpp
     asset_browser.cpp
@@ -49,17 +86,6 @@ add_executable(dts-viewer
     help_menu.cpp
     viewer_state.cpp
     mission_switcher.cpp
-    # HUD + audio (SDL/miniaudio — engine has wav_loader + mission_sounds):
-    hud.cpp
-    audio.cpp
-    # Asset glue (filesystem):
-    asset_resolver.cpp
-    asset_cache.cpp
-    open_url.cpp
-    # Engine-tied script wrappers still in dts-viewer pending split
-    # (track 26 spec 02 splits entity_state out of entity_renderer):
-    entity_bindings.cpp
-    projectile.cpp
     # ImGui itself:
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
@@ -80,6 +106,7 @@ target_include_directories(dts-viewer PRIVATE
 # come immediately after libcscript_core.a so those refs resolve.
 # OSENGINE_* cache vars are set by engine/CMakeLists.txt.
 target_link_libraries(dts-viewer PRIVATE
+    dts_viewer_render
     osengine
     ${OSENGINE_LIB3SPACE_A}
     ${OSENGINE_CSCRIPT_CORE_A}
