@@ -26,6 +26,7 @@
 #include <entity_renderer.hpp>     // from dts_viewer_render
 #include "client_imgui.hpp"        // spec 29/05b
 #include "hud_glue.hpp"            // spec 29/05
+#include "spawn_ui.hpp"            // spec 29/06
 
 #include <SDL2/SDL.h>
 
@@ -249,6 +250,9 @@ int main(int argc, char** argv)
     // Spec 29/05 — HUD state (scoreboard toggle + message feed).
     open_siege::HudGlueState hud_ui;
 
+    // Spec 29/06 — death overlay state. dead_since_ms is local-clock.
+    open_siege::SpawnUiState spawn_ui;
+
     // Spec 29/04 — jitter buffer for remote-player smoothing. We record
     // every Player ghost's pos/yaw into the registry indexed by ghost_id
     // and sample at (now_ms - default_display_delay_ms) when rendering.
@@ -398,11 +402,18 @@ int main(int argc, char** argv)
             }
         }
 
-        // Spec 29/05 — populate HUD overlays from the current net state.
-        if (net.running()) {
+        // Spec 29/05 + 29/06 — overlays driven from net state. Both
+        // need the local slot from server_info; spawn_ui falls back to
+        // Alive when the server hasn't told us our slot yet.
+        {
             int my_slot = -1;
             if (auto si = net.server_info()) my_slot = int(si->player_slot);
-            open_siege::render_net_hud(net, hud_ui, my_slot, width, height);
+            const std::uint32_t t_ms = now_ms_since_start();
+            if (net.running()) {
+                open_siege::render_net_hud(net, hud_ui, my_slot, width, height);
+            }
+            open_siege::update_spawn_ui(spawn_ui, net, my_slot, t_ms);
+            open_siege::draw_spawn_ui(spawn_ui, t_ms, width, height);
         }
 
         // Flush ImGui draw lists (HUD text + overlays) on top of the
