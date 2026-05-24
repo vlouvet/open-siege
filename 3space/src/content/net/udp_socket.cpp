@@ -1,5 +1,13 @@
 #include "content/net/udp_socket.hpp"
 
+// gcc 15 on Linux is strict: std::strerror / std::snprintf used inside the
+// platform #ifdef block below need <cstring> / <cstdio> visible BEFORE the
+// inline helpers are parsed. Apple-clang previously pulled them in via
+// transitive winsock2/system includes; gcc 15's headers don't.
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
 #  include <winsock2.h>
@@ -30,8 +38,6 @@
 #  define SOCK_WOULD_BLOCK (errno == EAGAIN || errno == EWOULDBLOCK)
 #endif
 
-#include <cerrno>
-#include <cstring>
 #include <utility>
 
 namespace studio::content::net
