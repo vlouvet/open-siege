@@ -1,6 +1,7 @@
 #include <osengine/server_listener.hpp>
 
 #include <osengine/ghost_emitter.hpp>
+#include <osengine/tah_burst_orchestrator.hpp>
 #include <osengine/tah_ghost_burst.hpp>
 #include <osengine/movecommand.hpp>
 #include <osengine/net_client.hpp>     // spec 29/02b — server_info codec
@@ -628,10 +629,22 @@ void ServerListener::run()
                     std::size_t total_sent = 0;
                     std::size_t pkt_count = 0;
                     if (sess->is_tah_session) {
-                        for (std::size_t i = 0; i < kTahFirstGhostBurstCount; ++i) {
-                            const auto& p = kTahFirstGhostBurst[i];
-                            if (impl_->socket.send_to(peer, p.data, p.size)) {
-                                total_sent += p.size;
+                        // Spec 26/14c-I-4 — synthesise the TAH initial-
+                        // state dump per docs/clean-room-specs/TRIBES-
+                        // INITIAL-BURST.md. The orchestrator produces
+                        // per-session-correct VC headers (so retransmits
+                        // and acks work) and the scope-always-complete
+                        // bit on the last packet, which the previous
+                        // canned-byte replay (kTahFirstGhostBurst[]) did
+                        // not — TAH stayed stuck in "loading" because
+                        // the bit was tied to the captured session's
+                        // state and never satisfied the new client.
+                        TahBurstOrchestrator orch;
+                        auto burst = orch.build_initial_burst(
+                            *sess, /*mission*/ nullptr, now_ms);
+                        for (auto& p : burst) {
+                            if (impl_->socket.send_to(peer, p.data(), p.size())) {
+                                total_sent += p.size();
                                 ++pkt_count;
                             }
                         }
@@ -705,10 +718,19 @@ void ServerListener::run()
                         std::size_t total_sent = 0;
                         std::size_t pkt_count = 0;
                         if (sess->is_tah_session) {
-                            for (std::size_t i = 0; i < kTahFirstGhostBurstCount; ++i) {
-                                const auto& p = kTahFirstGhostBurst[i];
-                                if (impl_->socket.send_to(peer, p.data, p.size)) {
-                                    total_sent += p.size;
+                            // Spec 26/14c-I-4 — see comment on the other
+                            // TAH-burst-emit site above. Same orchestrator
+                            // path used here for the non-movecmd-fallback
+                            // case (TAH's progression events arrive via
+                            // arbitrarily-shaped DataPackets, not the
+                            // canonical pure-ack the first-data path
+                            // expects).
+                            TahBurstOrchestrator orch;
+                            auto burst = orch.build_initial_burst(
+                                *sess, /*mission*/ nullptr, now_ms);
+                            for (auto& p : burst) {
+                                if (impl_->socket.send_to(peer, p.data(), p.size())) {
+                                    total_sent += p.size();
                                     ++pkt_count;
                                 }
                             }

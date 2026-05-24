@@ -22,6 +22,7 @@
 #include <osengine/scoreboard.hpp>
 #include <osengine/server_listener.hpp>
 #include <osengine/session_table.hpp>
+#include <osengine/tah_burst_orchestrator.hpp>
 #include <osengine/tah_class_encoders.hpp>
 #include <osengine/tah_vc_outbound.hpp>
 #include <osengine/team_assigner.hpp>
@@ -91,6 +92,7 @@ void print_usage()
         "  --ghost-encoder-selftest  Run ghost encoder round-trip selftest and exit\n"
         "  --tah-class-encoders-selftest  Run TAH per-class encoders selftest and exit\n"
         "  --tah-vc-outbound-selftest  Run per-session VC outbound header selftest and exit\n"
+        "  --tah-burst-orchestrator-selftest  Run TAH burst orchestrator selftest and exit\n"
         "  --help                    This message\n",
         stderr);
 }
@@ -130,6 +132,7 @@ int main(int argc, char** argv)
     bool ghost_encoder_selftest = false;
     bool tah_class_encoders_selftest_flag = false;
     bool tah_vc_outbound_selftest_flag = false;
+    bool tah_burst_orchestrator_selftest_flag = false;
     bool no_listener = false;
     bool no_canned_burst = false;
     bool no_ghost_emit = false;
@@ -158,6 +161,7 @@ int main(int argc, char** argv)
         if (a == "--ghost-encoder-selftest") { ghost_encoder_selftest = true; continue; }
         if (a == "--tah-class-encoders-selftest") { tah_class_encoders_selftest_flag = true; continue; }
         if (a == "--tah-vc-outbound-selftest") { tah_vc_outbound_selftest_flag = true; continue; }
+        if (a == "--tah-burst-orchestrator-selftest") { tah_burst_orchestrator_selftest_flag = true; continue; }
         if (a == "--no-listener") { no_listener = true; continue; }
         if (a == "--no-canned-burst") { no_canned_burst = true; continue; }
         if (a == "--no-ghost-emit") { no_ghost_emit = true; continue; }
@@ -228,6 +232,10 @@ int main(int argc, char** argv)
 
     if (tah_vc_outbound_selftest_flag) {
         return dts_viewer::tah_vc_outbound_selftest();
+    }
+
+    if (tah_burst_orchestrator_selftest_flag) {
+        return dts_viewer::tah_burst_orchestrator_selftest();
     }
 
     if (team_assigner_selftest) {
