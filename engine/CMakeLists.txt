@@ -43,6 +43,7 @@ add_library(osengine STATIC
     src/hud_bindings.cpp
     src/inv_station.cpp
     src/listen_server.cpp
+    src/map_cycle.cpp
     src/match_state.cpp
     src/mission.cpp
     src/mission_bounds.cpp

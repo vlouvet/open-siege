@@ -11,6 +11,7 @@
 #include <osengine/flag_state.hpp>
 #include <osengine/ghost_emitter.hpp>
 #include <osengine/listen_server.hpp>
+#include <osengine/map_cycle.hpp>
 #include <osengine/match_state.hpp>
 #include <osengine/mission_loader.hpp>
 #include <osengine/mission_sounds.hpp>
@@ -73,6 +74,8 @@ void print_usage()
         "  --match-selftest          Run match_state selftest and exit\n"
         "  --chat-selftest           Run chat_channel selftest and exit\n"
         "  --scoreboard-selftest     Run scoreboard selftest and exit\n"
+        "  --mapcycle-selftest       Run map_cycle selftest and exit\n"
+        "  --map-cycle <n1>,<n2>,..  Comma-separated mission rotation (default: --mission)\n"
         "  --cap-limit <n>           Captures to win the match (default 5)\n"
         "  --time-limit <min>        Match time limit in minutes (default 25)\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
@@ -126,6 +129,8 @@ int main(int argc, char** argv)
     bool match_selftest = false;
     bool chat_selftest = false;
     bool scoreboard_selftest = false;
+    bool mapcycle_selftest = false;
+    std::string map_cycle_csv;
     int  cap_limit  = 5;
     int  time_limit_min = 25;
     bool skip_mission = false;
@@ -146,6 +151,8 @@ int main(int argc, char** argv)
         if (a == "--match-selftest") { match_selftest = true; continue; }
         if (a == "--chat-selftest") { chat_selftest = true; continue; }
         if (a == "--scoreboard-selftest") { scoreboard_selftest = true; continue; }
+        if (a == "--mapcycle-selftest") { mapcycle_selftest = true; continue; }
+        if (a == "--map-cycle" && i + 1 < argc) { map_cycle_csv = argv[++i]; continue; }
         if (a == "--cap-limit" && i + 1 < argc) { cap_limit = std::atoi(argv[++i]); continue; }
         if (a == "--time-limit" && i + 1 < argc) { time_limit_min = std::atoi(argv[++i]); continue; }
         if (a == "--team-balance" && i + 1 < argc) {
@@ -214,6 +221,10 @@ int main(int argc, char** argv)
 
     if (scoreboard_selftest) {
         return dts_viewer::scoreboard_selftest();
+    }
+
+    if (mapcycle_selftest) {
+        return dts_viewer::MapCycle::selftest();
     }
 
     if (world_tick_selftest) {
@@ -348,6 +359,22 @@ int main(int argc, char** argv)
     dts_viewer::MatchState match(match_cfg);
     dts_viewer::ChatChannel chat;
     auto prev_phase = match.phase();
+    // Spec 28/11 — assemble the map cycle. CSV overrides --mission.
+    std::vector<std::string> cycle_list;
+    if (!map_cycle_csv.empty()) {
+        std::size_t start = 0;
+        while (start < map_cycle_csv.size()) {
+            const auto comma = map_cycle_csv.find(',', start);
+            const auto end = (comma == std::string::npos) ? map_cycle_csv.size() : comma;
+            std::string name = map_cycle_csv.substr(start, end - start);
+            if (!name.empty()) cycle_list.push_back(std::move(name));
+            start = end + 1;
+        }
+    }
+    if (cycle_list.empty()) cycle_list.push_back(mission_name);
+    dts_viewer::MapCycle map_cycle(cycle_list);
+    std::fprintf(stderr, "[server] map cycle: %zu map(s), current=%s\n",
+                 cycle_list.size(), map_cycle.current().c_str());
     // Future: populate world_ctx.terrain + world_ctx.bounds from the
     // loaded mission. v1: empty HeightSampler (sample() returns 0) so
     // players free-fall onto the implicit y=0 plane and walk on it.
@@ -421,6 +448,42 @@ int main(int argc, char** argv)
                         (unsigned)match.red_score(),
                         (unsigned)match.blue_score());
                     chat.emit_system(buf, now_ms);
+                } else if (prev_phase == dts_viewer::MatchPhase::EndHold
+                           && match.phase() == dts_viewer::MatchPhase::Warmup
+                           && !skip_mission) {
+                    // Spec 28/11 — cycle to the next map.
+                    map_cycle.advance();
+                    const auto& next = map_cycle.current();
+                    std::fprintf(stderr, "[server] cycling to map: %s\n", next.c_str());
+                    chat.emit_system(std::string("Map changing: ") + next, now_ms);
+                    const auto missions_dir = tribes_dir / "base" / "missions";
+                    const auto base_dir     = tribes_dir / "base";
+                    auto reloaded = dts_viewer::load_mission(missions_dir, base_dir, next);
+                    if (reloaded) {
+                        if (!skip_mission) {
+                            dts_viewer::mission_sounds_unload(mission_audio, sink);
+                        }
+                        mission       = std::move(reloaded);
+                        mission_audio = dts_viewer::mission_sounds_load(
+                            mission->scene, base_dir, sink);
+                        listener->set_spawn_points(
+                            dts_viewer::extract_spawn_points(*mission));
+                        flags.load_from_mission(*mission);
+                        // Reset every active session's authoritative state.
+                        for (auto* s : listener->sessions().active_sessions()) {
+                            if (!s) continue;
+                            s->kills  = 0;
+                            s->deaths = 0;
+                            s->player_state.health = 100.0f;
+                            s->life   = dts_viewer::Session::LifeState::Alive;
+                            s->pending_moves.clear();
+                            dts_viewer::place_at_spawn(*s, listener->spawn_points());
+                        }
+                    } else {
+                        std::fprintf(stderr,
+                            "[server] map cycle: failed to load %s — staying on current\n",
+                            next.c_str());
+                    }
                 }
                 prev_phase = match.phase();
             }
