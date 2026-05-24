@@ -10,6 +10,49 @@
 // bytes (TAH server retained state from an unclean prior session)
 // and TAH client rejected the resulting replay. cap1 is the
 // known-clean baseline.
+//
+// 2026-05-24 patch — scope-always-complete bit on kP10
+// ---------------------------------------------------
+// Per docs/clean-room-specs/TRIBES-INITIAL-BURST.md §3 and
+// docs/clean-room-specs/TRIBES-NETPROTO.md §5.0.3, the server
+// signals "all scope-always replication complete" via a 1-bit
+// flag at the very end of the ghost-update sub-stream in
+// scope-always mode. The layout at the tail of every phase-2
+// packet is:
+//   ... last record's per-class payload (last bit at pos L)
+//   bit L+1 : object-present terminator (must be 0)
+//   bit L+2 : scope-always-complete flag (0 or 1)
+//   bits L+3 .. (byte boundary - 1) : zero-padding
+// The original cap1 capture had this flag set to 0 on all 10
+// packets because the source session never completed its burst.
+// Replaying those bytes verbatim caused the TAH client to hang
+// at "loading…" forever — it correctly walks the bit stream and
+// sees scope-complete=0, so it keeps waiting for a packet that
+// signals completion.
+//
+// To unstick the client we set scope-complete=1 on the LAST
+// packet only (kP10). The bit-walk:
+//   * Last 1-bit of kP10 stream is at bit pos 1759 (byte 219
+//     bit 7, byte 0x97). That is the last bit of the last
+//     record's per-class payload.
+//   * Bit 1760 (byte 220 bit 0) is 0 — the object-present
+//     terminator.
+//   * Bit 1761 (byte 220 bit 1) is the scope-always-complete
+//     flag, originally 0; we set it to 1 here.
+//   * Bits 1762..1767 (byte 220 bits 2..7) stay 0 (padding).
+//
+// Net effect: kP10's byte[220] changes from 0x00 to 0x02.
+//
+// NOTE on validation: we could not independently verify the bit
+// position via parse_typed_packet, because that walker's per-
+// class decoders (ghost_types.cpp) cover only a subset of the
+// classes that real TAH packs into the burst — the walker
+// terminates early on a fluke 0 bit when it desyncs on an
+// unknown class's payload. The bit position chosen here follows
+// the spec authority for the tail layout; if the TAH client
+// continues to hang after this patch, the per-class layout
+// assumptions (not the spec layout) are the next thing to
+// audit.
 
 #include <osengine/tah_ghost_burst.hpp>
 
@@ -235,7 +278,7 @@ constexpr std::uint8_t kP10[221] = {
     0x00, 0x00, 0x00, 0x36, 0xb4, 0xff, 0x89, 0x6c, 0x63, 0xfb, 0xb2, 0x48,
     0x09, 0x20, 0x38, 0x36, 0xc8, 0x04, 0x00, 0x00, 0x88, 0x02, 0x00, 0x00,
     0xc8, 0x80, 0x98, 0x5e, 0x96, 0x18, 0xca, 0x22, 0x25, 0x80, 0x40, 0xf8,
-    0xff, 0xff, 0xff, 0x97, 0x00,
+    0xff, 0xff, 0xff, 0x97, 0x02,  // last byte was 0x00; bit 1 set -> scope-always-complete = 1
 };
 
 }  // namespace
