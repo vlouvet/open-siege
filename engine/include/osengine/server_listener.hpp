@@ -111,6 +111,17 @@ private:
 void build_accept_connect_reply(const std::uint8_t nonce[3],
                                 std::uint8_t out[16]);
 
+// Spec 26/10b — 18-byte Groove AcceptConnect builder. Echoes the
+// 3-byte per-session nonce at offsets 4..6, identical to vanilla.
+void build_groove_accept_connect_reply(const std::uint8_t nonce[3],
+                                       std::uint8_t out[18]);
+
+// Spec 26/10b — round-trip selftest: replay the captured Groove
+// RequestConnect, assert the listener responds with the correct
+// 18-byte AcceptConnect with the nonce echoed back, and confirm a
+// session was allocated. Returns 0 on success.
+int groove_handshake_selftest();
+
 // Run a synchronous in-process selftest: spawn a ServerListener bound
 // on an ephemeral port, send a synthetic RequestConnect, assert the
 // reply is correct. Returns 0 on success, non-zero on any failure.

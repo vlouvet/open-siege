@@ -82,6 +82,7 @@ void print_usage()
         "  --cap-limit <n>           Captures to win the match (default 5)\n"
         "  --time-limit <min>        Match time limit in minutes (default 25)\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
+        "  --groove-handshake-selftest  Run Groove RC + AC selftest (spec 26/10b)\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
         "  --ghost-emit-selftest     Run ghost emitter selftest and exit\n"
@@ -136,6 +137,7 @@ int main(int argc, char** argv)
     bool scoreboard_selftest = false;
     bool mapcycle_selftest = false;
     bool server_info_selftest = false;
+    bool groove_handshake_selftest = false;
     std::string map_cycle_csv;
     int  cap_limit  = 5;
     int  time_limit_min = 25;
@@ -160,6 +162,7 @@ int main(int argc, char** argv)
         if (a == "--scoreboard-selftest") { scoreboard_selftest = true; continue; }
         if (a == "--mapcycle-selftest") { mapcycle_selftest = true; continue; }
         if (a == "--server-info-selftest") { server_info_selftest = true; continue; }
+        if (a == "--groove-handshake-selftest") { groove_handshake_selftest = true; continue; }
         if (a == "--map-cycle" && i + 1 < argc) { map_cycle_csv = argv[++i]; continue; }
         if (a == "--cap-limit" && i + 1 < argc) { cap_limit = std::atoi(argv[++i]); continue; }
         if (a == "--time-limit" && i + 1 < argc) { time_limit_min = std::atoi(argv[++i]); continue; }
@@ -197,6 +200,10 @@ int main(int argc, char** argv)
 
     if (listener_selftest) {
         return dts_viewer::server_listener_selftest();
+    }
+
+    if (groove_handshake_selftest) {
+        return dts_viewer::groove_handshake_selftest();
     }
 
     if (ghost_emit_selftest) {

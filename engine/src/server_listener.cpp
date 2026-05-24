@@ -33,6 +33,19 @@ constexpr std::uint8_t kAcceptConnectTemplate[16] = {
     0x12, 0x01, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00,
 };
 
+// Spec 26/10b — 18-byte Groove AcceptConnect template captured from
+// captures/real-tribes/groove-session-20260522-124329.json packet 1.
+// Bytes 4..6 = per-session nonce echo (mirrors vanilla layout). The
+// trailing 11 bytes are constants from the capture; meaning not
+// independently verified, but bit-exact replay works with both the
+// existing net-test-client --groove probe and TribesAfterHope.exe.
+constexpr std::uint8_t kGrooveAcceptConnectTemplate[18] = {
+    0x07, 0x00, 0x09, 0x60,
+    0x00, 0x00, 0x00,                // <- nonce slot (bytes 4..6)
+    0x00, 0x02,
+    0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x80, 0x01, 0x01,
+};
+
 // First-ghost-burst template captured from the same handshake (third
 // packet, server->client, 223 bytes, type byte 0x0b = data_with_payload
 // in VC framing). Sent back to the client when we observe its first
@@ -65,10 +78,16 @@ bool looks_like_vanilla_request_connect(const std::vector<std::uint8_t>& pkt)
     return pkt.size() == 27 && pkt[0] == 0x07;
 }
 
-// 45-byte Groove RequestConnect: starts with 0x05 (TribesNext shape).
+// 45-byte Groove RequestConnect. Two known leading bytes:
+//   * 0x07  — Tribes 1 proxy capture (groove-session-20260522-124329.json
+//             packet 0); per-session nonce at offsets 10..12.
+//   * 0x05  — TribesAfterHope.exe variant observed 2026-05-24; layout
+//             not yet byte-mapped (pcap missing the 45B run). Treat the
+//             same wrt session allocation; reuse offsets 10..12 for the
+//             nonce (best-effort until cross-referenced).
 bool looks_like_groove_request_connect(const std::vector<std::uint8_t>& pkt)
 {
-    return pkt.size() == 45 && pkt[0] == 0x05;
+    return pkt.size() == 45 && (pkt[0] == 0x05 || pkt[0] == 0x07);
 }
 
 // 4-byte DataPacket / first ack (0x07 0x08 0x09 0x80 per BREAKTHROUGH).
@@ -125,6 +144,15 @@ void hex_prefix(const std::vector<std::uint8_t>& pkt, char* buf, std::size_t buf
 void build_accept_connect_reply(const std::uint8_t nonce[3], std::uint8_t out[16])
 {
     std::memcpy(out, kAcceptConnectTemplate, 16);
+    out[4] = nonce[0];
+    out[5] = nonce[1];
+    out[6] = nonce[2];
+}
+
+void build_groove_accept_connect_reply(const std::uint8_t nonce[3],
+                                       std::uint8_t out[18])
+{
+    std::memcpy(out, kGrooveAcceptConnectTemplate, 18);
     out[4] = nonce[0];
     out[5] = nonce[1];
     out[6] = nonce[2];
@@ -323,11 +351,80 @@ void ServerListener::run()
                 }
             }
             else if (looks_like_groove_request_connect(buf)) {
-                std::lock_guard<std::mutex> lk(impl_->mu);
-                ++impl_->stats.unknown_packets_received;
-                std::fprintf(stderr,
-                    "[listener] Groove RequestConnect from %s:%u (45B, ignored — v1 vanilla only)\n",
-                    peer.host.c_str(), peer.port);
+                // Spec 26/10b — Groove handshake. Per-session nonce at
+                // offsets 10..12 (verified from the 0x07-leading proxy
+                // capture; reused for the 0x05 TAH variant pending a
+                // clean byte map). Same session-allocate flow as
+                // vanilla, just with the 18-byte reply template.
+                const std::uint8_t nonce[3] = { buf[10], buf[11], buf[12] };
+                const bool was_new = impl_->sessions->find(peer) == nullptr;
+                Session* sess = impl_->sessions->allocate(peer, nonce, now_ms);
+                std::uint8_t groove_reply[18];
+                if (sess) {
+                    if (was_new) {
+                        sess->team = pick_team(*impl_->sessions, cfg_.team_balance);
+                        place_at_spawn(*sess, impl_->spawns);
+                        const char* tn = (sess->team == Team::Red)  ? "red"
+                                       : (sess->team == Team::Blue) ? "blue"
+                                       : "spec";
+                        std::fprintf(stderr,
+                            "[spawn] slot %u -> team %s at (%.1f, %.1f, %.1f) yaw=%.2f\n",
+                            sess->player_slot, tn,
+                            sess->spawn_pos.x, sess->spawn_pos.y, sess->spawn_pos.z,
+                            sess->spawn_yaw);
+                    }
+                    build_groove_accept_connect_reply(sess->nonce, groove_reply);
+                    const bool ok = impl_->socket.send_to(
+                        peer, groove_reply, sizeof(groove_reply));
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.request_connects_received;
+                    if (ok) {
+                        ++impl_->stats.accept_connects_sent;
+                        std::fprintf(stderr,
+                            "[listener] (Groove) RequestConnect from %s:%u -> slot %u, replied AcceptConnect (nonce %02x%02x%02x)\n",
+                            peer.host.c_str(), peer.port, sess->player_slot,
+                            sess->nonce[0], sess->nonce[1], sess->nonce[2]);
+                        if (was_new && !impl_->mission_name.empty()) {
+                            ServerInfo si;
+                            si.mission_short_name = impl_->mission_name;
+                            si.player_slot = sess->player_slot;
+                            si.team_raw = static_cast<std::uint8_t>(sess->team);
+                            si.server_tick = static_cast<std::uint32_t>(
+                                impl_->tick_counter);
+                            const auto si_bytes = encode_server_info(
+                                si, sess->next_send_seq, /*parity*/ false);
+                            impl_->socket.send_to(peer, si_bytes.data(),
+                                                  si_bytes.size());
+                            sess->next_send_seq = static_cast<std::uint16_t>(
+                                (sess->next_send_seq + 1) & 0x1FFu);
+                            if (sess->next_send_seq == 0) sess->next_send_seq = 1;
+                        }
+                    } else {
+                        impl_->last_error = impl_->socket.last_error();
+                        std::fprintf(stderr,
+                            "[listener] (Groove) send_to %s:%u failed: %s\n",
+                            peer.host.c_str(), peer.port, impl_->last_error.c_str());
+                    }
+                } else {
+                    // Table full — reply with RejectConnect just like
+                    // vanilla. The 24-byte RejectConnect template ends
+                    // up indistinguishable from vanilla on the wire;
+                    // TAH should at least surface "Server is full" to
+                    // the user rather than silently retry.
+                    build_reject_server_full(nonce, reject_reply);
+                    const bool ok = impl_->socket.send_to(
+                        peer, reject_reply, sizeof(reject_reply));
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.request_connects_received;
+                    if (ok) {
+                        ++impl_->stats.reject_connects_sent;
+                        std::fprintf(stderr,
+                            "[listener] (Groove) RequestConnect from %s:%u, replied RejectConnect (server full)\n",
+                            peer.host.c_str(), peer.port);
+                    } else {
+                        impl_->last_error = impl_->socket.last_error();
+                    }
+                }
             }
             else if (looks_like_first_data_packet(buf)) {
                 Session* sess = impl_->sessions->find(peer);
@@ -923,6 +1020,120 @@ int server_listener_selftest()
 
     std::fprintf(stderr,
         "[listener-selftest] OK — handshake + ghost burst + sessions + rejects + movecommands\n");
+    return 0;
+}
+
+int groove_handshake_selftest()
+{
+    using studio::content::net::Endpoint;
+    using studio::content::net::UdpSocket;
+
+    UdpSocket probe;
+    if (!probe.bind(0)) {
+        std::fprintf(stderr, "[groove-selftest] probe bind failed: %s\n",
+                     probe.last_error().c_str());
+        return 1;
+    }
+    UdpSocket bind_probe;
+    if (!bind_probe.bind(0)) {
+        std::fprintf(stderr, "[groove-selftest] bind_probe failed\n");
+        return 1;
+    }
+    const std::uint16_t listener_port = bind_probe.local_port();
+    bind_probe.close();
+
+    ServerListenerConfig cfg{};
+    cfg.port = listener_port;
+    cfg.tick_hz = 200;
+    cfg.enable_ghost_emit = false;
+    ServerListener listener(cfg);
+    if (!listener.start()) {
+        std::fprintf(stderr, "[groove-selftest] listener.start failed: %s\n",
+                     listener.last_error().c_str());
+        return 1;
+    }
+
+    // Captured Groove RequestConnect bytes (see kGrooveAcceptConnectTemplate
+    // comment for source). Nonce slot at offsets 10..12 is overwritten
+    // with a known sentinel so we can verify the reply echo.
+    std::uint8_t request[45] = {
+        0x07, 0x00, 0x12, 0x41, 0x81, 0xa1, 0xb1, 0xc7, 0xfa, 0x18,
+        0xde, 0xad, 0xbe,                        // <- nonce slot
+        0x00,
+        0x01, 0x00, 0x0d, 0x56, 0xc6, 0xbb,
+        0x6f, 0x09, 0xc4, 0x32, 0x1a, 0x11, 0xc0, 0x03, 0x89, 0xf1,
+        0x13, 0x7c, 0x02, 0x6f, 0xa7, 0x7c, 0x7c, 0x01, 0xca, 0xf1,
+        0x62, 0x82, 0x5d, 0xb6, 0x07,
+    };
+
+    Endpoint target{"127.0.0.1", listener_port};
+    if (!probe.send_to(target, request, sizeof(request))) {
+        std::fprintf(stderr, "[groove-selftest] probe.send_to failed\n");
+        listener.stop();
+        return 1;
+    }
+
+    std::vector<std::uint8_t> reply_buf;
+    Endpoint reply_peer;
+    for (int i = 0; i < 100; ++i) {
+        if (probe.try_recv(reply_buf, reply_peer)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    if (reply_buf.size() != 18) {
+        std::fprintf(stderr, "[groove-selftest] expected 18-byte reply, got %zu\n",
+                     reply_buf.size());
+        listener.stop();
+        return 1;
+    }
+    const std::uint8_t nonce[3] = { 0xde, 0xad, 0xbe };
+    std::uint8_t expected[18];
+    build_groove_accept_connect_reply(nonce, expected);
+    if (std::memcmp(reply_buf.data(), expected, 18) != 0) {
+        std::fprintf(stderr, "[groove-selftest] reply bytes mismatch\n");
+        std::fprintf(stderr, "  got:      ");
+        for (auto b : reply_buf) std::fprintf(stderr, "%02x ", b);
+        std::fprintf(stderr, "\n  expected: ");
+        for (auto b : expected) std::fprintf(stderr, "%02x ", b);
+        std::fprintf(stderr, "\n");
+        listener.stop();
+        return 1;
+    }
+    if (listener.sessions().size() != 1) {
+        std::fprintf(stderr, "[groove-selftest] expected 1 session, got %zu\n",
+                     listener.sessions().size());
+        listener.stop();
+        return 1;
+    }
+
+    // Variant B (0x05 leading byte): same listener should accept it
+    // too. Just sanity-check the predicate path; we don't have a fresh
+    // peer slot in this listener but the second RC is a retransmit-ish
+    // from the SAME peer so it should be accepted as a re-allocation.
+    request[0] = 0x05;
+    if (!probe.send_to(target, request, sizeof(request))) {
+        std::fprintf(stderr, "[groove-selftest] variant-B send failed\n");
+        listener.stop();
+        return 1;
+    }
+    reply_buf.clear();
+    for (int i = 0; i < 100; ++i) {
+        if (probe.try_recv(reply_buf, reply_peer)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    listener.stop();
+    if (reply_buf.size() != 18) {
+        std::fprintf(stderr, "[groove-selftest] variant-B expected 18B, got %zu\n",
+                     reply_buf.size());
+        return 1;
+    }
+    if (std::memcmp(reply_buf.data(), expected, 18) != 0) {
+        std::fprintf(stderr, "[groove-selftest] variant-B reply mismatch\n");
+        return 1;
+    }
+
+    std::fprintf(stderr,
+        "[groove-selftest] OK — both 0x07 and 0x05 variants handshake\n");
     return 0;
 }
 
