@@ -172,6 +172,116 @@ std::vector<std::uint8_t> encode_movecommand(const MoveCommandInputs& inputs)
     return std::move(w.bytes);
 }
 
+// Spec 28/02 — inverse of quantize_axis: wire 0..15 -> float in [0, 1].
+static float dequantize_axis(std::uint8_t v)
+{
+    if (v >= 15) return 1.0f;
+    return static_cast<float>(v) / 15.0f;
+}
+
+bool decode_movecommand(const std::uint8_t* data, std::size_t size,
+                        MoveCommandInputs& out)
+{
+    BitReader r(data, size);
+
+    // ----- VC header (§14.2) -----
+    if (!r.read_flag()) return false;             // bit 0 must be 1
+    out.connect_parity = r.read_flag();           // bit 1
+    out.send_seq = static_cast<std::uint16_t>(r.read_bits(9));
+    out.highest_acked_of_mine = static_cast<std::uint8_t>(r.read_bits(5));
+    out.ack_runs.clear();
+    while (true) {
+        const std::uint8_t len = static_cast<std::uint8_t>(r.read_bits(3));
+        if (r.fail()) return false;
+        if (len == 0) break;                      // ack-list terminator
+        const std::uint8_t start = static_cast<std::uint8_t>(r.read_bits(5));
+        if (r.fail()) return false;
+        AckRun run{};
+        run.length = len;
+        run.start_seq = start;
+        out.ack_runs.push_back(run);
+        if (out.ack_runs.size() > 64) return false;  // sanity
+    }
+    const std::uint8_t type_word = static_cast<std::uint8_t>(r.read_bits(5));
+    if (type_word != pkt_type::kDataPacket) return false;
+
+    // ----- Rate-control prefix -----
+    (void)r.read_flag();                          // R0
+    (void)r.read_flag();                          // R1
+
+    // ----- Event sub-stream -----
+    const bool e = r.read_flag();
+    if (e) {
+        // v1 server: we don't decode event-substream movecommand
+        // payloads (acks/chat). Reject and leave them for spec 28/10
+        // to wire up the inverse client_events::parse path.
+        return false;
+    }
+
+    // ----- Input sub-stream -----
+    const bool p = r.read_flag();
+    if (!p) return false;
+    if (r.read_flag()) return false;              // input header leading bit must be 0 (§17.7)
+    const std::uint8_t fov_wire = static_cast<std::uint8_t>(r.read_bits(8));
+    out.fov_degrees = (static_cast<float>(fov_wire) / 255.0f) * 135.0f;
+    out.first_move_seq = r.read_bits(32);
+    if (r.fail()) return false;
+
+    out.moves.clear();
+    MoveInput prev{};
+    bool first = true;
+    while (true) {
+        const bool another = r.read_flag();
+        if (r.fail()) return false;
+        if (!another) break;
+        MoveInput m{};
+        bool redundant = false;
+        if (!first) {
+            redundant = r.read_flag();
+        }
+        if (first || !redundant) {
+            const std::uint8_t fwd  = static_cast<std::uint8_t>(r.read_bits(4));
+            const std::uint8_t back = static_cast<std::uint8_t>(r.read_bits(4));
+            const std::uint8_t lf   = static_cast<std::uint8_t>(r.read_bits(4));
+            const std::uint8_t rt   = static_cast<std::uint8_t>(r.read_bits(4));
+            m.forward  = dequantize_axis(fwd);
+            m.backward = dequantize_axis(back);
+            m.left     = dequantize_axis(lf);
+            m.right    = dequantize_axis(rt);
+            m.jet      = r.read_flag();
+            m.jump     = r.read_flag();
+            m.crouch   = r.read_flag();
+        } else {
+            // Re-use prev's axes/buttons.
+            m.forward  = prev.forward;
+            m.backward = prev.backward;
+            m.left     = prev.left;
+            m.right    = prev.right;
+            m.jet      = prev.jet;
+            m.jump     = prev.jump;
+            m.crouch   = prev.crouch;
+        }
+        m.trigger              = r.read_flag();
+        m.item_action_present  = r.read_flag();
+        if (m.item_action_present) {
+            m.item_action = static_cast<std::uint8_t>(r.read_bits(8));
+        }
+        if (r.read_flag()) m.pitch_delta = r.read_float32_le();
+        if (r.read_flag()) m.yaw_delta   = r.read_float32_le();
+        if (r.fail()) return false;
+        prev = m;
+        out.moves.push_back(m);
+        if (out.moves.size() > 64) return false;  // sanity cap
+        first = false;
+    }
+
+    // Ghost sub-stream G flag follows; ignore for v1 server-side.
+    (void)r.read_flag();
+    // Trailing zero-pad to byte boundary is implicit.
+
+    return !r.fail();
+}
+
 std::vector<std::uint8_t> encode_movecommand_worked_example()
 {
     // §17.8 worked example — capture packet i=400. Inputs that recover

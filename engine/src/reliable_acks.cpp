@@ -24,6 +24,33 @@ void BitWriter::write_bits(std::uint32_t value, unsigned width)
     bit_pos += width;
 }
 
+std::uint32_t BitReader::read_bits(unsigned width)
+{
+    if (width == 0) return 0;
+    if (bit_pos + width > size * 8) {
+        overflow = true;
+        return 0;
+    }
+    std::uint32_t v = 0;
+    for (unsigned i = 0; i < width; ++i) {
+        const std::size_t p = bit_pos + i;
+        const std::uint8_t bit =
+            static_cast<std::uint8_t>((data[p >> 3] >> (p & 7)) & 1u);
+        v |= static_cast<std::uint32_t>(bit) << i;
+    }
+    bit_pos += width;
+    return v;
+}
+
+float BitReader::read_float32_le()
+{
+    const std::uint32_t u = read_bits(32);
+    if (overflow) return 0.0f;
+    float f = 0.0f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
+
 // --- AckTracker --------------------------------------------------------
 
 void AckTracker::on_receive(std::uint16_t server_send_seq)

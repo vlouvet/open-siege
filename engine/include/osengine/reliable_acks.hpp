@@ -55,6 +55,28 @@ struct BitWriter {
     std::size_t pos() const noexcept { return bit_pos; }
 };
 
+// Bitwise reader, LSB-first within byte (mirror of BitWriter). Used by
+// the movecommand decoder (spec 28/02) and any future VC-stream parser.
+// Reads past end-of-buffer set `overflow = true` and return 0.
+struct BitReader {
+    const std::uint8_t* data = nullptr;
+    std::size_t         size = 0;       // capacity in bytes
+    std::size_t         bit_pos = 0;
+    bool                overflow = false;
+
+    BitReader() = default;
+    BitReader(const std::uint8_t* d, std::size_t n) : data(d), size(n) {}
+
+    std::uint32_t read_bits(unsigned width);
+    bool          read_flag() { return read_bits(1) != 0; }
+    // Read a 32-bit IEEE-754 float written by BitWriter::write_bits(32).
+    // Returns 0.0f on overflow.
+    float         read_float32_le();
+    // True if any read attempted past size_bytes*8.
+    bool          fail() const noexcept { return overflow; }
+    std::size_t   pos() const noexcept { return bit_pos; }
+};
+
 // Packet-type / flag word values (§14.4).
 namespace pkt_type {
 constexpr std::uint8_t kDataPacket     = 0;

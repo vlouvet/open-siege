@@ -16,8 +16,10 @@
 // gameplay fields. Keep this header lean.
 
 #include "content/net/udp_socket.hpp"
+#include <osengine/movecommand.hpp>
 
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -35,6 +37,11 @@ struct Session
     std::uint16_t next_send_seq = 1;       // server replies start at seq 1
     std::uint16_t last_acked_recv_seq = 0;
     bool          ghost_burst_sent = false;
+
+    // Spec 28/02 — pending input from this peer. Drained by the per-tick
+    // world step (spec 28/03). Bounded by sanity at ~64 entries.
+    std::deque<net20::MoveInput> pending_moves;
+    std::uint32_t                last_applied_move_seq = 0;
 };
 
 class SessionTable

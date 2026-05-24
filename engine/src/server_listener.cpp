@@ -1,5 +1,6 @@
 #include <osengine/server_listener.hpp>
 
+#include <osengine/movecommand.hpp>
 #include <osengine/session_table.hpp>
 #include "content/net/udp_socket.hpp"
 
@@ -284,13 +285,50 @@ void ServerListener::run()
                 }
             }
             else {
-                char hexbuf[64] = {};
-                hex_prefix(buf, hexbuf, sizeof(hexbuf));
-                std::lock_guard<std::mutex> lk(impl_->mu);
-                ++impl_->stats.unknown_packets_received;
-                std::fprintf(stderr,
-                    "[listener] unknown %zuB from %s:%u: %s\n",
-                    buf.size(), peer.host.c_str(), peer.port, hexbuf);
+                // Spec 28/02: try to decode as a movecommand DataPacket.
+                // We only attempt this when there's a live session for the
+                // peer; otherwise it's stray traffic.
+                Session* sess = impl_->sessions->find(peer);
+                net20::MoveCommandInputs mc{};
+                const bool ok = sess != nullptr
+                    && buf.size() >= 8
+                    && net20::decode_movecommand(buf.data(), buf.size(), mc);
+                if (ok) {
+                    impl_->sessions->touch(peer, now_ms);
+                    {
+                        std::lock_guard<std::mutex> lk(impl_->mu);
+                        impl_->stats.movecommands_received += mc.moves.size();
+                    }
+                    // Push moves onto session queue, capped at 64 to bound
+                    // memory if a misbehaving client floods us.
+                    std::uint32_t seq = mc.first_move_seq;
+                    for (const auto& m : mc.moves) {
+                        if (seq > sess->last_applied_move_seq) {
+                            sess->pending_moves.push_back(m);
+                            if (sess->pending_moves.size() > 64) {
+                                sess->pending_moves.pop_front();
+                            }
+                        }
+                        ++seq;
+                    }
+                } else if (sess) {
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.malformed_movecommands;
+                    char hexbuf[64] = {};
+                    hex_prefix(buf, hexbuf, sizeof(hexbuf));
+                    std::fprintf(stderr,
+                        "[listener] malformed movecommand %zuB from %s:%u (slot %u): %s\n",
+                        buf.size(), peer.host.c_str(), peer.port,
+                        sess->player_slot, hexbuf);
+                } else {
+                    char hexbuf[64] = {};
+                    hex_prefix(buf, hexbuf, sizeof(hexbuf));
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.unknown_packets_received;
+                    std::fprintf(stderr,
+                        "[listener] unknown %zuB from %s:%u: %s\n",
+                        buf.size(), peer.host.c_str(), peer.port, hexbuf);
+                }
             }
         }
 
@@ -604,8 +642,128 @@ int server_listener_selftest()
     }
     listener4.stop();
 
+    // Phase 5 (spec 28/02): movecommand round-trip + listener ingestion.
+    // (a) encode a known MoveCommandInputs, decode it, assert field-equal.
+    {
+        net20::MoveCommandInputs src{};
+        src.send_seq = 7;
+        src.connect_parity = true;
+        src.highest_acked_of_mine = 3;
+        src.fov_degrees = 90.0f;
+        src.first_move_seq = 100;
+        net20::MoveInput m{};
+        m.forward = 1.0f; m.left = 0.5f;
+        m.jet = true; m.jump = true;
+        m.trigger = true;
+        m.yaw_delta = 0.125f;
+        m.pitch_delta = -0.0625f;
+        src.moves.push_back(m);
+        m.jump = false;
+        src.moves.push_back(m);
+        const auto bytes = net20::encode_movecommand(src);
+        net20::MoveCommandInputs dec{};
+        if (!net20::decode_movecommand(bytes.data(), bytes.size(), dec)) {
+            std::fprintf(stderr, "[listener-selftest] phase5: decode failed\n");
+            return 1;
+        }
+        if (dec.send_seq != src.send_seq ||
+            dec.connect_parity != src.connect_parity ||
+            dec.highest_acked_of_mine != src.highest_acked_of_mine ||
+            dec.first_move_seq != src.first_move_seq ||
+            dec.moves.size() != src.moves.size()) {
+            std::fprintf(stderr,
+                "[listener-selftest] phase5: header round-trip mismatch "
+                "(seq=%u/%u parity=%d/%d ha=%u/%u first=%u/%u moves=%zu/%zu)\n",
+                dec.send_seq, src.send_seq,
+                int(dec.connect_parity), int(src.connect_parity),
+                dec.highest_acked_of_mine, src.highest_acked_of_mine,
+                dec.first_move_seq, src.first_move_seq,
+                dec.moves.size(), src.moves.size());
+            return 1;
+        }
+        // The axes are quantized to 4 bits — exact equality only holds
+        // when src values are themselves multiples of 1/15.
+        if (dec.moves[0].jet   != src.moves[0].jet   ||
+            dec.moves[0].jump  != src.moves[0].jump  ||
+            dec.moves[0].trigger != src.moves[0].trigger ||
+            dec.moves[0].yaw_delta   != src.moves[0].yaw_delta ||
+            dec.moves[0].pitch_delta != src.moves[0].pitch_delta) {
+            std::fprintf(stderr, "[listener-selftest] phase5: move fields mismatch\n");
+            return 1;
+        }
+    }
+
+    // (b) live ingest test: bring up a listener; handshake one peer;
+    // send a movecommand packet; assert session has 2 pending moves.
+    {
+        UdpSocket bind5;
+        if (!bind5.bind(0)) return 1;
+        const std::uint16_t lp = bind5.local_port();
+        bind5.close();
+        ServerListenerConfig cfg5{};
+        cfg5.port = lp;
+        cfg5.tick_hz = 200;
+        cfg5.max_players = 4;
+        ServerListener l5(cfg5);
+        if (!l5.start()) {
+            std::fprintf(stderr, "[listener-selftest] phase5b start failed\n");
+            return 1;
+        }
+        UdpSocket cli;
+        cli.bind(0);
+        Endpoint tgt{"127.0.0.1", lp};
+        std::uint8_t req[27] = {
+            0x07, 0x00, 0x13, 0x44, 0xa7, 0xe5, 0x18,
+            0xde, 0xad, 0xbe,
+            0x12, 0x01, 0x00, 0x0d, 0x56, 0xc6, 0xbb, 0x6f, 0x07, 0xc4, 0x52,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        };
+        cli.send_to(tgt, req, sizeof(req));
+        // Drain AcceptConnect.
+        std::vector<std::uint8_t> rbuf;
+        Endpoint rp;
+        for (int i = 0; i < 100; ++i) {
+            if (cli.try_recv(rbuf, rp)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (rbuf.size() != 16) {
+            std::fprintf(stderr, "[listener-selftest] phase5b: no AcceptConnect\n");
+            l5.stop();
+            return 1;
+        }
+        // Now send a movecommand packet with 2 moves.
+        net20::MoveCommandInputs mc{};
+        mc.send_seq = 1;
+        mc.connect_parity = false;
+        mc.highest_acked_of_mine = 1;
+        mc.first_move_seq = 1;
+        net20::MoveInput m{};
+        m.forward = 1.0f;
+        mc.moves.push_back(m);
+        m.left = 1.0f;
+        mc.moves.push_back(m);
+        auto bytes = net20::encode_movecommand(mc);
+        cli.send_to(tgt, bytes.data(), bytes.size());
+        // Give the listener thread a few cycles to ingest.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const auto s = l5.stats();
+        l5.stop();
+        if (s.movecommands_received != 2) {
+            std::fprintf(stderr,
+                "[listener-selftest] phase5b: expected 2 movecommands_received, got %llu\n",
+                (unsigned long long)s.movecommands_received);
+            return 1;
+        }
+        if (s.malformed_movecommands != 0) {
+            std::fprintf(stderr,
+                "[listener-selftest] phase5b: %llu malformed (expected 0)\n",
+                (unsigned long long)s.malformed_movecommands);
+            return 1;
+        }
+    }
+
     std::fprintf(stderr,
-        "[listener-selftest] OK — handshake + ghost burst + sessions + rejects\n");
+        "[listener-selftest] OK — handshake + ghost burst + sessions + rejects + movecommands\n");
     return 0;
 }
 

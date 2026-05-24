@@ -38,6 +38,8 @@ struct ServerListenerStats
     std::uint64_t unknown_packets_received  = 0;
     std::uint64_t sessions_active           = 0;     // spec 28/01
     std::uint64_t sessions_dropped          = 0;     // spec 28/01
+    std::uint64_t movecommands_received     = 0;     // spec 28/02
+    std::uint64_t malformed_movecommands    = 0;     // spec 28/02
 };
 
 class ServerListener

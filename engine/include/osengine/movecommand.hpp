@@ -124,4 +124,25 @@ std::vector<std::uint8_t> encode_movecommand(const MoveCommandInputs& inputs);
 // onward. The self-test verifies bytes 0..21 match exactly.
 std::vector<std::uint8_t> encode_movecommand_worked_example();
 
+// Spec 28/02 — decode a c->s DataPacket back into MoveCommandInputs.
+// Inverse of encode_movecommand(); used by the server listener to apply
+// client input.
+//
+// Out-params:
+//   out         — populated on success.
+// Returns true on a fully-consumed valid packet, false on:
+//   * VC discriminator (bit 0) != 1
+//   * type word != kDataPacket
+//   * any bit-read past end-of-buffer
+//   * malformed move loop (negative redundant flag on first move, etc.)
+//
+// Wire layout reference is the comment block at the top of this header.
+// The decoder does NOT parse the ghost sub-stream — once it sees the
+// move-loop terminator + G bit it considers the input section complete.
+//
+// Inverse of axis quantization (4 bits -> float): the wire 0..15 maps
+// back to float values 0, 1/15, 2/15, ... 1.0 (uniform).
+bool decode_movecommand(const std::uint8_t* data, std::size_t size,
+                        MoveCommandInputs& out);
+
 }  // namespace net20
