@@ -51,3 +51,4 @@ packaging/linux/build/
 packaging/linux/linuxdeploy-*.AppImage
 packaging/linux/appimagetool-*.AppImage
 Open-Siege-*.AppImage
+scripts/fleet.toml

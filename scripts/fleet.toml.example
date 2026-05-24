@@ -1,0 +1,29 @@
+# Cross-OS test fleet — track 27 spec 01.
+#
+# Copy this to scripts/fleet.toml (gitignored) and fill in your boxes.
+# scripts/fleet_lib.sh reads from $FLEET_FILE (defaults to scripts/fleet.toml).
+
+[host.macos]
+ip          = "192.168.1.10"          # YOUR mac's LAN IP
+ssh_user    = "v"
+ssh_host    = "Vs-Mac-mini.local"
+repo_path   = "/Users/v/code/tribes-emscripten"
+binary_dir  = "open-siege/build/apps"
+
+[host.windows]
+ip          = "192.168.1.20"          # YOUR Windows box LAN IP
+ssh_user    = "v"
+ssh_host    = "192.168.1.20"
+repo_path   = "/c/Users/v/code/tribes-emscripten"
+binary_dir  = "open-siege/build/apps"
+
+[host.linux]
+ip          = "192.168.1.111"
+ssh_user    = "vlouvet"
+ssh_host    = "192.168.1.111"
+repo_path   = "/home/vlouvet/code/tribes-emscripten"
+binary_dir  = "open-siege/build/apps"
+
+[default]
+port        = 28000
+mission     = "1_Welcome"
