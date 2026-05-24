@@ -18,6 +18,7 @@
 //     asset_cache pipeline is wired (also part of 29/02b).
 
 #include <osengine/audio_sink.hpp>
+#include <osengine/jitter_buffer.hpp>
 #include <osengine/movecommand.hpp>
 #include <osengine/net_client.hpp>
 #include <osengine/ghost_types.hpp>
@@ -239,6 +240,20 @@ int main(int argc, char** argv)
     constexpr float kMouseSensitivity = 0.0025f;   // rad / pixel
     bool jump_edge_pending = false;
 
+    // Spec 29/04 — jitter buffer for remote-player smoothing. We record
+    // every Player ghost's pos/yaw into the registry indexed by ghost_id
+    // and sample at (now_ms - default_display_delay_ms) when rendering.
+    // The 100 ms default delay matches the registry's preset; matches
+    // Tribes 1's ~150 ms default with some slack for our 16 Hz emit.
+    dts_viewer::JitterBufferRegistry jitter;
+    int  last_recorded_record_count = 0;
+    auto start_clock = std::chrono::steady_clock::now();
+    auto now_ms_since_start = [&]() -> std::uint32_t {
+        const auto d = std::chrono::steady_clock::now() - start_clock;
+        return static_cast<std::uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(d).count());
+    };
+
     auto last_log = std::chrono::steady_clock::now();
     int last_render_count = -1;
     while (!g_quit.load()) {
@@ -319,14 +334,36 @@ int main(int argc, char** argv)
         dts_viewer::render_entity_cube({0.0f, 0.0f, 0.0f}, 0.5f,
             {0.45f, 0.45f, 0.45f}, u_mvp_loc, u_color_loc, vp);
 
-        // Spec 29/02: render every Player ghost the server has told us about.
+        // Spec 29/02 + 29/04: feed the latest snapshot into the jitter
+        // buffer per-ghost, then sample at (now - display_delay) for
+        // smooth rendering. Snapshot count is a cheap signal that a
+        // network tick produced new data — record once per change to
+        // avoid hammering the jitter buffer with the same value.
         int rendered = 0;
         if (net.running()) {
             const auto reg = net.snapshot_registry();
+            const int rec_total = net.typed_records();
+            if (rec_total != last_recorded_record_count) {
+                const std::uint32_t t_ms = now_ms_since_start();
+                for (const auto& kv : reg.players) {
+                    const auto& p = kv.second;
+                    dts_viewer::JitterSnapshot snap;
+                    snap.pos_x = p.pos_x; snap.pos_y = p.pos_y; snap.pos_z = p.pos_z;
+                    snap.vel_x = p.velocity_x; snap.vel_y = p.velocity_y;
+                    snap.vel_z = p.velocity_z;
+                    snap.yaw   = p.yaw;
+                    jitter.record(kv.first, t_ms, snap);
+                }
+                last_recorded_record_count = rec_total;
+            }
+            const std::uint32_t render_t = now_ms_since_start();
             for (const auto& kv : reg.players) {
-                const auto& p = kv.second;
-                const glm::vec3 world_pos{p.pos_x, p.pos_y, p.pos_z};
-                const auto& col = kSlotColors[kv.first % kSlotColors.size()];
+                bool extrap = false;
+                const auto snap = jitter.sample(kv.first, render_t, &extrap);
+                const glm::vec3 world_pos{snap.pos_x, snap.pos_y, snap.pos_z};
+                auto col = kSlotColors[kv.first % kSlotColors.size()];
+                // Dim extrapolated ghosts to flag stale players visually.
+                if (extrap) for (auto& c : col) c *= 0.6f;
                 dts_viewer::render_entity_cube(world_pos, 1.5f, col,
                     u_mvp_loc, u_color_loc, vp);
                 ++rendered;
