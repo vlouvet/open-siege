@@ -10,6 +10,7 @@
 #include <osengine/mission_loader.hpp>
 #include <osengine/mission_sounds.hpp>
 #include <osengine/paths.hpp>
+#include <osengine/server_listener.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -18,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -40,11 +42,14 @@ void print_usage()
 {
     std::fputs(
         "open-siege-t1-server [options]\n"
-        "  --mission <name>    Mission short name (default: 1_Welcome)\n"
-        "  --tribes-dir <path> Tribes install dir containing base/missions/\n"
-        "  --port <n>          UDP port (placeholder; not yet bound — v1)\n"
-        "  --tick-hz <n>       Tick rate (default 32)\n"
-        "  --help              This message\n",
+        "  --mission <name>          Mission short name (default: 1_Welcome)\n"
+        "  --tribes-dir <path>       Tribes install dir containing base/missions/\n"
+        "  --port <n>                UDP listen port (default 28000)\n"
+        "  --tick-hz <n>             Tick rate (default 32)\n"
+        "  --no-listener             Skip the UDP bind (server tick-only)\n"
+        "  --listener-selftest       Run server_listener selftest and exit\n"
+        "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
+        "  --help                    This message\n",
         stderr);
 }
 
@@ -76,10 +81,14 @@ int main(int argc, char** argv)
     int tick_hz = 32;
 
     bool listen_server_selftest = false;
+    bool listener_selftest = false;
+    bool no_listener = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--help") { print_usage(); return 0; }
         if (a == "--listen-server-selftest") { listen_server_selftest = true; continue; }
+        if (a == "--listener-selftest") { listener_selftest = true; continue; }
+        if (a == "--no-listener") { no_listener = true; continue; }
         if (a == "--mission" && i + 1 < argc) { mission_name = argv[++i]; continue; }
         if (a == "--tribes-dir" && i + 1 < argc) { tribes_dir = argv[++i]; continue; }
         if (a == "--port" && i + 1 < argc) { port = std::atoi(argv[++i]); continue; }
@@ -103,6 +112,10 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "[server] listen-server selftest OK (%llu ticks)\n",
                      (unsigned long long)ls.ticks());
         return 0;
+    }
+
+    if (listener_selftest) {
+        return dts_viewer::server_listener_selftest();
     }
 
     if (tribes_dir.empty()) {
@@ -138,6 +151,19 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "[server] %zu ambient voices registered (null sink)\n",
                  mission_audio.voices.size());
 
+    std::unique_ptr<dts_viewer::ServerListener> listener;
+    if (!no_listener) {
+        listener = std::make_unique<dts_viewer::ServerListener>(
+            dts_viewer::ServerListenerConfig{static_cast<std::uint16_t>(port), tick_hz});
+        if (!listener->start()) {
+            std::fprintf(stderr, "[server] listener failed to start: %s\n",
+                         listener->last_error().c_str());
+            return 1;
+        }
+    } else {
+        std::fputs("[server] --no-listener: skipping UDP bind\n", stderr);
+    }
+
     const auto period = std::chrono::milliseconds(1000 / std::max(1, tick_hz));
     auto last_log = std::chrono::steady_clock::now();
     std::uint64_t tick = 0;
@@ -149,12 +175,24 @@ int main(int argc, char** argv)
 
         const auto now = std::chrono::steady_clock::now();
         if (now - last_log >= std::chrono::seconds(1)) {
-            std::fprintf(stderr, "[server] tick %llu\n", (unsigned long long)tick);
+            if (listener) {
+                const auto s = listener->stats();
+                std::fprintf(stderr,
+                    "[server] tick %llu  net: req=%llu acc=%llu data=%llu unk=%llu\n",
+                    (unsigned long long)tick,
+                    (unsigned long long)s.request_connects_received,
+                    (unsigned long long)s.accept_connects_sent,
+                    (unsigned long long)s.data_packets_received,
+                    (unsigned long long)s.unknown_packets_received);
+            } else {
+                std::fprintf(stderr, "[server] tick %llu\n", (unsigned long long)tick);
+            }
             last_log = now;
         }
         std::this_thread::sleep_for(period - (std::chrono::steady_clock::now() - t0));
     }
 
+    if (listener) listener->stop();
     dts_viewer::mission_sounds_unload(mission_audio, sink);
     std::fputs("[server] shutting down\n", stderr);
     return 0;
