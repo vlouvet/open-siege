@@ -22,6 +22,7 @@
 #include <osengine/scoreboard.hpp>
 #include <osengine/server_listener.hpp>
 #include <osengine/session_table.hpp>
+#include <osengine/tah_class_encoders.hpp>
 #include <osengine/tah_vc_outbound.hpp>
 #include <osengine/team_assigner.hpp>
 #include <osengine/world_tick.hpp>
@@ -88,6 +89,7 @@ void print_usage()
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
         "  --ghost-emit-selftest     Run ghost emitter selftest and exit\n"
         "  --ghost-encoder-selftest  Run ghost encoder round-trip selftest and exit\n"
+        "  --tah-class-encoders-selftest  Run TAH per-class encoders selftest and exit\n"
         "  --tah-vc-outbound-selftest  Run per-session VC outbound header selftest and exit\n"
         "  --help                    This message\n",
         stderr);
@@ -126,6 +128,8 @@ int main(int argc, char** argv)
     bool world_tick_selftest = false;
     bool ghost_emit_selftest = false;
     bool ghost_encoder_selftest = false;
+    bool tah_class_encoders_selftest_flag = false;
+    bool tah_vc_outbound_selftest_flag = false;
     bool no_listener = false;
     bool no_canned_burst = false;
     bool no_ghost_emit = false;
@@ -140,7 +144,6 @@ int main(int argc, char** argv)
     bool mapcycle_selftest = false;
     bool server_info_selftest = false;
     bool groove_handshake_selftest = false;
-    bool tah_vc_outbound_selftest_flag = false;
     std::string map_cycle_csv;
     int  cap_limit  = 5;
     int  time_limit_min = 25;
@@ -153,6 +156,8 @@ int main(int argc, char** argv)
         if (a == "--world-tick-selftest") { world_tick_selftest = true; continue; }
         if (a == "--ghost-emit-selftest") { ghost_emit_selftest = true; continue; }
         if (a == "--ghost-encoder-selftest") { ghost_encoder_selftest = true; continue; }
+        if (a == "--tah-class-encoders-selftest") { tah_class_encoders_selftest_flag = true; continue; }
+        if (a == "--tah-vc-outbound-selftest") { tah_vc_outbound_selftest_flag = true; continue; }
         if (a == "--no-listener") { no_listener = true; continue; }
         if (a == "--no-canned-burst") { no_canned_burst = true; continue; }
         if (a == "--no-ghost-emit") { no_ghost_emit = true; continue; }
@@ -166,7 +171,6 @@ int main(int argc, char** argv)
         if (a == "--mapcycle-selftest") { mapcycle_selftest = true; continue; }
         if (a == "--server-info-selftest") { server_info_selftest = true; continue; }
         if (a == "--groove-handshake-selftest") { groove_handshake_selftest = true; continue; }
-        if (a == "--tah-vc-outbound-selftest") { tah_vc_outbound_selftest_flag = true; continue; }
         if (a == "--map-cycle" && i + 1 < argc) { map_cycle_csv = argv[++i]; continue; }
         if (a == "--cap-limit" && i + 1 < argc) { cap_limit = std::atoi(argv[++i]); continue; }
         if (a == "--time-limit" && i + 1 < argc) { time_limit_min = std::atoi(argv[++i]); continue; }
@@ -216,6 +220,10 @@ int main(int argc, char** argv)
 
     if (ghost_encoder_selftest) {
         return net20::ghost_encoder_roundtrip_selftest();
+    }
+
+    if (tah_class_encoders_selftest_flag) {
+        return net20::tah_class_encoders_selftest();
     }
 
     if (tah_vc_outbound_selftest_flag) {
