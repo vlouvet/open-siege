@@ -208,7 +208,8 @@ int run_template_paste(const std::string& host, std::uint16_t port,
                        bool send_acks,
                        bool use_groove,
                        bool send_ready,
-                       bool send_moves)
+                       bool send_moves,
+                       float forward_input)
 {
     const char* tmpl_name = use_groove ? "Groove (45B)" : "vanilla Wine (27B)";
     std::fprintf(stderr,
@@ -519,6 +520,7 @@ int run_template_paste(const std::string& host, std::uint16_t port,
         in.fov_degrees = 90.0f;
         in.first_move_seq = move_seq_counter;
         net20::MoveInput m;   // all zero — idle player
+        m.forward = forward_input;  // --forward N drives world_tick check
         in.moves.push_back(m);
         const auto wire = net20::encode_movecommand(in);
         if (!sock.send_to(*dst, wire.data(), wire.size())) {
@@ -1852,6 +1854,7 @@ int main(int argc, char** argv)
     bool ready_selftest = false;     // spec 20/22 — offline encoder check
     bool move_selftest = false;      // spec 20/19 — offline encoder check
     bool send_moves = false;         // spec 20/19 — emit move-command frames
+    float forward_input = 0.0f;      // 0..1 forward axis sent with --send-moves
     bool use_groove = false;         // spec 20/12 follow-up — 45B Groove template
     // Spec 20/22 — emit the c→s connection-progression event after
     // the first ghost-stream packet arrives. Tri-state to track whether
@@ -1896,6 +1899,10 @@ int main(int argc, char** argv)
         if (a == "--ready-selftest") { ready_selftest = true; continue; }
         if (a == "--move-selftest") { move_selftest = true; continue; }
         if (a == "--send-moves") { send_moves = true; continue; }
+        if (a == "--forward" && i + 1 < argc) {
+            forward_input = static_cast<float>(std::atof(argv[++i]));
+            continue;
+        }
         if (a == "--groove") { use_groove = true; continue; }
         if (a == "--send-ready") { send_ready_opt = 1; continue; }
         if (a == "--no-send-ready") { send_ready_opt = 0; continue; }
@@ -1919,6 +1926,7 @@ int main(int argc, char** argv)
     if (template_paste) return run_template_paste(host, port, duration_s,
                                                   ghost_dump_path, decode_ghosts,
                                                   send_acks, use_groove,
-                                                  send_ready, send_moves);
+                                                  send_ready, send_moves,
+                                                  forward_input);
     return run_client(host, port, name, password, duration_s);
 }

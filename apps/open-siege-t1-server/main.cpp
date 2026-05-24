@@ -261,7 +261,7 @@ int main(int argc, char** argv)
             if (listener) {
                 const auto s = listener->stats();
                 std::fprintf(stderr,
-                    "[server] tick %llu  net: req=%llu acc=%llu rej=%llu data=%llu ghost=%llu unk=%llu  sessions=%llu (dropped=%llu)\n",
+                    "[server] tick %llu  net: req=%llu acc=%llu rej=%llu data=%llu ghost=%llu unk=%llu  moves=%llu (bad=%llu)  sessions=%llu (dropped=%llu)\n",
                     (unsigned long long)tick,
                     (unsigned long long)s.request_connects_received,
                     (unsigned long long)s.accept_connects_sent,
@@ -269,8 +269,20 @@ int main(int argc, char** argv)
                     (unsigned long long)s.data_packets_received,
                     (unsigned long long)s.ghost_bursts_sent,
                     (unsigned long long)s.unknown_packets_received,
+                    (unsigned long long)s.movecommands_received,
+                    (unsigned long long)s.malformed_movecommands,
                     (unsigned long long)s.sessions_active,
                     (unsigned long long)s.sessions_dropped);
+                auto active = listener->sessions().active_sessions();
+                if (!active.empty()) {
+                    const auto& ps = active.front()->player_state;
+                    std::fprintf(stderr,
+                        "[server]   slot %u pos=(%.2f,%.2f,%.2f) yaw=%.2f pitch=%.2f q=%zu\n",
+                        active.front()->player_slot,
+                        ps.pos.x, ps.pos.y, ps.pos.z,
+                        ps.yaw, ps.pitch,
+                        active.front()->pending_moves.size());
+                }
             } else {
                 std::fprintf(stderr, "[server] tick %llu\n", (unsigned long long)tick);
             }
