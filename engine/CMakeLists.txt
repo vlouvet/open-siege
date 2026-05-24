@@ -55,8 +55,10 @@ add_library(osengine STATIC
     src/null_audio_sink.cpp
     src/paths.cpp
     src/server_listener.cpp
-    src/tah_vc_outbound.cpp
+    src/tah_datablock_encoder.cpp
+    src/tah_default_catalogue.cpp
     src/tah_ghost_burst.cpp
+    src/tah_vc_outbound.cpp
     src/session_table.cpp
     src/team_assigner.cpp
     src/world_tick.cpp

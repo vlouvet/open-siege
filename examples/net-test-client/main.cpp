@@ -24,6 +24,7 @@
 #include <osengine/ghost_types.hpp>
 #include <osengine/movecommand.hpp>
 #include <osengine/reliable_acks.hpp>
+#include <osengine/tah_datablock_encoder.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -1853,6 +1854,7 @@ int main(int argc, char** argv)
     bool ack_selftest = false;
     bool ready_selftest = false;     // spec 20/22 — offline encoder check
     bool move_selftest = false;      // spec 20/19 — offline encoder check
+    bool tah_datablock_selftest = false;  // spec 26/14c — datablock encoder
     bool send_moves = false;         // spec 20/19 — emit move-command frames
     float forward_input = 0.0f;      // 0..1 forward axis sent with --send-moves
     bool use_groove = false;         // spec 20/12 follow-up — 45B Groove template
@@ -1898,6 +1900,7 @@ int main(int argc, char** argv)
         if (a == "--ack-selftest") { ack_selftest = true; continue; }
         if (a == "--ready-selftest") { ready_selftest = true; continue; }
         if (a == "--move-selftest") { move_selftest = true; continue; }
+        if (a == "--tah-datablock-selftest") { tah_datablock_selftest = true; continue; }
         if (a == "--send-moves") { send_moves = true; continue; }
         if (a == "--forward" && i + 1 < argc) {
             forward_input = static_cast<float>(std::atof(argv[++i]));
@@ -1914,6 +1917,7 @@ int main(int argc, char** argv)
     if (ack_selftest) return run_ack_selftest();
     if (ready_selftest) return run_ready_selftest();
     if (move_selftest) return run_move_selftest();
+    if (tah_datablock_selftest) return net20::tah_datablock_encoder_selftest();
     if (!replay_path.empty()) return run_replay(replay_path);
     if (!qcheck_player_path.empty()) return run_qcheck_player(qcheck_player_path);
     if (!discover_classes_path.empty()) return run_discover_classes(discover_classes_path);
