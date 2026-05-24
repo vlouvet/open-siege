@@ -1106,14 +1106,19 @@ int server_listener_selftest()
         }
     }
     // Second DataPacket from client 0 must NOT yield another burst.
+    // 14a follow-up: pure-acks (4B) from the periodic 250ms tick are
+    // expected and not a dedup failure; only a 2nd burst (>= 18B) is.
     clients[0].send_to(target3, dp, 4);
     std::vector<std::uint8_t> rbuf_dup;
-    if (recv_with_timeout(clients[0], rbuf_dup, 200)) {
-        std::fprintf(stderr,
-            "[listener-selftest] phase3: duplicate DataPacket triggered another reply (%zuB) — dedup broken\n",
-            rbuf_dup.size());
-        listener3.stop();
-        return 1;
+    while (recv_with_timeout(clients[0], rbuf_dup, 200)) {
+        if (rbuf_dup.size() >= 18) {
+            std::fprintf(stderr,
+                "[listener-selftest] phase3: duplicate DataPacket triggered another reply (%zuB) — dedup broken\n",
+                rbuf_dup.size());
+            listener3.stop();
+            return 1;
+        }
+        // size < 18 is a pure-ack from the 14a tick; ignore and keep looking.
     }
     listener3.stop();
 

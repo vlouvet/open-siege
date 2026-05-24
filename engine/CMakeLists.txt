@@ -55,6 +55,8 @@ add_library(osengine STATIC
     src/null_audio_sink.cpp
     src/paths.cpp
     src/server_listener.cpp
+    src/tah_class_encoders.cpp
+    src/tah_class_registry.cpp
     src/tah_datablock_encoder.cpp
     src/tah_default_catalogue.cpp
     src/tah_ghost_burst.cpp
