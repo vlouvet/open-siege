@@ -47,6 +47,7 @@ void print_usage()
         "  --tribes-dir <path>       Tribes install dir containing base/missions/\n"
         "  --port <n>                UDP listen port (default 28000)\n"
         "  --tick-hz <n>             Tick rate (default 32)\n"
+        "  --max-players <n>         Max concurrent sessions (default 32)\n"
         "  --no-listener             Skip the UDP bind (server tick-only)\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
@@ -80,6 +81,7 @@ int main(int argc, char** argv)
     std::filesystem::path tribes_dir;
     int port = 28000;
     int tick_hz = 32;
+    int max_players = 32;
 
     bool listen_server_selftest = false;
     bool listener_selftest = false;
@@ -96,6 +98,7 @@ int main(int argc, char** argv)
         if (a == "--tribes-dir" && i + 1 < argc) { tribes_dir = argv[++i]; continue; }
         if (a == "--port" && i + 1 < argc) { port = std::atoi(argv[++i]); continue; }
         if (a == "--tick-hz" && i + 1 < argc) { tick_hz = std::atoi(argv[++i]); continue; }
+        if (a == "--max-players" && i + 1 < argc) { max_players = std::atoi(argv[++i]); continue; }
         std::fprintf(stderr, "[server] unknown arg: %s\n", a.c_str());
         print_usage();
         return 2;
@@ -164,8 +167,11 @@ int main(int argc, char** argv)
 
     std::unique_ptr<dts_viewer::ServerListener> listener;
     if (!no_listener) {
-        listener = std::make_unique<dts_viewer::ServerListener>(
-            dts_viewer::ServerListenerConfig{static_cast<std::uint16_t>(port), tick_hz});
+        dts_viewer::ServerListenerConfig listener_cfg{};
+        listener_cfg.port = static_cast<std::uint16_t>(port);
+        listener_cfg.tick_hz = tick_hz;
+        listener_cfg.max_players = static_cast<std::uint16_t>(max_players);
+        listener = std::make_unique<dts_viewer::ServerListener>(listener_cfg);
         if (!listener->start()) {
             std::fprintf(stderr, "[server] listener failed to start: %s\n",
                          listener->last_error().c_str());
@@ -189,13 +195,16 @@ int main(int argc, char** argv)
             if (listener) {
                 const auto s = listener->stats();
                 std::fprintf(stderr,
-                    "[server] tick %llu  net: req=%llu acc=%llu data=%llu ghost=%llu unk=%llu\n",
+                    "[server] tick %llu  net: req=%llu acc=%llu rej=%llu data=%llu ghost=%llu unk=%llu  sessions=%llu (dropped=%llu)\n",
                     (unsigned long long)tick,
                     (unsigned long long)s.request_connects_received,
                     (unsigned long long)s.accept_connects_sent,
+                    (unsigned long long)s.reject_connects_sent,
                     (unsigned long long)s.data_packets_received,
                     (unsigned long long)s.ghost_bursts_sent,
-                    (unsigned long long)s.unknown_packets_received);
+                    (unsigned long long)s.unknown_packets_received,
+                    (unsigned long long)s.sessions_active,
+                    (unsigned long long)s.sessions_dropped);
             } else {
                 std::fprintf(stderr, "[server] tick %llu\n", (unsigned long long)tick);
             }

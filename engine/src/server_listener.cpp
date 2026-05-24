@@ -1,5 +1,6 @@
 #include <osengine/server_listener.hpp>
 
+#include <osengine/session_table.hpp>
 #include "content/net/udp_socket.hpp"
 
 #include <algorithm>
@@ -70,6 +71,37 @@ bool looks_like_first_data_packet(const std::vector<std::uint8_t>& pkt)
     return pkt.size() == 4 && pkt[0] == 0x07 && pkt[1] == 0x08;
 }
 
+// RejectConnect template for "Server is full." (spec 28/01). Per the
+// BREAKTHROUGH server-reply structure: bytes 0-1 echo request 0-1
+// (07 00), bytes 2-3 are 09 28 (REJECT flags), bytes 4-6 are the
+// nonce echo, byte 7 is 12 (request byte-10 echo), bytes 8+ are the
+// null-terminated ASCII reason.
+//   "Server is full.\0" = 0x53 0x65 0x72 0x76 0x65 0x72 0x20 0x69
+//                         0x73 0x20 0x66 0x75 0x6c 0x6c 0x2e 0x00
+// Total: 8 (header) + 16 (reason) = 24 bytes.
+constexpr std::uint8_t kRejectServerFullTemplate[24] = {
+    0x07, 0x00, 0x09, 0x28,
+    0x00, 0x00, 0x00,                  // <- nonce slot (bytes 4..6)
+    0x12,
+    0x53, 0x65, 0x72, 0x76, 0x65, 0x72, 0x20, 0x69,
+    0x73, 0x20, 0x66, 0x75, 0x6c, 0x6c, 0x2e, 0x00,
+};
+
+void build_reject_server_full(const std::uint8_t nonce[3], std::uint8_t out[24])
+{
+    std::memcpy(out, kRejectServerFullTemplate, 24);
+    out[4] = nonce[0];
+    out[5] = nonce[1];
+    out[6] = nonce[2];
+}
+
+std::uint64_t steady_now_ms()
+{
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(
+        duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
 void hex_prefix(const std::vector<std::uint8_t>& pkt, char* buf, std::size_t bufsz)
 {
     const std::size_t n = std::min(pkt.size(), std::size_t{16});
@@ -98,11 +130,14 @@ struct ServerListener::Impl
     mutable std::mutex              mu;
     ServerListenerStats             stats;
     std::string                     last_error;
+    std::unique_ptr<SessionTable>   sessions;
 };
 
 ServerListener::ServerListener(ServerListenerConfig cfg)
     : cfg_(cfg), impl_(std::make_unique<Impl>())
-{}
+{
+    impl_->sessions = std::make_unique<SessionTable>(cfg_.max_players);
+}
 
 ServerListener::~ServerListener()
 {
@@ -155,29 +190,53 @@ void ServerListener::run()
     const auto period = milliseconds(1000 / std::max(1, cfg_.tick_hz));
     std::vector<std::uint8_t> buf;
     Endpoint peer;
-    std::uint8_t reply[16];
+    std::uint8_t accept_reply[16];
+    std::uint8_t reject_reply[24];
 
     while (!quit_.load()) {
         const auto t0 = steady_clock::now();
+        const std::uint64_t now_ms = steady_now_ms();
 
         // Drain inbound queue. try_recv returns false when queue empty.
         while (impl_->socket.try_recv(buf, peer)) {
             if (looks_like_vanilla_request_connect(buf)) {
                 const std::uint8_t nonce[3] = { buf[7], buf[8], buf[9] };
-                build_accept_connect_reply(nonce, reply);
-                const bool ok = impl_->socket.send_to(peer, reply, sizeof(reply));
-                std::lock_guard<std::mutex> lk(impl_->mu);
-                ++impl_->stats.request_connects_received;
-                if (ok) {
-                    ++impl_->stats.accept_connects_sent;
-                    std::fprintf(stderr,
-                        "[listener] RequestConnect from %s:%u, replied AcceptConnect (nonce %02x%02x%02x)\n",
-                        peer.host.c_str(), peer.port, nonce[0], nonce[1], nonce[2]);
+                Session* sess = impl_->sessions->allocate(peer, nonce, now_ms);
+                if (sess) {
+                    // New or retransmit — reply with AcceptConnect using
+                    // the session's nonce (so retransmits reuse it).
+                    build_accept_connect_reply(sess->nonce, accept_reply);
+                    const bool ok = impl_->socket.send_to(
+                        peer, accept_reply, sizeof(accept_reply));
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.request_connects_received;
+                    if (ok) {
+                        ++impl_->stats.accept_connects_sent;
+                        std::fprintf(stderr,
+                            "[listener] RequestConnect from %s:%u -> slot %u, replied AcceptConnect (nonce %02x%02x%02x)\n",
+                            peer.host.c_str(), peer.port, sess->player_slot,
+                            sess->nonce[0], sess->nonce[1], sess->nonce[2]);
+                    } else {
+                        impl_->last_error = impl_->socket.last_error();
+                        std::fprintf(stderr,
+                            "[listener] send_to %s:%u failed: %s\n",
+                            peer.host.c_str(), peer.port, impl_->last_error.c_str());
+                    }
                 } else {
-                    impl_->last_error = impl_->socket.last_error();
-                    std::fprintf(stderr,
-                        "[listener] send_to %s:%u failed: %s\n",
-                        peer.host.c_str(), peer.port, impl_->last_error.c_str());
+                    // Table full — reply with RejectConnect("Server is full.").
+                    build_reject_server_full(nonce, reject_reply);
+                    const bool ok = impl_->socket.send_to(
+                        peer, reject_reply, sizeof(reject_reply));
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.request_connects_received;
+                    if (ok) {
+                        ++impl_->stats.reject_connects_sent;
+                        std::fprintf(stderr,
+                            "[listener] RequestConnect from %s:%u, replied RejectConnect (server full)\n",
+                            peer.host.c_str(), peer.port);
+                    } else {
+                        impl_->last_error = impl_->socket.last_error();
+                    }
                 }
             }
             else if (looks_like_groove_request_connect(buf)) {
@@ -188,25 +247,40 @@ void ServerListener::run()
                     peer.host.c_str(), peer.port);
             }
             else if (looks_like_first_data_packet(buf)) {
-                // Spec 26/11: reply with the captured 223-byte ghost burst
-                // so the client's phase-3 counter ticks up. v1 sends the
-                // burst on every observed DataPacket from this peer; spec
-                // 26/12 will track per-peer state and only send once.
-                const bool ok = impl_->socket.send_to(
-                    peer, kFirstGhostBurstTemplate, sizeof(kFirstGhostBurstTemplate));
-                std::lock_guard<std::mutex> lk(impl_->mu);
-                ++impl_->stats.data_packets_received;
-                if (ok) {
-                    ++impl_->stats.ghost_bursts_sent;
+                Session* sess = impl_->sessions->find(peer);
+                if (!sess) {
+                    // DataPacket from a peer we don't have a session for —
+                    // either a leftover from a reaped session or a stray
+                    // packet. Log + drop.
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.unknown_packets_received;
                     std::fprintf(stderr,
-                        "[listener] DataPacket %02x%02x%02x%02x from %s:%u, replied ghost burst (%zuB)\n",
-                        buf[0], buf[1], buf[2], buf[3], peer.host.c_str(), peer.port,
-                        sizeof(kFirstGhostBurstTemplate));
+                        "[listener] DataPacket from %s:%u with no session — dropped\n",
+                        peer.host.c_str(), peer.port);
+                    continue;
+                }
+                impl_->sessions->touch(peer, now_ms);
+                bool should_send = !sess->ghost_burst_sent;
+                if (should_send) {
+                    sess->ghost_burst_sent = true;
+                    const bool ok = impl_->socket.send_to(
+                        peer, kFirstGhostBurstTemplate, sizeof(kFirstGhostBurstTemplate));
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.data_packets_received;
+                    if (ok) {
+                        ++impl_->stats.ghost_bursts_sent;
+                        std::fprintf(stderr,
+                            "[listener] DataPacket from %s:%u (slot %u), replied ghost burst (%zuB)\n",
+                            peer.host.c_str(), peer.port, sess->player_slot,
+                            sizeof(kFirstGhostBurstTemplate));
+                    } else {
+                        impl_->last_error = impl_->socket.last_error();
+                    }
                 } else {
-                    impl_->last_error = impl_->socket.last_error();
-                    std::fprintf(stderr,
-                        "[listener] DataPacket from %s:%u, send_to(ghost burst) failed: %s\n",
-                        peer.host.c_str(), peer.port, impl_->last_error.c_str());
+                    std::lock_guard<std::mutex> lk(impl_->mu);
+                    ++impl_->stats.data_packets_received;
+                    // Quiet: subsequent DataPackets are normal client
+                    // acks; don't log every one.
                 }
             }
             else {
@@ -218,6 +292,26 @@ void ServerListener::run()
                     "[listener] unknown %zuB from %s:%u: %s\n",
                     buf.size(), peer.host.c_str(), peer.port, hexbuf);
             }
+        }
+
+        // Reap stale sessions once per tick.
+        std::vector<Session> dropped;
+        const std::size_t n_dropped = impl_->sessions->reap(
+            now_ms, cfg_.session_timeout_ms, &dropped);
+        if (n_dropped > 0) {
+            std::lock_guard<std::mutex> lk(impl_->mu);
+            impl_->stats.sessions_dropped += n_dropped;
+            for (const auto& s : dropped) {
+                std::fprintf(stderr,
+                    "[listener] session timeout for slot %u (%s:%u)\n",
+                    s.player_slot, s.peer.host.c_str(), s.peer.port);
+            }
+        }
+
+        // Publish live session count.
+        {
+            std::lock_guard<std::mutex> lk(impl_->mu);
+            impl_->stats.sessions_active = impl_->sessions->size();
         }
 
         std::this_thread::sleep_for(period - (steady_clock::now() - t0));
@@ -312,6 +406,29 @@ int server_listener_selftest()
         return 1;
     }
     Endpoint target2{"127.0.0.1", listener_port};
+    // Phase 2 now requires an established session (spec 28/01 gates
+    // DataPacket -> burst on session.ghost_burst_sent). Send a
+    // RequestConnect first, swallow the AcceptConnect, then send the
+    // DataPacket and expect the burst.
+    std::uint8_t request2[27] = {
+        0x07, 0x00, 0x13, 0x44, 0xa7, 0xe5, 0x18,
+        0xca, 0xfe, 0xba,
+        0x12, 0x01, 0x00, 0x0d, 0x56, 0xc6, 0xbb, 0x6f, 0x07, 0xc4, 0x52,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    probe.send_to(target2, request2, sizeof(request2));
+    reply_buf.clear();
+    for (int i = 0; i < 100; ++i) {
+        if (probe.try_recv(reply_buf, reply_peer)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (reply_buf.size() != 16) {
+        std::fprintf(stderr,
+            "[listener-selftest] phase2 pre-handshake AcceptConnect missing (size=%zu)\n",
+            reply_buf.size());
+        listener2.stop();
+        return 1;
+    }
     const std::uint8_t data_packet[4] = { 0x07, 0x08, 0x09, 0x80 };
     if (!probe.send_to(target2, data_packet, sizeof(data_packet))) {
         std::fprintf(stderr, "[listener-selftest] phase2 probe.send_to failed\n");
@@ -337,7 +454,158 @@ int server_listener_selftest()
         return 1;
     }
 
-    std::fprintf(stderr, "[listener-selftest] OK — handshake + ghost burst both byte-equal\n");
+    // Phase 3 (spec 28/01): three RequestConnects from three ports must
+    // all get AcceptConnect; second DataPacket from the same peer must
+    // NOT trigger a second ghost burst.
+    UdpSocket bind3;
+    if (!bind3.bind(0)) {
+        std::fprintf(stderr, "[listener-selftest] phase3 bind failed\n");
+        return 1;
+    }
+    listener_port = bind3.local_port();
+    bind3.close();
+    ServerListenerConfig cfg3{};
+    cfg3.port = listener_port;
+    cfg3.tick_hz = 200;
+    cfg3.max_players = 8;
+    ServerListener listener3(cfg3);
+    if (!listener3.start()) {
+        std::fprintf(stderr, "[listener-selftest] phase3 start failed: %s\n",
+                     listener3.last_error().c_str());
+        return 1;
+    }
+    Endpoint target3{"127.0.0.1", listener_port};
+
+    UdpSocket clients[3];
+    for (int i = 0; i < 3; ++i) {
+        if (!clients[i].bind(0)) {
+            std::fprintf(stderr, "[listener-selftest] phase3 client %d bind failed\n", i);
+            listener3.stop();
+            return 1;
+        }
+    }
+    auto send_request = [&](UdpSocket& sock, std::uint8_t tag) {
+        std::uint8_t req[27] = {
+            0x07, 0x00, 0x13, 0x44, 0xa7, 0xe5, 0x18,
+            tag, std::uint8_t(tag + 1), std::uint8_t(tag + 2),
+            0x12, 0x01, 0x00, 0x0d, 0x56, 0xc6, 0xbb, 0x6f, 0x07, 0xc4, 0x52,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        };
+        return sock.send_to(target3, req, sizeof(req));
+    };
+    auto recv_with_timeout = [](UdpSocket& sock, std::vector<std::uint8_t>& out, int ms_total) {
+        Endpoint p;
+        const int iters = ms_total / 5;
+        for (int i = 0; i < iters; ++i) {
+            if (sock.try_recv(out, p)) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        if (!send_request(clients[i], std::uint8_t(0x10 + i*0x10))) {
+            std::fprintf(stderr, "[listener-selftest] phase3 send_request %d failed\n", i);
+            listener3.stop();
+            return 1;
+        }
+        std::vector<std::uint8_t> rbuf;
+        if (!recv_with_timeout(clients[i], rbuf, 500) || rbuf.size() != 16) {
+            std::fprintf(stderr,
+                "[listener-selftest] phase3 client %d: missing/short AcceptConnect (size=%zu)\n",
+                i, rbuf.size());
+            listener3.stop();
+            return 1;
+        }
+    }
+
+    // Each client sends a DataPacket; expect one ghost burst per peer.
+    const std::uint8_t dp[4] = { 0x07, 0x08, 0x09, 0x80 };
+    for (int i = 0; i < 3; ++i) {
+        clients[i].send_to(target3, dp, 4);
+        std::vector<std::uint8_t> rbuf;
+        if (!recv_with_timeout(clients[i], rbuf, 500) || rbuf.size() != 223) {
+            std::fprintf(stderr,
+                "[listener-selftest] phase3 client %d: missing/short ghost burst\n", i);
+            listener3.stop();
+            return 1;
+        }
+    }
+    // Second DataPacket from client 0 must NOT yield another burst.
+    clients[0].send_to(target3, dp, 4);
+    std::vector<std::uint8_t> rbuf_dup;
+    if (recv_with_timeout(clients[0], rbuf_dup, 200)) {
+        std::fprintf(stderr,
+            "[listener-selftest] phase3: duplicate DataPacket triggered another reply (%zuB) — dedup broken\n",
+            rbuf_dup.size());
+        listener3.stop();
+        return 1;
+    }
+    listener3.stop();
+
+    // Phase 4: max_players=2; third RequestConnect gets RejectConnect.
+    UdpSocket bind4;
+    if (!bind4.bind(0)) return 1;
+    listener_port = bind4.local_port();
+    bind4.close();
+    ServerListenerConfig cfg4{};
+    cfg4.port = listener_port;
+    cfg4.tick_hz = 200;
+    cfg4.max_players = 2;
+    ServerListener listener4(cfg4);
+    if (!listener4.start()) {
+        std::fprintf(stderr, "[listener-selftest] phase4 start failed\n");
+        return 1;
+    }
+    Endpoint target4{"127.0.0.1", listener_port};
+    UdpSocket cl4[3];
+    for (int i = 0; i < 3; ++i) cl4[i].bind(0);
+    for (int i = 0; i < 3; ++i) {
+        std::uint8_t req[27] = {
+            0x07, 0x00, 0x13, 0x44, 0xa7, 0xe5, 0x18,
+            std::uint8_t(0xaa + i), 0xbb, 0xcc,
+            0x12, 0x01, 0x00, 0x0d, 0x56, 0xc6, 0xbb, 0x6f, 0x07, 0xc4, 0x52,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        };
+        cl4[i].send_to(target4, req, sizeof(req));
+    }
+    // Clients 0, 1 should get AcceptConnect (16B); client 2 gets
+    // RejectConnect (24B with "Server is full.").
+    for (int i = 0; i < 2; ++i) {
+        std::vector<std::uint8_t> rbuf;
+        if (!recv_with_timeout(cl4[i], rbuf, 500) || rbuf.size() != 16) {
+            std::fprintf(stderr,
+                "[listener-selftest] phase4 client %d: expected 16B Accept, got %zu\n",
+                i, rbuf.size());
+            listener4.stop();
+            return 1;
+        }
+    }
+    std::vector<std::uint8_t> rej;
+    if (!recv_with_timeout(cl4[2], rej, 500) || rej.size() != 24) {
+        std::fprintf(stderr,
+            "[listener-selftest] phase4 client 2: expected 24B Reject, got %zu\n",
+            rej.size());
+        listener4.stop();
+        return 1;
+    }
+    if (rej[2] != 0x09 || rej[3] != 0x28) {
+        std::fprintf(stderr,
+            "[listener-selftest] phase4: reject reply header wrong (bytes 2-3 = %02x %02x; want 09 28)\n",
+            rej[2], rej[3]);
+        listener4.stop();
+        return 1;
+    }
+    if (std::memcmp(rej.data() + 8, "Server is full.", 15) != 0) {
+        std::fprintf(stderr,
+            "[listener-selftest] phase4: reject reason mismatch\n");
+        listener4.stop();
+        return 1;
+    }
+    listener4.stop();
+
+    std::fprintf(stderr,
+        "[listener-selftest] OK — handshake + ghost burst + sessions + rejects\n");
     return 0;
 }
 

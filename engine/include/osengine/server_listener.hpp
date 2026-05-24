@@ -22,17 +22,22 @@ namespace dts_viewer
 
 struct ServerListenerConfig
 {
-    std::uint16_t port    = 28000;
-    int           tick_hz = 32;
+    std::uint16_t port         = 28000;
+    int           tick_hz      = 32;
+    std::uint16_t max_players  = 32;          // spec 28/01
+    std::uint64_t session_timeout_ms = 5000;  // spec 28/01
 };
 
 struct ServerListenerStats
 {
     std::uint64_t request_connects_received = 0;
     std::uint64_t accept_connects_sent      = 0;
+    std::uint64_t reject_connects_sent      = 0;     // spec 28/01
     std::uint64_t data_packets_received     = 0;
     std::uint64_t ghost_bursts_sent         = 0;
     std::uint64_t unknown_packets_received  = 0;
+    std::uint64_t sessions_active           = 0;     // spec 28/01
+    std::uint64_t sessions_dropped          = 0;     // spec 28/01
 };
 
 class ServerListener

@@ -1,0 +1,108 @@
+#ifndef OSENGINE_SESSION_TABLE_HPP
+#define OSENGINE_SESSION_TABLE_HPP
+
+// Per-peer session tracking for the open-siege server — spec 28/01.
+//
+// Each accepted client gets a Session keyed by its UDP Endpoint. The
+// session carries enough state for the listener to:
+//   * reply to a retransmitted RequestConnect with the original nonce,
+//   * gate the ghost-burst send to once per session lifecycle (rather
+//     than once per inbound DataPacket as in spec 26/11),
+//   * time out clients whose ack stream goes silent for >5 s,
+//   * allocate a unique player_slot in [0, max_players).
+//
+// Subsequent specs (28/02 movecommand ingestion, 28/03 server player
+// tick, 28/04 ghost emission, 28/05 spawn+teams) extend Session with
+// gameplay fields. Keep this header lean.
+
+#include "content/net/udp_socket.hpp"
+
+#include <cstdint>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+
+namespace dts_viewer
+{
+
+struct Session
+{
+    studio::content::net::Endpoint peer;
+    std::uint8_t  nonce[3] = {0, 0, 0};   // echoed in AcceptConnect
+    std::uint16_t player_slot = 0;         // 0..max_players-1
+    std::uint64_t connected_at_ms = 0;
+    std::uint64_t last_seen_ms = 0;
+    std::uint16_t next_send_seq = 1;       // server replies start at seq 1
+    std::uint16_t last_acked_recv_seq = 0;
+    bool          ghost_burst_sent = false;
+};
+
+class SessionTable
+{
+public:
+    explicit SessionTable(std::uint16_t max_players);
+
+    // Allocate a session for `peer`. If the peer is already present
+    // (a RequestConnect retransmit) returns the existing session
+    // unchanged. Returns nullptr if max_players reached and the peer
+    // is not yet in the table — caller should send RejectConnect.
+    Session* allocate(const studio::content::net::Endpoint& peer,
+                      const std::uint8_t nonce[3],
+                      std::uint64_t now_ms);
+
+    // Lookup by endpoint (host + port). Returns nullptr if not present.
+    Session* find(const studio::content::net::Endpoint& peer);
+
+    // Drop a single peer (e.g. on explicit disconnect). No-op if absent.
+    void drop(const studio::content::net::Endpoint& peer);
+
+    // Reap sessions whose last_seen_ms < now_ms - timeout_ms. Returns
+    // the number dropped. Caller can iterate the drop list via the
+    // out_dropped vector (pushed in slot order).
+    std::size_t reap(std::uint64_t now_ms,
+                     std::uint64_t timeout_ms,
+                     std::vector<Session>* out_dropped = nullptr);
+
+    // Touch last_seen_ms for a session (call on every received packet).
+    void touch(const studio::content::net::Endpoint& peer,
+               std::uint64_t now_ms);
+
+    std::size_t size() const;
+    std::uint16_t max_players() const { return max_players_; }
+
+    // For ghost-emission iteration (spec 28/04 will use this). The
+    // returned pointers stay valid until the next allocate/drop/reap
+    // call on the same thread.
+    std::vector<Session*> active_sessions();
+
+private:
+    struct EndpointHash {
+        std::size_t operator()(const studio::content::net::Endpoint& e) const noexcept
+        {
+            std::size_t h = std::hash<std::string>{}(e.host);
+            return h ^ (std::size_t(e.port) * 0x9E3779B97F4A7C15ull);
+        }
+    };
+    struct EndpointEq {
+        bool operator()(const studio::content::net::Endpoint& a,
+                        const studio::content::net::Endpoint& b) const noexcept
+        {
+            return a.port == b.port && a.host == b.host;
+        }
+    };
+
+    mutable std::mutex                                       mu_;
+    std::uint16_t                                            max_players_;
+    std::vector<bool>                                        slot_used_;
+    std::unordered_map<studio::content::net::Endpoint,
+                       Session,
+                       EndpointHash,
+                       EndpointEq>                           by_peer_;
+
+    std::uint16_t alloc_slot_locked();
+    void          free_slot_locked(std::uint16_t slot);
+};
+
+} // namespace dts_viewer
+
+#endif // OSENGINE_SESSION_TABLE_HPP
