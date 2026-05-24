@@ -11,6 +11,7 @@
 #include <osengine/mission_loader.hpp>
 #include <osengine/mission_sounds.hpp>
 #include <osengine/paths.hpp>
+#include <osengine/projectile_world.hpp>
 #include <osengine/server_listener.hpp>
 #include <osengine/session_table.hpp>
 #include <osengine/team_assigner.hpp>
@@ -61,6 +62,7 @@ void print_usage()
         "  --no-ghost-emit           Disable spec 28/04 OSGB ghost streaming\n"
         "  --team-balance off        Disable round-robin team assignment\n"
         "  --team-assigner-selftest  Run team_assigner selftest and exit\n"
+        "  --projectile-selftest     Run projectile_world selftest and exit\n"
         "  --listener-selftest       Run server_listener selftest and exit\n"
         "  --listen-server-selftest  Run ListenServer thread selftest and exit\n"
         "  --world-tick-selftest     Run world_tick selftest and exit\n"
@@ -106,6 +108,7 @@ int main(int argc, char** argv)
     bool no_ghost_emit = false;
     bool team_balance = true;
     bool team_assigner_selftest = false;
+    bool projectile_selftest = false;
     bool skip_mission = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -118,6 +121,7 @@ int main(int argc, char** argv)
         if (a == "--no-canned-burst") { no_canned_burst = true; continue; }
         if (a == "--no-ghost-emit") { no_ghost_emit = true; continue; }
         if (a == "--team-assigner-selftest") { team_assigner_selftest = true; continue; }
+        if (a == "--projectile-selftest") { projectile_selftest = true; continue; }
         if (a == "--team-balance" && i + 1 < argc) {
             const std::string v = argv[++i];
             team_balance = !(v == "off" || v == "false" || v == "0");
@@ -160,6 +164,10 @@ int main(int argc, char** argv)
 
     if (team_assigner_selftest) {
         return dts_viewer::team_assigner_selftest();
+    }
+
+    if (projectile_selftest) {
+        return dts_viewer::ProjectileWorld::selftest();
     }
 
     if (world_tick_selftest) {
@@ -280,6 +288,8 @@ int main(int argc, char** argv)
     std::uint64_t tick = 0;
     const float dt_sec = 1.0f / static_cast<float>(std::max(1, tick_hz));
     dts_viewer::WorldTickContext world_ctx{};
+    dts_viewer::ProjectileWorld projectiles;
+    std::vector<dts_viewer::HitEvent> tick_hits;
     // Future: populate world_ctx.terrain + world_ctx.bounds from the
     // loaded mission. v1: empty HeightSampler (sample() returns 0) so
     // players free-fall onto the implicit y=0 plane and walk on it.
@@ -293,6 +303,11 @@ int main(int argc, char** argv)
         // session's queued movecommands.
         if (listener) {
             dts_viewer::world_tick(listener->sessions(), world_ctx, dt_sec);
+            // Spec 28/06 — projectile sim + hit detection. Hits are
+            // collected here; spec 28/07 will route them through damage.
+            tick_hits.clear();
+            projectiles.tick_fires(listener->sessions(), dt_sec);
+            projectiles.tick_motion(listener->sessions(), dt_sec, tick_hits);
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -325,6 +340,13 @@ int main(int argc, char** argv)
                         ps.yaw, ps.pitch,
                         active.front()->pending_moves.size());
                 }
+                const auto& pjs = projectiles.stats();
+                std::fprintf(stderr,
+                    "[server]   proj: fired=%llu hits=%llu expired=%llu active=%llu\n",
+                    (unsigned long long)pjs.fired,
+                    (unsigned long long)pjs.hits,
+                    (unsigned long long)pjs.expired,
+                    (unsigned long long)pjs.active);
             } else {
                 std::fprintf(stderr, "[server] tick %llu\n", (unsigned long long)tick);
             }
