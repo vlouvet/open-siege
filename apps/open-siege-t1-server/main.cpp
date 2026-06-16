@@ -24,6 +24,7 @@
 #include <osengine/session_table.hpp>
 #include <osengine/tah_burst_orchestrator.hpp>
 #include <osengine/tah_class_encoders.hpp>
+#include <osengine/tah_default_catalogue.hpp>
 #include <osengine/tah_vc_outbound.hpp>
 #include <osengine/team_assigner.hpp>
 #include <osengine/world_tick.hpp>
@@ -93,6 +94,8 @@ void print_usage()
         "  --tah-class-encoders-selftest  Run TAH per-class encoders selftest and exit\n"
         "  --tah-vc-outbound-selftest  Run per-session VC outbound header selftest and exit\n"
         "  --tah-burst-orchestrator-selftest  Run TAH burst orchestrator selftest and exit\n"
+        "  --tah-default-catalogue-selftest  Run TAH default catalogue selftest and exit\n"
+        "  --mission-loader-selftest  Run mission_loader selftest and exit\n"
         "  --help                    This message\n",
         stderr);
 }
@@ -133,6 +136,8 @@ int main(int argc, char** argv)
     bool tah_class_encoders_selftest_flag = false;
     bool tah_vc_outbound_selftest_flag = false;
     bool tah_burst_orchestrator_selftest_flag = false;
+    bool tah_default_catalogue_selftest_flag = false;
+    bool mission_loader_selftest_flag = false;
     bool no_listener = false;
     bool no_canned_burst = false;
     bool no_ghost_emit = false;
@@ -162,6 +167,8 @@ int main(int argc, char** argv)
         if (a == "--tah-class-encoders-selftest") { tah_class_encoders_selftest_flag = true; continue; }
         if (a == "--tah-vc-outbound-selftest") { tah_vc_outbound_selftest_flag = true; continue; }
         if (a == "--tah-burst-orchestrator-selftest") { tah_burst_orchestrator_selftest_flag = true; continue; }
+        if (a == "--tah-default-catalogue-selftest") { tah_default_catalogue_selftest_flag = true; continue; }
+        if (a == "--mission-loader-selftest") { mission_loader_selftest_flag = true; continue; }
         if (a == "--no-listener") { no_listener = true; continue; }
         if (a == "--no-canned-burst") { no_canned_burst = true; continue; }
         if (a == "--no-ghost-emit") { no_ghost_emit = true; continue; }
@@ -236,6 +243,14 @@ int main(int argc, char** argv)
 
     if (tah_burst_orchestrator_selftest_flag) {
         return dts_viewer::tah_burst_orchestrator_selftest();
+    }
+
+    if (tah_default_catalogue_selftest_flag) {
+        return net20::tah_default_catalogue_selftest();
+    }
+
+    if (mission_loader_selftest_flag) {
+        return dts_viewer::mission_loader_selftest();
     }
 
     if (team_assigner_selftest) {

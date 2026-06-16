@@ -3,7 +3,6 @@
 
 #include "tah_burst_orchestrator.hpp"
 
-#include "flag_state.hpp"
 #include "ghost_encoder.hpp"
 #include "ghost_types.hpp"
 #include "mission_loader.hpp"
@@ -21,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <utility>
 #include <vector>
 
@@ -51,23 +51,6 @@ void write_intro_record_static(net20::BitWriter& w,
     net20::write_static_shape_body(w, s);
 }
 
-void write_intro_record_player(net20::BitWriter& w,
-                               std::uint8_t id_width_bits,
-                               const net20::GhostPlayer& p)
-{
-    w.write_flag(true);
-    w.write_bits(p.ghost_id & ((1u << id_width_bits) - 1u), id_width_bits);
-    w.write_flag(false);
-    w.write_bits(p.object_id, 32);
-    w.write_bits(static_cast<std::uint32_t>(p.class_tag) & 0x3FFu, 10);
-    net20::write_base_state(w, p.base);
-    net20::write_shape_layer_block(w, p.shape);
-    // Force initial_update = true for scope-always intros.
-    net20::GhostPlayer p_copy = p;
-    p_copy.initial_update = true;
-    net20::write_player_body(w, p_copy, /*datafile_id_width*/ 8);
-}
-
 void write_intro_record_marker(net20::BitWriter& w,
                                std::uint8_t id_width_bits,
                                const net20::MarkerGhost& m)
@@ -83,27 +66,28 @@ void write_intro_record_marker(net20::BitWriter& w,
 }
 
 // ----- Per-intro descriptor ---------------------------------------------
+//
+// 14c-I-6: the intro queue is now populated either from a real mission's
+// scope_always_objects() (when a LoadedMission is supplied) or from a
+// tiny stub set (when nullptr, used by the selftest). Each pending entry
+// carries the full ghost-typed payload its writer needs.
 
 struct PendingIntro {
-    enum class Kind { Player, FlagStandMarker, StubStatic } kind = Kind::StubStatic;
+    enum class Kind { Marker, Static } kind = Kind::Static;
     std::uint16_t ghost_id = 0;
     std::uint32_t object_id = 0;
-    net20::GhostPlayer       player{};
     net20::MarkerGhost       marker{};
-    net20::GhostStaticShape  stub{};
+    net20::GhostStaticShape  stat{};
 };
 
 void write_intro(net20::BitWriter& w, std::uint8_t id_width, const PendingIntro& pi)
 {
     switch (pi.kind) {
-        case PendingIntro::Kind::Player:
-            write_intro_record_player(w, id_width, pi.player);
-            break;
-        case PendingIntro::Kind::FlagStandMarker:
+        case PendingIntro::Kind::Marker:
             write_intro_record_marker(w, id_width, pi.marker);
             break;
-        case PendingIntro::Kind::StubStatic:
-            write_intro_record_static(w, id_width, pi.stub);
+        case PendingIntro::Kind::Static:
+            write_intro_record_static(w, id_width, pi.stat);
             break;
     }
 }
@@ -119,89 +103,116 @@ std::size_t intro_record_bit_cost(std::uint8_t id_width, const PendingIntro& pi)
     return probe.pos();
 }
 
+// ----- TAH-resolved class tags ------------------------------------------
+//
+// Replaces the I-5 stub tags (333 / 129 / 960) with class tags TAH's
+// class registry actually recognises. Authority:
+//   * Common-range tags (universal across builds) are taken from
+//     docs/clean-room-specs/TRIBES-GHOST-CLASSES.md §1.3:
+//       - Tag 129 = Marker (Common range index 1)
+//       - Tag 131 = SoundSource
+//   * Game-specific tags (256..1023) are build-dependent. The
+//     wiki-contributions/TAH-CLASS-TAGS.md survey of a real
+//     Ice/Blood Dagger CTF capture lists the 60 tags TAH's registry
+//     resolves; we use the highest-frequency ones for which the
+//     payload-shape predicates in TRIBES-GHOST-CLASSES.md §6 match
+//     our intro writers (StaticShape uses the §15.5 prefix that our
+//     write_static_shape_body emits).
+//
+// I deliberately do NOT emit a Player intro in the initial burst —
+// TAH's Player tag is not observed in the survey (cf. TAH-CLASS-TAGS.md
+// "Our vanilla kServerPlayerClassTag = 960 is not present in TAH's
+// stream"). The player joins later through a separate intro after the
+// scope-always burst completes.
+constexpr std::uint16_t kTahStaticShapeClassTag = 708;  // §5.2: 58 intros in TAH survey
+constexpr std::uint16_t kTahTurretClassTag      = 640;  // §5.2: 52 intros; Turret derives from StaticShape per §3.9
+constexpr std::uint16_t kTahItemFlagClassTag    = 496;  // §5.2: 29 intros; CTF flag is scope-always per §2.1
+constexpr std::uint16_t kTahMarkerClassTag      = 129;  // §1.3 common range index 1
+constexpr std::uint16_t kTahSensorClassTag      = 324;  // §5.2: 18 intros
+
+std::uint16_t class_tag_for(ScopeAlwaysIntro::Kind kind)
+{
+    switch (kind) {
+        case ScopeAlwaysIntro::Kind::StaticShape: return kTahStaticShapeClassTag;
+        case ScopeAlwaysIntro::Kind::Turret:      return kTahTurretClassTag;
+        case ScopeAlwaysIntro::Kind::Marker:      return kTahMarkerClassTag;
+        case ScopeAlwaysIntro::Kind::Item:        return kTahItemFlagClassTag;
+        case ScopeAlwaysIntro::Kind::Sensor:      return kTahSensorClassTag;
+    }
+    return kTahStaticShapeClassTag;
+}
+
+// Marker and Sensor write through write_intro_record_marker; everything
+// else (StaticShape, Turret, Item-as-CTF-flag) writes through
+// write_intro_record_static. The choice is driven by whether the wire
+// format derives from StaticBase (§15.5 four-block prefix) or from
+// GameBase + marker body (§3.1).
+PendingIntro::Kind writer_kind_for(ScopeAlwaysIntro::Kind kind)
+{
+    switch (kind) {
+        case ScopeAlwaysIntro::Kind::Marker:
+            // Markers use the no-shape-layer body per §3.1.
+            return PendingIntro::Kind::Marker;
+        case ScopeAlwaysIntro::Kind::Sensor:
+            // Sensor inherits StaticBase but the spec's §3.8 layout is
+            // close enough to a marker-style introduction that we'll
+            // emit it as a Marker until we have an explicit Sensor
+            // encoder; the catalogue still needs the SensorData ref.
+            return PendingIntro::Kind::Marker;
+        case ScopeAlwaysIntro::Kind::StaticShape:
+        case ScopeAlwaysIntro::Kind::Turret:
+        case ScopeAlwaysIntro::Kind::Item:
+            return PendingIntro::Kind::Static;
+    }
+    return PendingIntro::Kind::Static;
+}
+
 // ----- Synthetic ghost builders -----------------------------------------
 
-net20::GhostPlayer make_session_player_ghost(const Session& sess,
-                                             std::uint16_t  ghost_id,
-                                             std::uint32_t  object_id)
-{
-    net20::GhostPlayer p{};
-    p.ghost_id = ghost_id;
-    p.object_id = object_id;
-    p.class_tag = 960;
-    p.base.base_changed = true;
-    p.base.team_id = static_cast<std::uint8_t>(sess.team);
-    p.has_pos_block = true;
-    p.pos_x = sess.spawn_pos.x;
-    p.pos_y = sess.spawn_pos.y;
-    p.pos_z = sess.spawn_pos.z;
-    p.has_velocity = false;
-    p.on_ground = true;
-    p.yaw = sess.spawn_yaw;
-    p.initial_update = true;
-    p.datafile_id = 0;
-    p.ai_controlled = false;
-    return p;
-}
-
-net20::MarkerGhost make_flag_stand_marker(std::uint16_t ghost_id,
+net20::GhostStaticShape make_static_shape(std::uint16_t ghost_id,
                                           std::uint32_t object_id,
-                                          float pos_x, float pos_y, float pos_z,
-                                          std::uint8_t team_id)
-{
-    net20::MarkerGhost m{};
-    m.ghost_id = ghost_id;
-    m.object_id = object_id;
-    m.class_tag = 129;
-    m.base.base_changed = true;
-    m.base.team_id = team_id;
-    m.initial_update = true;
-    m.marker_data_file_id = 0;
-    m.transform_changed = true;
-    m.pos_x = pos_x; m.pos_y = pos_y; m.pos_z = pos_z;
-    m.rot_x = 0.0f;  m.rot_y = 0.0f;  m.rot_z = 0.0f;
-    return m;
-}
-
-net20::GhostStaticShape make_stub_static_shape(std::uint16_t ghost_id,
-                                               std::uint32_t object_id,
-                                               float pos_x, float pos_z)
+                                          std::uint16_t class_tag,
+                                          const ScopeAlwaysIntro& intro)
 {
     net20::GhostStaticShape s{};
     s.ghost_id = ghost_id;
     s.object_id = object_id;
-    s.class_tag = 333;
-    s.base.base_changed = true;
+    s.class_tag = class_tag;
+    s.base.base_changed = (intro.team_id != 0);
+    s.base.team_id = intro.team_id;
     s.transform_changed = true;
-    s.pos_x = pos_x;
-    s.pos_y = 0.0f;
-    s.pos_z = pos_z;
-    s.rot_x = 0.0f; s.rot_y = 0.0f; s.rot_z = 0.0f;
+    s.pos_x = intro.position[0];
+    s.pos_y = intro.position[1];
+    s.pos_z = intro.position[2];
+    s.rot_x = intro.rotation[0];
+    s.rot_y = intro.rotation[1];
+    s.rot_z = intro.rotation[2];
     s.shape_info_changed = true;
-    s.shape_data_file_id = 0;
+    s.shape_data_file_id = 0;  // catalogue resolution is a follow-up
     return s;
 }
 
-struct FlagStandSpec {
-    float        pos_x, pos_y, pos_z;
-    std::uint8_t team_id;
-};
-std::vector<FlagStandSpec> enumerate_flag_stands(const LoadedMission* mission)
+net20::MarkerGhost make_marker(std::uint16_t ghost_id,
+                               std::uint32_t object_id,
+                               std::uint16_t class_tag,
+                               const ScopeAlwaysIntro& intro)
 {
-    std::vector<FlagStandSpec> out;
-    if (!mission) return out;
-    FlagWorld fw;
-    fw.load_from_mission(*mission);
-    if (!fw.loaded()) return out;
-    if (auto* r = fw.red()) {
-        out.push_back({r->home_position.x, r->home_position.y,
-                       r->home_position.z, /*team*/ 1});
-    }
-    if (auto* b = fw.blue()) {
-        out.push_back({b->home_position.x, b->home_position.y,
-                       b->home_position.z, /*team*/ 2});
-    }
-    return out;
+    net20::MarkerGhost m{};
+    m.ghost_id = ghost_id;
+    m.object_id = object_id;
+    m.class_tag = class_tag;
+    m.base.base_changed = (intro.team_id != 0);
+    m.base.team_id = intro.team_id;
+    m.initial_update = true;
+    m.marker_data_file_id = 0;
+    m.transform_changed = true;
+    m.pos_x = intro.position[0];
+    m.pos_y = intro.position[1];
+    m.pos_z = intro.position[2];
+    m.rot_x = intro.rotation[0];
+    m.rot_y = intro.rotation[1];
+    m.rot_z = intro.rotation[2];
+    return m;
 }
 
 std::uint8_t pick_id_width(std::uint16_t max_ghost_id)
@@ -249,62 +260,55 @@ TahBurstOrchestrator::build_initial_burst(Session&             sess,
                                           std::uint64_t        now_ms)
 {
     std::vector<std::vector<std::uint8_t>> out;
+    (void)sess;  // sess team / spawn are no longer used here — the local
+                 // player intro rides a separate post-burst path now.
 
     // ---- Build the catalogue queue (mission-referenced subset) ----
-    auto catalogue = net20::stock_tribes_ctf_catalogue();
+    auto catalogue = (mission != nullptr)
+        ? net20::build_mission_catalogue(scope_always_objects(*mission),
+                                         required_datablock_names(*mission))
+        : net20::stock_tribes_ctf_catalogue();
     std::size_t catalogue_idx = 0;
     std::uint8_t event_seq = catalogue_first_event_seq;
 
     // ---- Build the ghost-intro queue ----
+    //
+    // Source: mission->scope_always_objects() when a mission is
+    // available, otherwise a tiny stub set (only used by the orchestrator
+    // selftest, which passes mission=nullptr).
     std::vector<PendingIntro> intros;
     std::uint16_t next_id = 1;
-    {
+
+    auto enqueue = [&](const ScopeAlwaysIntro& src,
+                       std::uint32_t obj_id_prefix) {
         PendingIntro pi{};
-        pi.kind = PendingIntro::Kind::Player;
-        pi.ghost_id = next_id++;
-        pi.object_id = 0x10000000u | static_cast<std::uint32_t>(sess.player_slot);
-        pi.player = make_session_player_ghost(sess, pi.ghost_id, pi.object_id);
+        pi.ghost_id  = next_id++;
+        pi.object_id = obj_id_prefix |
+                       static_cast<std::uint32_t>(pi.ghost_id);
+        const std::uint16_t tag = class_tag_for(src.kind);
+        pi.kind = writer_kind_for(src.kind);
+        if (pi.kind == PendingIntro::Kind::Marker) {
+            pi.marker = make_marker(pi.ghost_id, pi.object_id, tag, src);
+        } else {
+            pi.stat = make_static_shape(pi.ghost_id, pi.object_id, tag, src);
+        }
         intros.push_back(pi);
-    }
-    const auto stands = enumerate_flag_stands(mission);
-    for (const auto& fs : stands) {
-        PendingIntro pi{};
-        pi.kind = PendingIntro::Kind::FlagStandMarker;
-        pi.ghost_id = next_id++;
-        pi.object_id = 0x20000000u | static_cast<std::uint32_t>(pi.ghost_id);
-        pi.marker = make_flag_stand_marker(pi.ghost_id, pi.object_id,
-                                           fs.pos_x, fs.pos_y, fs.pos_z,
-                                           fs.team_id);
-        intros.push_back(pi);
-    }
+    };
+
     if (mission != nullptr) {
-        std::size_t emitted_from_scene = 0;
-        for (const auto& child : mission->scene.root.children) {
-            if (emitted_from_scene >= 16) break;
-            const bool is_marker = std::holds_alternative<
-                studio::content::mission::node_marker>(child.payload);
-            const bool is_static = std::holds_alternative<
-                studio::content::mission::node_static_shape>(child.payload);
-            if (!is_marker && !is_static) continue;
-            PendingIntro pi{};
-            pi.kind = PendingIntro::Kind::StubStatic;
-            pi.ghost_id = next_id++;
-            pi.object_id = 0x30000000u | static_cast<std::uint32_t>(pi.ghost_id);
-            pi.stub = make_stub_static_shape(pi.ghost_id, pi.object_id,
-                /*pos_x*/ static_cast<float>(emitted_from_scene) * 10.0f,
-                /*pos_z*/ 0.0f);
-            intros.push_back(pi);
-            ++emitted_from_scene;
+        const auto objects = scope_always_objects(*mission);
+        for (const auto& obj : objects) {
+            enqueue(obj, 0x20000000u);
         }
     } else {
+        // No-mission stub: 4 fake StaticShape intros so the selftest
+        // exercises the GSS code path end-to-end.
         for (int i = 0; i < 4; ++i) {
-            PendingIntro pi{};
-            pi.kind = PendingIntro::Kind::StubStatic;
-            pi.ghost_id = next_id++;
-            pi.object_id = 0x30000000u | static_cast<std::uint32_t>(pi.ghost_id);
-            pi.stub = make_stub_static_shape(pi.ghost_id, pi.object_id,
-                /*pos_x*/ static_cast<float>(i) * 25.0f, /*pos_z*/ 0.0f);
-            intros.push_back(pi);
+            ScopeAlwaysIntro src{};
+            src.kind = ScopeAlwaysIntro::Kind::StaticShape;
+            src.position = {static_cast<float>(i) * 25.0f, 0.0f, 0.0f};
+            src.datablock_name = "stub";
+            enqueue(src, 0x30000000u);
         }
     }
 
@@ -516,7 +520,7 @@ bool decode_packet_shape(const std::vector<std::uint8_t>& bytes,
     return true;
 }
 
-int run_selftest()
+int run_one_burst(const char* tag, const LoadedMission* mission)
 {
     int failures = 0;
 
@@ -532,10 +536,11 @@ int run_selftest()
     sess.spawn_yaw = 1.0f;
 
     TahBurstOrchestrator orch;
-    auto pkts = orch.build_initial_burst(sess, /*mission*/ nullptr, /*now_ms*/ 0);
+    auto pkts = orch.build_initial_burst(sess, mission, /*now_ms*/ 0);
 
     if (pkts.empty()) {
-        std::fputs("[tah-burst-orchestrator] FAIL: 0 packets emitted\n", stderr);
+        std::fprintf(stderr,
+            "[tah-burst-orchestrator %s] FAIL: 0 packets emitted\n", tag);
         return 1;
     }
 
@@ -566,20 +571,22 @@ int run_selftest()
         net20::ParsedIncomingHeader ph;
         if (!net20::parse_incoming_header(p.data(), p.size(), ph)) {
             std::fprintf(stderr,
-                "[tah-burst-orchestrator] FAIL pkt %zu: VC header parse\n", i);
+                "[tah-burst-orchestrator %s] FAIL pkt %zu: VC header parse\n",
+                tag, i);
             ++failures;
             continue;
         }
         if (ph.type_word != 0) {
             std::fprintf(stderr,
-                "[tah-burst-orchestrator] FAIL pkt %zu: type_word=0x%02x\n",
-                i, (unsigned)ph.type_word);
+                "[tah-burst-orchestrator %s] FAIL pkt %zu: type_word=0x%02x\n",
+                tag, i, (unsigned)ph.type_word);
             ++failures;
         }
         PacketShape sh{};
         if (!decode_packet_shape(p, sh)) {
             std::fprintf(stderr,
-                "[tah-burst-orchestrator] FAIL pkt %zu: shape decode\n", i);
+                "[tah-burst-orchestrator %s] FAIL pkt %zu: shape decode\n",
+                tag, i);
             ++failures;
             continue;
         }
@@ -588,47 +595,50 @@ int run_selftest()
     }
 
     std::fprintf(stderr,
-        "[tah-burst-orchestrator] %zu packets, non-last sizes [%zu..%zu], "
+        "[tah-burst-orchestrator %s] %zu packets, non-last sizes [%zu..%zu], "
         "last %zu, total %zu, events-bearing=%zu, ghost-bearing=%zu\n",
-        pkts.size(),
+        tag, pkts.size(),
         (pkts.size() > 1 ? min_non_last : last_pkt_size),
         (pkts.size() > 1 ? max_non_last : last_pkt_size),
         last_pkt_size, total_bytes,
         pkts_with_events, pkts_with_ghost);
 
-    // (A) Packet count envelope: spec §6 / 14c-I-5 step 5 — 10 ± 2.
-    if (pkts.size() < 8 || pkts.size() > 12) {
+    // (A) Packet count envelope: spec 14c-I-6 acceptance — [8, 14].
+    if (pkts.size() < 8 || pkts.size() > 14) {
         std::fprintf(stderr,
-            "[tah-burst-orchestrator] FAIL: packet count %zu outside [8, 12]\n",
-            pkts.size());
+            "[tah-burst-orchestrator %s] FAIL: packet count %zu outside [8, 14]\n",
+            tag, pkts.size());
         ++failures;
     }
 
-    // (B) Per-packet size envelope (non-last packets): 200..235 B. cap1
-    // P01..P10 lie in [210, 231]; the spec rule (§1.1 + §1.5) allows up
-    // to ~32 B overrun past the 200 B soft budget. The LAST packet is
-    // excluded — it may be a partial trailing packet (§1.3).
+    // (B) Per-packet size envelope (non-last packets): spec 14c-I-6
+    // acceptance — [200, 245] B. cap1 P01..P10 lie in [210, 231]; the
+    // upper bound is bumped 10 B over I-5 to absorb the slightly
+    // larger per-record byte cost the real ghost intros produce.
+    // The LAST packet is excluded — it may be a partial trailing
+    // packet (§1.3).
     if (pkts.size() > 1) {
-        if (min_non_last < 200 || max_non_last > 235) {
+        if (min_non_last < 200 || max_non_last > 245) {
             std::fprintf(stderr,
-                "[tah-burst-orchestrator] FAIL: non-last per-packet sizes "
-                "[%zu..%zu] outside [200..235]\n", min_non_last, max_non_last);
+                "[tah-burst-orchestrator %s] FAIL: non-last per-packet sizes "
+                "[%zu..%zu] outside [200..245]\n", tag, min_non_last, max_non_last);
             ++failures;
         }
     }
     // Last packet must be non-trivial (a real packet, not an empty header).
-    if (last_pkt_size < 8 || last_pkt_size > 235) {
+    if (last_pkt_size < 8 || last_pkt_size > 245) {
         std::fprintf(stderr,
-            "[tah-burst-orchestrator] FAIL: last packet size %zu outside "
-            "[8..235]\n", last_pkt_size);
+            "[tah-burst-orchestrator %s] FAIL: last packet size %zu outside "
+            "[8..245]\n", tag, last_pkt_size);
         ++failures;
     }
 
-    // (C) Total bytes envelope: 1900..2500 (cap1 = 2228 B).
-    if (total_bytes < 1900 || total_bytes > 2500) {
+    // (C) Total bytes envelope: spec 14c-I-6 acceptance — [1800, 2600] B
+    // (cap1 = 2228 B).
+    if (total_bytes < 1800 || total_bytes > 2600) {
         std::fprintf(stderr,
-            "[tah-burst-orchestrator] FAIL: total bytes %zu outside "
-            "[1900..2500]\n", total_bytes);
+            "[tah-burst-orchestrator %s] FAIL: total bytes %zu outside "
+            "[1800..2600]\n", tag, total_bytes);
         ++failures;
     }
 
@@ -639,10 +649,43 @@ int run_selftest()
     const std::uint16_t got_seq = sess.next_send_seq;
     if (got_seq != expected_seq && !(expected_seq == 0 && got_seq == 1)) {
         std::fprintf(stderr,
-            "[tah-burst-orchestrator] FAIL: next_send_seq=%u expected %u "
+            "[tah-burst-orchestrator %s] FAIL: next_send_seq=%u expected %u "
             "(pkts.size=%zu)\n",
-            (unsigned)got_seq, (unsigned)expected_seq, pkts.size());
+            tag, (unsigned)got_seq, (unsigned)expected_seq, pkts.size());
         ++failures;
+    }
+
+    return failures;
+}
+
+int run_selftest()
+{
+    int failures = 0;
+
+    // (1) No-mission stub — exercises the StaticShape stub path.
+    failures += run_one_burst("stub", /*mission*/ nullptr);
+
+    // (2) Real 5_CTF mission — exercises the scope_always_objects()
+    // + build_mission_catalogue() integration.
+    {
+        const std::filesystem::path tribes_dir =
+            "/Users/v/code/tribes-emscripten/tribes-game";
+        const std::filesystem::path missions_dir = tribes_dir / "base" / "missions";
+        const std::filesystem::path base_dir     = tribes_dir / "base";
+        if (std::filesystem::is_directory(missions_dir)) {
+            auto lm = load_mission(missions_dir, base_dir, "5_CTF");
+            if (lm) {
+                failures += run_one_burst("5_CTF", &(*lm));
+            } else {
+                std::fputs("[tah-burst-orchestrator] note: 5_CTF.mis "
+                           "could not be loaded; skipping mission run\n",
+                           stderr);
+            }
+        } else {
+            std::fprintf(stderr,
+                "[tah-burst-orchestrator] note: %s not found; skipping "
+                "mission run\n", missions_dir.string().c_str());
+        }
     }
 
     if (failures == 0) {
