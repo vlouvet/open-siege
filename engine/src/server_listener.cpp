@@ -130,12 +130,14 @@ bool looks_like_groove_request_connect(const std::vector<std::uint8_t>& pkt)
 //     81 a1 c1 e1 01; parity@10; nonce@11..13). Observed 2026-05-24
 //     interleaved with shape B in same TAH session.
 //
-//   Shape D — 52B, leading 0x07  (prefix bytes 0..8 = 07 00 11 23 47
-//     83 a7 e3 01; parity@9; nonce@10..12). Observed 2026-06-16 against
-//     live TAH on .101. Same ack-list step pattern as Shape C but 1B
-//     shorter — bit-shifted by one nibble. Offset guesses (parity@9,
-//     nonce@10..12) extrapolated from Shape A/C; needs Reader cross-
-//     check (14c-R-8) if TAH does not accept the resulting AC reply.
+//   Shape D — 52B, leading 0x05 OR 0x07  (prefix bytes 1..8 = 00 11 23
+//     47 83 a7 e3 01; parity@9; nonce@10..12). Observed 2026-06-16 against
+//     live TAH on .101. Byte 0 toggles between 0x05 and 0x07 in the same
+//     session; bytes 1..51 are identical across both leading-byte variants
+//     for a given retransmit train. Treating byte 0 as a TAH-version flag
+//     (similar to A vs C). Offset guesses (parity@9, nonce@10..12)
+//     extrapolated from Shape A/C; needs Reader cross-check (14c-R-8) if
+//     TAH does not accept the resulting AC reply.
 //
 // out_parity_off / out_nonce_off set on match.
 bool looks_like_tah_request_connect(const std::vector<std::uint8_t>& pkt,
@@ -151,8 +153,9 @@ bool looks_like_tah_request_connect(const std::vector<std::uint8_t>& pkt,
     static const std::uint8_t prefix_c[10] = {
         0x07, 0x00, 0x21, 0x41, 0x61, 0x81, 0xa1, 0xc1, 0xe1, 0x01,
     };
-    static const std::uint8_t prefix_d[9] = {
-        0x07, 0x00, 0x11, 0x23, 0x47, 0x83, 0xa7, 0xe3, 0x01,
+    // Shape D bytes 1..8 (byte 0 wildcards 0x05/0x07).
+    static const std::uint8_t prefix_d_tail[8] = {
+        0x00, 0x11, 0x23, 0x47, 0x83, 0xa7, 0xe3, 0x01,
     };
     if (pkt.size() == 53 && std::memcmp(pkt.data(), prefix_a, 10) == 0) {
         if (out_parity_off) *out_parity_off = 10;
@@ -169,7 +172,8 @@ bool looks_like_tah_request_connect(const std::vector<std::uint8_t>& pkt,
         if (out_nonce_off)  *out_nonce_off  = 11;
         return true;
     }
-    if (pkt.size() == 52 && std::memcmp(pkt.data(), prefix_d, 9) == 0) {
+    if (pkt.size() == 52 && (pkt[0] == 0x05 || pkt[0] == 0x07) &&
+        std::memcmp(pkt.data() + 1, prefix_d_tail, 8) == 0) {
         if (out_parity_off) *out_parity_off = 9;
         if (out_nonce_off)  *out_nonce_off  = 10;
         return true;
