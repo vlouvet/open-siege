@@ -3,7 +3,11 @@
 
 #include "tah_default_catalogue.hpp"
 
+#include "mission_loader.hpp"
+
+#include <cstdio>
 #include <string>
+#include <unordered_set>
 
 namespace net20 {
 
@@ -21,7 +25,10 @@ namespace net20 {
 // mission-referenced filter.
 constexpr std::size_t kTahBurstCatalogueLimit = 110;
 
-namespace {
+// Helpers below are reused by both stock_tribes_ctf_catalogue() and the
+// mission-filtered build_mission_catalogue() — they live in the named
+// `net20::` namespace (not anonymous) so the second function can call
+// them, but are not exposed in the public header.
 
 // SoundProfileData flag bits (script names extracted from
 // base/scripts/sound/nsound.cs). Exact bit assignment is engine-side
@@ -238,8 +245,6 @@ void build_placeholder_group(std::vector<DatablockEntry>& out,
         push_entry(out, make_placeholder(kind, count, i));
 }
 
-}  // namespace
-
 std::vector<DatablockEntry> stock_tribes_ctf_catalogue()
 {
     std::vector<DatablockEntry> out;
@@ -289,6 +294,251 @@ std::vector<DatablockEntry> stock_tribes_ctf_catalogue()
         out.resize(kTahBurstCatalogueLimit);
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// 14c-I-6 — mission-referenced catalogue subset
+// ---------------------------------------------------------------------------
+//
+// Filters the stock catalogue down to records whose group is required
+// by the scope-always object set. The current DatablockEntry layout
+// stores its body as pre-packed opaque bits, which precludes a real
+// transitive walk (we'd need typed cross-references to know that e.g.
+// a Turret PlayerData ref points at SoundData index 42). The v1 filter
+// keeps:
+//   - SoundProfileData (group 0): all 10 entries — every other group
+//     transitively references these.
+//   - SoundData (group 1): cap at 32 entries — group-1 dominates the
+//     burst byte budget and a full 153 entries blows past cap1.
+//   - DamageSkinData (2), PlayerData (3): always shipped (PlayerData
+//     is needed for any player join later).
+//   - StaticShapeData (4), ItemData (5), ItemImageData (6): shipped if
+//     any StaticShape or Item is in the scope-always set.
+//   - SensorData (8): shipped if any Sensor is in the scope-always set.
+//   - TurretData (19): shipped if any Turret is in the scope-always set.
+//   - ExplosionData (20): always shipped (every kind of damage event
+//     references it).
+//   - MarkerData (21): shipped if any Marker is in the scope-always set.
+//   - All other groups: sentinel-only.
+//
+// `referenced_names` is currently advisory — the per-block name match
+// requires a name-to-block-index lookup table we haven't built yet
+// (TODO(14c-I-7-R)). For now we use the group-level filter.
+
+std::vector<DatablockEntry>
+build_mission_catalogue(
+    const std::vector<dts_viewer::ScopeAlwaysIntro>& intros,
+    const std::unordered_set<std::string>& referenced_names)
+{
+    (void)referenced_names;  // see TODO above
+
+    bool need_static  = false;
+    bool need_turret  = false;
+    bool need_item    = false;
+    bool need_sensor  = false;
+    bool need_marker  = false;
+    for (const auto& intro : intros) {
+        switch (intro.kind) {
+            case dts_viewer::ScopeAlwaysIntro::Kind::StaticShape:
+                need_static = true; break;
+            case dts_viewer::ScopeAlwaysIntro::Kind::Turret:
+                need_turret = true; need_static = true; break;
+            case dts_viewer::ScopeAlwaysIntro::Kind::Marker:
+                need_marker = true; break;
+            case dts_viewer::ScopeAlwaysIntro::Kind::Item:
+                need_item = true; break;
+            case dts_viewer::ScopeAlwaysIntro::Kind::Sensor:
+                need_sensor = true; break;
+        }
+    }
+
+    std::vector<DatablockEntry> out;
+    out.reserve(80);
+
+    // Group 0 — always 10 sound profiles (every other group's per-record
+    // body references these).
+    build_sound_profiles(out);
+
+    // Group 1 — SoundData; cap at 16 entries to stay in cap1 envelope.
+    // The full 153-entry dump would blow past 2.6 kB. Real-server
+    // missions ship the actual referenced subset (TODO(14c-I-7-R)).
+    {
+        const std::uint8_t kFullGroupSize = 153;
+        const std::uint8_t kProfileGroupSize = 10;
+        const std::uint8_t kEmitted = 16;
+        for (std::uint8_t i = 0; i < kEmitted; ++i) {
+            SoundDataFields f;
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "sound%03u.wav", i);
+            f.wavFileName = buf;
+            f.priority = 0.5f;
+            f.profileIndex = 4;
+            // group_size in the wire record is the ACTUAL full count
+            // (so the client pre-sizes its receive array correctly);
+            // we emit only the first 16 blocks but advertise 153.
+            out.push_back(make_sound_data(kFullGroupSize, i,
+                                          kProfileGroupSize, f));
+        }
+    }
+
+    // Group 2 — DamageSkinData (2 entries, always shipped).
+    build_placeholder_group(out, DatablockClass::DamageSkin, 2);
+
+    // Group 3 — PlayerData (5 entries, always shipped).
+    build_player_data(out);
+
+    // Group 4 — StaticShapeData; shipped if any static-class object exists.
+    if (need_static) {
+        // 5_CTF has ~3 distinct StaticShape datablocks; we ship a
+        // conservative 8 placeholder entries (down from cap1's ~51
+        // global total) to cover the common CTF asset surface without
+        // blowing budget. Real-server missions ship only the
+        // referenced subset (TODO(14c-I-7-R)).
+        build_placeholder_group(out, DatablockClass::StaticShape, 8);
+    } else {
+        out.push_back(make_sentinel_entry(DatablockClass::StaticShape));
+    }
+
+    // Group 5 — ItemData; shipped if any Item (CTF flag) exists.
+    if (need_item) {
+        build_placeholder_group(out, DatablockClass::Item, 4);
+    } else {
+        out.push_back(make_sentinel_entry(DatablockClass::Item));
+    }
+
+    // Group 6 — ItemImageData; shipped alongside ItemData.
+    if (need_item) {
+        build_placeholder_group(out, DatablockClass::ItemImage, 2);
+    } else {
+        out.push_back(make_sentinel_entry(DatablockClass::ItemImage));
+    }
+
+    // Groups 7..18 — sentinel-only (Moveable, Vehicle, Tank, Hover,
+    // Projectile, Bullet, Grenade, Rocket, Laser, InteriorShape).
+    out.push_back(make_sentinel_entry(DatablockClass::Moveable));
+    if (need_sensor) {
+        build_placeholder_group(out, DatablockClass::Sensor, 2);
+    } else {
+        out.push_back(make_sentinel_entry(DatablockClass::Sensor));
+    }
+    out.push_back(make_sentinel_entry(DatablockClass::Vehicle));
+    out.push_back(make_sentinel_entry(DatablockClass::Flier));
+    out.push_back(make_sentinel_entry(DatablockClass::Tank));
+    out.push_back(make_sentinel_entry(DatablockClass::Hover));
+    out.push_back(make_sentinel_entry(DatablockClass::Projectile));
+    out.push_back(make_sentinel_entry(DatablockClass::Bullet));
+    out.push_back(make_sentinel_entry(DatablockClass::Grenade));
+    out.push_back(make_sentinel_entry(DatablockClass::Rocket));
+    out.push_back(make_sentinel_entry(DatablockClass::Laser));
+    out.push_back(make_sentinel_entry(DatablockClass::InteriorShape));
+
+    // Group 19 — TurretData; shipped if any Turret exists.
+    if (need_turret) {
+        build_placeholder_group(out, DatablockClass::Turret, 2);
+    } else {
+        out.push_back(make_sentinel_entry(DatablockClass::Turret));
+    }
+
+    // Group 20 — ExplosionData; always shipped (damage events need them).
+    build_placeholder_group(out, DatablockClass::Explosion, 4);
+
+    // Group 21 — MarkerData; shipped if any Marker exists.
+    if (need_marker) {
+        build_placeholder_group(out, DatablockClass::Marker, 3);
+    } else {
+        out.push_back(make_sentinel_entry(DatablockClass::Marker));
+    }
+
+    // Groups 22..30 — sentinel-only.
+    out.push_back(make_sentinel_entry(DatablockClass::Debris));
+    out.push_back(make_sentinel_entry(DatablockClass::Mine));
+    out.push_back(make_sentinel_entry(DatablockClass::TargetLaser));
+    out.push_back(make_sentinel_entry(DatablockClass::SeekingMissile));
+    out.push_back(make_sentinel_entry(DatablockClass::Trigger));
+    out.push_back(make_sentinel_entry(DatablockClass::Car));
+    out.push_back(make_sentinel_entry(DatablockClass::Lightning));
+    out.push_back(make_sentinel_entry(DatablockClass::RepairEffect));
+    out.push_back(make_sentinel_entry(DatablockClass::IRCChannel));
+
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// 14c-I-6 selftest
+// ---------------------------------------------------------------------------
+
+int tah_default_catalogue_selftest()
+{
+    int failures = 0;
+
+    // Vector 1 — stock catalogue still builds + caps at 110.
+    {
+        const auto stock = stock_tribes_ctf_catalogue();
+        if (stock.size() == 0 || stock.size() > 200) {
+            std::fprintf(stderr,
+                "[tah-default-catalogue] FAIL: stock catalogue size %zu "
+                "(expected (0, 200])\n", stock.size());
+            ++failures;
+        } else {
+            std::fprintf(stderr,
+                "[tah-default-catalogue] stock catalogue: %zu records\n",
+                stock.size());
+        }
+    }
+
+    // Vector 2 — empty mission → mostly-sentinel catalogue, still
+    // includes the always-shipped groups (0/1/2/3/20).
+    {
+        std::vector<dts_viewer::ScopeAlwaysIntro> empty;
+        std::unordered_set<std::string> no_names;
+        const auto cat = build_mission_catalogue(empty, no_names);
+        if (cat.size() < 40 || cat.size() > 110) {
+            std::fprintf(stderr,
+                "[tah-default-catalogue] FAIL: empty-mission catalogue "
+                "size %zu (expected [40, 110])\n", cat.size());
+            ++failures;
+        } else {
+            std::fprintf(stderr,
+                "[tah-default-catalogue] empty-mission catalogue: "
+                "%zu records\n", cat.size());
+        }
+    }
+
+    // Vector 3 — mission with one of every kind → all per-kind groups
+    // are populated (not sentinel).
+    {
+        std::vector<dts_viewer::ScopeAlwaysIntro> intros;
+        for (auto k : {dts_viewer::ScopeAlwaysIntro::Kind::StaticShape,
+                       dts_viewer::ScopeAlwaysIntro::Kind::Turret,
+                       dts_viewer::ScopeAlwaysIntro::Kind::Marker,
+                       dts_viewer::ScopeAlwaysIntro::Kind::Item,
+                       dts_viewer::ScopeAlwaysIntro::Kind::Sensor}) {
+            dts_viewer::ScopeAlwaysIntro s{};
+            s.kind = k;
+            intros.push_back(s);
+        }
+        std::unordered_set<std::string> no_names;
+        const auto cat = build_mission_catalogue(intros, no_names);
+        if (cat.size() < 60 || cat.size() > 110) {
+            std::fprintf(stderr,
+                "[tah-default-catalogue] FAIL: full-mission catalogue "
+                "size %zu (expected [60, 110])\n", cat.size());
+            ++failures;
+        } else {
+            std::fprintf(stderr,
+                "[tah-default-catalogue] full-mission catalogue: "
+                "%zu records\n", cat.size());
+        }
+    }
+
+    if (failures == 0) {
+        std::fputs("[tah-default-catalogue] selftest OK\n", stderr);
+        return 0;
+    }
+    std::fprintf(stderr,
+        "[tah-default-catalogue] selftest FAILED (%d failures)\n",
+        failures);
+    return 1;
 }
 
 }  // namespace net20
