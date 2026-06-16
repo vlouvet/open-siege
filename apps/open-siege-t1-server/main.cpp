@@ -393,6 +393,7 @@ int main(int argc, char** argv)
                 "[server] extracted %zu spawn points from mission\n",
                 spawns.size());
             listener->set_spawn_points(std::move(spawns));
+            listener->set_loaded_mission(&*mission);
         }
         if (!listener->start()) {
             std::fprintf(stderr, "[server] listener failed to start: %s\n",
@@ -531,6 +532,7 @@ int main(int argc, char** argv)
                             mission->scene, base_dir, sink);
                         listener->set_spawn_points(
                             dts_viewer::extract_spawn_points(*mission));
+                        listener->set_loaded_mission(&*mission);
                         flags.load_from_mission(*mission);
                         // Reset every active session's authoritative state.
                         for (auto* s : listener->sessions().active_sessions()) {

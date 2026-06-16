@@ -297,6 +297,7 @@ struct ServerListener::Impl
                        EmitterKeyHash>  emitters;
     std::vector<SpawnPoint>         spawns;       // spec 28/05
     std::string                     mission_name; // spec 29/02b
+    const LoadedMission*            loaded_mission = nullptr; // 14c-I-7 followup
     std::uint8_t                    last_keepalive_byte3 = 0xff; // 26/10b dedup
 };
 
@@ -313,6 +314,11 @@ const std::vector<SpawnPoint>& ServerListener::spawn_points() const
 void ServerListener::set_mission_name(std::string name)
 {
     impl_->mission_name = std::move(name);
+}
+
+void ServerListener::set_loaded_mission(const LoadedMission* mission)
+{
+    impl_->loaded_mission = mission;
 }
 
 ServerListener::ServerListener(ServerListenerConfig cfg)
@@ -653,7 +659,7 @@ void ServerListener::run()
                         // state and never satisfied the new client.
                         TahBurstOrchestrator orch;
                         auto burst = orch.build_initial_burst(
-                            *sess, /*mission*/ nullptr, now_ms);
+                            *sess, impl_->loaded_mission, now_ms);
                         for (auto& p : burst) {
                             if (impl_->socket.send_to(peer, p.data(), p.size())) {
                                 total_sent += p.size();
@@ -739,7 +745,7 @@ void ServerListener::run()
                             // expects).
                             TahBurstOrchestrator orch;
                             auto burst = orch.build_initial_burst(
-                                *sess, /*mission*/ nullptr, now_ms);
+                                *sess, impl_->loaded_mission, now_ms);
                             for (auto& p : burst) {
                                 if (impl_->socket.send_to(peer, p.data(), p.size())) {
                                     total_sent += p.size();

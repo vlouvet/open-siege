@@ -97,6 +97,12 @@ public:
     // server_info packet sent after each new-session AcceptConnect.
     void set_mission_name(std::string name);
 
+    // 14c-I-7 followup — loaded mission pointer passed through to the
+    // TAH burst orchestrator. Without this the orchestrator falls back
+    // to stub scope-always objects, which TAH rejects. Lifetime is the
+    // caller's responsibility; passing nullptr unsets it.
+    void set_loaded_mission(const struct LoadedMission* mission);
+
 private:
     void run();
 
