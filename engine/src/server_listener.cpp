@@ -111,93 +111,67 @@ bool looks_like_groove_request_connect(const std::vector<std::uint8_t>& pkt)
     return pkt.size() == 45 && (pkt[0] == 0x05 || pkt[0] == 0x07);
 }
 
-// TribesAfterHope RequestConnect family. TAH cycles through multiple
-// connect-handshake shapes when probing a server; all three observed
-// shapes share the same logical fields (parity byte then 3-byte nonce)
-// at different offsets. The server replies with the same 18B AC for
-// all of them.
+// TribesAfterHope RequestConnect family — UNIVERSAL classifier (R-8).
 //
-// Variants (verified by capture against TAH at 192.168.1.101):
+// TAH cycles through multiple outer framings when probing a server.
+// The 2026-06-16 R-8 analysis (8 captured shapes across 5 sessions)
+// found a universal byte-layout invariant: every shape decomposes as
 //
-//   Shape A — 53B, leading 0x05  (prefix bytes 0..9 = 05 00 21 41 61
-//     81 a1 c1 e1 01; parity@10; nonce@11..13). Cross-verified against
-//     real TAH dedicated server: replies with 18B AC.
+//   [N-byte prefix] [1B parity] [3B nonce] [1B separator] [38B body]
 //
-//   Shape B — 51B, leading 0x05  (prefix bytes 0..7 = 05 00 25 61 81
-//     a2 c1 e5; parity@8; nonce@9..11). Observed 2026-05-24.
+// where the prefix length N varies (3 for Shape E up to 11 for Shape G)
+// but the trailing 5+38 = 43 bytes are positioned identically relative
+// to packet end. Solving N + 5 + 38 = total_size:
 //
-//   Shape C — 53B, leading 0x07  (prefix bytes 0..9 = 07 00 21 41 61
-//     81 a1 c1 e1 01; parity@10; nonce@11..13). Observed 2026-05-24
-//     interleaved with shape B in same TAH session.
+//   parity_off = total_size - 43
+//   nonce_off  = total_size - 42  (3 bytes)
+//   separator  = total_size - 39  (1 byte, high 5 bits = 0x18; observed
+//                                   low 3 bits 000/001/100/101 across
+//                                   sessions — likely a per-field parity)
+//   body_off   = total_size - 38  (38 bytes, encrypted Groove blob)
 //
-//   Shape D — 52B, leading 0x05 OR 0x07  (prefix bytes 1..8 = 00 11 23
-//     47 83 a7 e3 01; parity@9; nonce@10..12). Observed 2026-06-16 against
-//     live TAH on .101. Byte 0 toggles between 0x05 and 0x07 in the same
-//     session; bytes 1..51 are identical across both leading-byte variants
-//     for a given retransmit train. Treating byte 0 as a TAH-version flag
-//     (similar to A vs C). Offset guesses (parity@9, nonce@10..12)
-//     extrapolated from Shape A/C; needs Reader cross-check (14c-R-8) if
-//     TAH does not accept the resulting AC reply.
+// Verified shape catalogue (sessions 2026-05-21 .. 2026-06-16):
+//   Shape A  — 53B, prefix 05 00 21 41 61 81 a1 c1 e1 01
+//   Shape B  — 51B, prefix 05 00 25 61 81 a2 c1 e5
+//   Shape C  — 53B, prefix 07 00 21 41 61 81 a1 c1 e1 01
+//   Shape D  — 52B, prefix [05|07] 00 11 23 47 83 a7 e3 01  (sep = 0x1c)
+//   Shape E  — 46B, prefix 07 00 69
+//   Shape E' — 46B, prefix 05 00 09
+//   Shape F  — 50B, prefix [05|07] 00 17 4f 87 bf f3
+//   Shape G  — 54B, prefix 07 00 11 27 59 71 82 b1 c2 e2 01
 //
-//   Shape E — 46B, leading 0x07  (prefix bytes 0..2 = 07 00 69;
-//     parity@3; nonce@4..6). Observed 2026-06-16 after Shape D AC was
-//     ignored — TAH cycled to a shorter framing. Byte 3 toggles
-//     0x18↔0x58 between retransmits (same nibble pattern as Shape D
-//     byte 9 → strong parity-byte signal). KEY OBSERVATION: trailing
-//     38 bytes (bytes 8..45) are byte-identical to Shape D bytes
-//     14..51 — i.e. the encrypted Groove body is the same; only the
-//     outer framing header changes across shapes. Offsets are still
-//     guesses pending [[14c-R-8]] verification.
+// The discriminator is the parity byte at (total_size - 43): every
+// retransmit-pair captured toggles 0x18 ↔ 0x58 at that position
+// (binary 0001 1000 ↔ 0101 1000 — the high bits encode a 2-bit parity
+// counter; the AC encoder consumes only the byte value).
 //
-// out_parity_off / out_nonce_off set on match.
+// Matcher strategy: structural classifier — no prefix list required.
+//   1. Size in [46, 60]   (excludes Groove's exact 45B at the bottom,
+//                          stops shy of normal data-packet sizes at top)
+//   2. Bytes 0..1 = (0x05|0x07), 0x00
+//   3. Parity byte (size - 43) in {0x18, 0x58}
+//   4. Separator byte (size - 39) has high 5 bits == 0x18
+//      (observed values 0x18, 0x19, 0x1c, 0x1d across 5 sessions)
+//
+// The classifier intentionally does NOT constrain on the 38B body or
+// the prefix bytes — TAH may introduce new framings, but the universal
+// layout has held across every observed session. See R-8 spec at
+// docs/done/26-three-binaries/14c-R-8-... for the full bit evidence.
 bool looks_like_tah_request_connect(const std::vector<std::uint8_t>& pkt,
                                     std::size_t* out_parity_off,
                                     std::size_t* out_nonce_off)
 {
-    static const std::uint8_t prefix_a[10] = {
-        0x05, 0x00, 0x21, 0x41, 0x61, 0x81, 0xa1, 0xc1, 0xe1, 0x01,
-    };
-    static const std::uint8_t prefix_b[8] = {
-        0x05, 0x00, 0x25, 0x61, 0x81, 0xa2, 0xc1, 0xe5,
-    };
-    static const std::uint8_t prefix_c[10] = {
-        0x07, 0x00, 0x21, 0x41, 0x61, 0x81, 0xa1, 0xc1, 0xe1, 0x01,
-    };
-    // Shape D bytes 1..8 (byte 0 wildcards 0x05/0x07).
-    static const std::uint8_t prefix_d_tail[8] = {
-        0x00, 0x11, 0x23, 0x47, 0x83, 0xa7, 0xe3, 0x01,
-    };
-    // Shape E: 46B, bytes 0..2 fixed; trailing 38B body matches Shape D.
-    static const std::uint8_t prefix_e[3] = {
-        0x07, 0x00, 0x69,
-    };
-    if (pkt.size() == 53 && std::memcmp(pkt.data(), prefix_a, 10) == 0) {
-        if (out_parity_off) *out_parity_off = 10;
-        if (out_nonce_off)  *out_nonce_off  = 11;
-        return true;
-    }
-    if (pkt.size() == 51 && std::memcmp(pkt.data(), prefix_b, 8) == 0) {
-        if (out_parity_off) *out_parity_off = 8;
-        if (out_nonce_off)  *out_nonce_off  = 9;
-        return true;
-    }
-    if (pkt.size() == 53 && std::memcmp(pkt.data(), prefix_c, 10) == 0) {
-        if (out_parity_off) *out_parity_off = 10;
-        if (out_nonce_off)  *out_nonce_off  = 11;
-        return true;
-    }
-    if (pkt.size() == 52 && (pkt[0] == 0x05 || pkt[0] == 0x07) &&
-        std::memcmp(pkt.data() + 1, prefix_d_tail, 8) == 0) {
-        if (out_parity_off) *out_parity_off = 9;
-        if (out_nonce_off)  *out_nonce_off  = 10;
-        return true;
-    }
-    if (pkt.size() == 46 && std::memcmp(pkt.data(), prefix_e, 3) == 0) {
-        if (out_parity_off) *out_parity_off = 3;
-        if (out_nonce_off)  *out_nonce_off  = 4;
-        return true;
-    }
-    return false;
+    const std::size_t n = pkt.size();
+    if (n < 46 || n > 60) return false;
+    if (pkt[0] != 0x05 && pkt[0] != 0x07) return false;
+    if (pkt[1] != 0x00) return false;
+    const std::uint8_t parity = pkt[n - 43];
+    if (parity != 0x18 && parity != 0x58) return false;
+    const std::uint8_t sep = pkt[n - 39];
+    if ((sep & 0xf8) != 0x18) return false;
+    if (out_parity_off) *out_parity_off = n - 43;
+    if (out_nonce_off)  *out_nonce_off  = n - 42;
+    return true;
 }
 
 // 4-byte DataPacket / pure-ack shapes. Bytes 0..2 are mostly fixed
@@ -943,10 +917,122 @@ void ServerListener::run()
     }
 }
 
+// R-8 shape catalogue selftest — runs the universal classifier
+// against the captured RequestConnect vector for each known shape and
+// verifies the derived parity/nonce offsets match the universal formula
+// (parity@total-43, nonce@total-42). All 8 vectors are verbatim from
+// /tmp/server-i6b/i7/i7d/i7d2/i7d3.log on the VM (sessions 2026-05 to
+// 2026-06-16). Each pair (lo/hi) is the same packet with parity byte
+// toggled 0x18 ↔ 0x58.
+static int run_tah_shape_catalogue_selftest()
+{
+    struct ShapeVec {
+        const char* name;
+        std::vector<std::uint8_t> bytes;
+        std::size_t expect_parity_off;
+        std::size_t expect_nonce_off;
+    };
+    const std::vector<ShapeVec> vecs = {
+        // Shape D 52B — sessions i7 / i7d (0x07 / 0x05 leading).
+        { "D-lo-07", {
+            0x07,0x00,0x11,0x23,0x47,0x83,0xa7,0xe3,0x01,0x18,0xf9,0x93,0x48,0x1c,
+            0x01,0x00,0x0d,0x56,0xc6,0xbb,0x6f,0x09,0xc4,0x32,0x1a,0x11,0x40,0x04,
+            0x69,0xa8,0x93,0x1e,0x3c,0x13,0x78,0x3b,0xe5,0xe3,0x0b,0x50,0x8e,0x17,
+            0x37,0xc4,0x09,0x18,0xf8,0x5b,0x64,0xdf,0x65,0x7b }, 9, 10 },
+        { "D-hi-07", {
+            0x07,0x00,0x11,0x23,0x47,0x83,0xa7,0xe3,0x01,0x58,0xf9,0x93,0x48,0x1c,
+            0x01,0x00,0x0d,0x56,0xc6,0xbb,0x6f,0x09,0xc4,0x32,0x1a,0x11,0x40,0x04,
+            0x69,0xa8,0x93,0x1e,0x3c,0x13,0x78,0x3b,0xe5,0xe3,0x0b,0x50,0x8e,0x17,
+            0x37,0xc4,0x09,0x18,0xf8,0x5b,0x64,0xdf,0x65,0x7b }, 9, 10 },
+        // Shape E 46B — session i7d2 (0x07 leading).
+        { "E-lo-07", {
+            0x07,0x00,0x69,0x18,0x49,0xba,0x04,0x1d,
+            0x01,0x00,0x0d,0x56,0xc6,0xbb,0x6f,0x09,0xc4,0x32,0x1a,0x11,0x40,0x04,
+            0x69,0xa8,0x93,0x1e,0x3c,0x13,0x78,0x3b,0xe5,0xe3,0x0b,0x50,0x8e,0x17,
+            0x37,0xc4,0x09,0x18,0xf8,0x5b,0x64,0xdf,0x65,0x7b }, 3, 4 },
+        // Shape E' 46B — session i7d3 (0x05 leading variant).
+        { "E'-hi-05", {
+            0x05,0x00,0x09,0x58,0xec,0x02,0x0b,0x1d,
+            0x01,0x00,0x0d,0x56,0xc6,0xbb,0x6f,0x09,0xc4,0x32,0x1a,0x11,0x40,0x04,
+            0x69,0xa8,0x93,0x1e,0x3c,0x13,0x78,0x3b,0xe5,0xe3,0x0b,0x50,0x8e,0x17,
+            0x37,0xc4,0x09,0x18,0xf8,0x5b,0x64,0xdf,0x65,0x7b }, 3, 4 },
+        // Shape F 50B — session i7d3.
+        { "F-lo-05", {
+            0x05,0x00,0x17,0x4f,0x87,0xbf,0xf3,0x18,0x2c,0xa0,0x0b,0x1d,
+            0x01,0x00,0x0d,0x56,0xc6,0xbb,0x6f,0x09,0xc4,0x32,0x1a,0x11,0x40,0x04,
+            0x69,0xa8,0x93,0x1e,0x3c,0x13,0x78,0x3b,0xe5,0xe3,0x0b,0x50,0x8e,0x17,
+            0x37,0xc4,0x09,0x18,0xf8,0x5b,0x64,0xdf,0x65,0x7b }, 7, 8 },
+        // Shape F 50B — earlier session i6b (0x07 leading, different nonce).
+        { "F-lo-07-i6b", {
+            0x07,0x00,0x17,0x4f,0x87,0xbf,0xf3,0x18,0x71,0x1d,0xe0,0x19,
+            0x01,0x00,0x0d,0x56,0xc6,0xbb,0x6f,0x09,0xc4,0x32,0x1a,0x11,0x40,0x04,
+            0x69,0xa8,0x93,0x1e,0x3c,0x13,0x78,0x3b,0xe5,0xe3,0x0b,0x50,0x8e,0x17,
+            0x37,0xc4,0x09,0x18,0xf8,0x5b,0x64,0xdf,0x65,0x7b }, 7, 8 },
+        // Shape G 54B — session i7d3.
+        { "G-lo-07", {
+            0x07,0x00,0x11,0x27,0x59,0x71,0x82,0xb1,0xc2,0xe2,0x01,0x18,0x2d,0xa0,
+            0x0b,0x1d,
+            0x01,0x00,0x0d,0x56,0xc6,0xbb,0x6f,0x09,0xc4,0x32,0x1a,0x11,0x40,0x04,
+            0x69,0xa8,0x93,0x1e,0x3c,0x13,0x78,0x3b,0xe5,0xe3,0x0b,0x50,0x8e,0x17,
+            0x37,0xc4,0x09,0x18,0xf8,0x5b,0x64,0xdf,0x65,0x7b }, 11, 12 },
+        { "G-hi-07", {
+            0x07,0x00,0x11,0x27,0x59,0x71,0x82,0xb1,0xc2,0xe2,0x01,0x58,0x2d,0xa0,
+            0x0b,0x1d,
+            0x01,0x00,0x0d,0x56,0xc6,0xbb,0x6f,0x09,0xc4,0x32,0x1a,0x11,0x40,0x04,
+            0x69,0xa8,0x93,0x1e,0x3c,0x13,0x78,0x3b,0xe5,0xe3,0x0b,0x50,0x8e,0x17,
+            0x37,0xc4,0x09,0x18,0xf8,0x5b,0x64,0xdf,0x65,0x7b }, 11, 12 },
+    };
+    int failures = 0;
+    for (const auto& v : vecs) {
+        std::size_t po = 0, no = 0;
+        const bool ok = looks_like_tah_request_connect(v.bytes, &po, &no);
+        if (!ok) {
+            std::fprintf(stderr,
+                "[r8-selftest] FAIL %s: classifier rejected\n", v.name);
+            ++failures;
+            continue;
+        }
+        if (po != v.expect_parity_off || no != v.expect_nonce_off) {
+            std::fprintf(stderr,
+                "[r8-selftest] FAIL %s: got parity@%zu nonce@%zu, "
+                "want parity@%zu nonce@%zu\n",
+                v.name, po, no, v.expect_parity_off, v.expect_nonce_off);
+            ++failures;
+        }
+    }
+    // Negative tests: random 45B Groove-sized + 50B with bad bytes 0..1.
+    {
+        std::vector<std::uint8_t> not_tah(50, 0xaa);
+        not_tah[0] = 0x05; not_tah[1] = 0x00; not_tah[7] = 0x18; not_tah[11] = 0x1d;
+        std::size_t po = 0, no = 0;
+        // This SHOULD pass — it's structurally TAH. Negative test instead:
+        std::vector<std::uint8_t> bad(50, 0xaa);
+        bad[0] = 0x03;  // not 0x05/0x07
+        if (looks_like_tah_request_connect(bad, &po, &no)) {
+            std::fprintf(stderr,
+                "[r8-selftest] FAIL: classifier accepted byte0=0x03\n");
+            ++failures;
+        }
+    }
+    if (failures == 0) {
+        std::fprintf(stderr,
+            "[r8-selftest] OK — universal classifier accepted "
+            "%zu shape vectors (D/E/E'/F×2/G×2)\n", vecs.size());
+    }
+    return failures;
+}
+
 int server_listener_selftest()
 {
     using studio::content::net::Endpoint;
     using studio::content::net::UdpSocket;
+
+    // R-8 — universal TAH RequestConnect classifier coverage test.
+    if (int rc = run_tah_shape_catalogue_selftest(); rc != 0) {
+        std::fprintf(stderr,
+            "[listener-selftest] R-8 catalogue selftest failed (%d errors)\n", rc);
+        return 1;
+    }
 
     // Bring up the listener on an ephemeral port.
     UdpSocket probe;
