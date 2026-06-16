@@ -81,13 +81,6 @@ struct LoadedMission;
 class TahBurstOrchestrator
 {
 public:
-    // Soft cap for catalogue-event packets. R-3 §3.5 + the TAH capture
-    // show ~400 B max-packet ceiling early in the burst, escalating to
-    // ~596 B once datablock entries dominate. We use 400 here to match
-    // the rate-control field the server publishes on its first
-    // DataPacket (see R-1 §6.1 vector C).
-    static constexpr std::size_t kCatalogueSoftMaxBytes = 400;
-
     // Catalogue event-class tag for stock Tribes 1.41 / TAH. R-3 §7
     // names this as 88 for TAH captures; it is per-build, so callers
     // wanting to override may set this directly before calling.

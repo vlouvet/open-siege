@@ -310,6 +310,21 @@ pack_catalogue_into_packets(const std::vector<DatablockEntry>& all_entries,
 std::size_t catalogue_entry_wire_bits(const DatablockEntry& e,
                                       bool seq_continuous);
 
+// Write a single catalogue-entry event record into `w` at the current
+// cursor (no sub-stream framing — caller owns the ESS-present flag and
+// the trailing ESS-terminator). Used by the burst orchestrator's
+// per-packet soft-budget loop (spec 14c-I-5 / TRIBES-PHASE2-PACKING §3),
+// which interleaves catalogue events and ghost intros into the same VC
+// packet and needs to drive the framing itself.
+//
+// Bit-cost of this call is exactly `catalogue_entry_wire_bits(e,
+// seq_continuous)`.
+void append_catalogue_event(BitWriter&             w,
+                            const DatablockEntry&  e,
+                            std::uint16_t          event_class_tag,
+                            std::uint8_t           explicit_seq,
+                            bool                   seq_continuous);
+
 // Run the spec's validation vectors against the encoder. Wires into the
 // net-test-client's --tah-datablock-selftest CLI flag.
 //

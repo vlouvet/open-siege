@@ -268,6 +268,11 @@ DatablockEntry make_sentinel_entry(DatablockClass kind)
 // Catalogue packet encoder
 // ---------------------------------------------------------------------
 
+void append_catalogue_event(BitWriter& w, const DatablockEntry& e,
+                            std::uint16_t event_class_tag,
+                            std::uint8_t explicit_seq,
+                            bool seq_continuous);
+
 static void append_event(BitWriter& w, const DatablockEntry& e,
                          std::uint16_t event_class_tag,
                          std::uint8_t explicit_seq,
@@ -298,6 +303,18 @@ static void append_event(BitWriter& w, const DatablockEntry& e,
             static_cast<std::uint8_t>((e.body_bits[i >> 3] >> (i & 7)) & 1u);
         w.write_bits(bit, 1);
     }
+}
+
+void append_catalogue_event(BitWriter& w, const DatablockEntry& e,
+                            std::uint16_t event_class_tag,
+                            std::uint8_t explicit_seq,
+                            bool seq_continuous)
+{
+    // Public wrapper around the file-local append_event helper. Used by
+    // the burst orchestrator (spec 14c-I-5) so it can drive ESS framing
+    // itself and interleave catalogue events with ghost intros in the
+    // same VC packet.
+    append_event(w, e, event_class_tag, explicit_seq, seq_continuous);
 }
 
 std::vector<std::uint8_t>

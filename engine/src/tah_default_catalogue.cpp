@@ -7,6 +7,20 @@
 
 namespace net20 {
 
+// Spec 14c-I-5 / TRIBES-PHASE2-PACKING §4.3: real TAH servers ship only
+// the mission-referenced subset of the global datablock registry in the
+// initial scope-always burst (~110 entries on stock CTF missions; the
+// remainder ride lazily after first reference). Until per-mission
+// transitive-reference discovery lands (14c-I-6), we hardcode a fixed
+// prefix of the stock catalogue: groups 0..3 (SoundProfileData,
+// SoundData, DamageSkinData, PlayerData) sum to 10 + 153 + 2 + 5 = 170
+// entries, which is just over the 110 target. Cap to exactly 110 to
+// honour cap1's observed scope.
+//
+// A future revision (14c-I-6) replaces this with a proper
+// mission-referenced filter.
+constexpr std::size_t kTahBurstCatalogueLimit = 110;
+
 namespace {
 
 // SoundProfileData flag bits (script names extracted from
@@ -269,6 +283,11 @@ std::vector<DatablockEntry> stock_tribes_ctf_catalogue()
     build_placeholder_group(out, DatablockClass::RepairEffect, 1);
     build_placeholder_group(out, DatablockClass::IRCChannel, 0); // sentinel
 
+    // Spec 14c-I-5: cap the burst-time catalogue to the
+    // mission-referenced subset estimate (kTahBurstCatalogueLimit).
+    if (out.size() > kTahBurstCatalogueLimit) {
+        out.resize(kTahBurstCatalogueLimit);
+    }
     return out;
 }
 
