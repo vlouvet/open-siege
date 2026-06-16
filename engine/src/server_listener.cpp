@@ -139,6 +139,16 @@ bool looks_like_groove_request_connect(const std::vector<std::uint8_t>& pkt)
 //     extrapolated from Shape A/C; needs Reader cross-check (14c-R-8) if
 //     TAH does not accept the resulting AC reply.
 //
+//   Shape E — 46B, leading 0x07  (prefix bytes 0..2 = 07 00 69;
+//     parity@3; nonce@4..6). Observed 2026-06-16 after Shape D AC was
+//     ignored — TAH cycled to a shorter framing. Byte 3 toggles
+//     0x18↔0x58 between retransmits (same nibble pattern as Shape D
+//     byte 9 → strong parity-byte signal). KEY OBSERVATION: trailing
+//     38 bytes (bytes 8..45) are byte-identical to Shape D bytes
+//     14..51 — i.e. the encrypted Groove body is the same; only the
+//     outer framing header changes across shapes. Offsets are still
+//     guesses pending [[14c-R-8]] verification.
+//
 // out_parity_off / out_nonce_off set on match.
 bool looks_like_tah_request_connect(const std::vector<std::uint8_t>& pkt,
                                     std::size_t* out_parity_off,
@@ -156,6 +166,10 @@ bool looks_like_tah_request_connect(const std::vector<std::uint8_t>& pkt,
     // Shape D bytes 1..8 (byte 0 wildcards 0x05/0x07).
     static const std::uint8_t prefix_d_tail[8] = {
         0x00, 0x11, 0x23, 0x47, 0x83, 0xa7, 0xe3, 0x01,
+    };
+    // Shape E: 46B, bytes 0..2 fixed; trailing 38B body matches Shape D.
+    static const std::uint8_t prefix_e[3] = {
+        0x07, 0x00, 0x69,
     };
     if (pkt.size() == 53 && std::memcmp(pkt.data(), prefix_a, 10) == 0) {
         if (out_parity_off) *out_parity_off = 10;
@@ -176,6 +190,11 @@ bool looks_like_tah_request_connect(const std::vector<std::uint8_t>& pkt,
         std::memcmp(pkt.data() + 1, prefix_d_tail, 8) == 0) {
         if (out_parity_off) *out_parity_off = 9;
         if (out_nonce_off)  *out_nonce_off  = 10;
+        return true;
+    }
+    if (pkt.size() == 46 && std::memcmp(pkt.data(), prefix_e, 3) == 0) {
+        if (out_parity_off) *out_parity_off = 3;
+        if (out_nonce_off)  *out_nonce_off  = 4;
         return true;
     }
     return false;
