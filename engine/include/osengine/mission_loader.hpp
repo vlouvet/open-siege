@@ -48,6 +48,14 @@ struct ScopeAlwaysIntro
         Marker      = 2,  // CTF zone, drop-point, spawn marker, path marker
         Item        = 3,  // CTF flag (scope-always per §2.1; not generic items)
         Sensor      = 4,  // mission-pinned sensor station (§3.8)
+        // 14c-I-7 — emission paths added from CAP1-GHOST-INTRO-DECODE.md §3/§5.
+        // SoundSource is wired through scope_always_objects() below; Tag896/
+        // Tag32/Tag65 are infrastructure only — per-tag mission-object
+        // identification awaits R-7.1.
+        SoundSource = 5,  // ambient/world-mounted sound emitter (TAH tag 131, ~7/CTF)
+        Tag896      = 6,  // TAH-CLASS-TAGS survey: 21 intros/CTF; semantic UNRESOLVED
+        Tag32       = 7,  // TAH-CLASS-TAGS survey: 14 intros/CTF; semantic UNRESOLVED
+        Tag65       = 8,  // TAH-CLASS-TAGS survey: 10 intros/CTF; semantic UNRESOLVED
     };
 
     Kind kind = Kind::StaticShape;

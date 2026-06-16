@@ -127,8 +127,43 @@ std::size_t intro_record_bit_cost(std::uint8_t id_width, const PendingIntro& pi)
 constexpr std::uint16_t kTahStaticShapeClassTag = 708;  // §5.2: 58 intros in TAH survey
 constexpr std::uint16_t kTahTurretClassTag      = 640;  // §5.2: 52 intros; Turret derives from StaticShape per §3.9
 constexpr std::uint16_t kTahItemFlagClassTag    = 496;  // §5.2: 29 intros; CTF flag is scope-always per §2.1
-constexpr std::uint16_t kTahMarkerClassTag      = 129;  // §1.3 common range index 1
+// 14c-I-7 Change 1: Marker tag corrected 129 -> 263 per cap1 evidence.
+// TAH-CLASS-TAGS.md (60-tag survey of real TAH CTF traffic):
+//   263 = 8 intros observed     <-- Markers live here
+//   129 = 0 intros observed     <-- never appears in TAH's registry
+// I-6's choice of 129 (common-range default per §1.3) was silently dropped
+// by TAH's framing layer, blocking scope-always Marker instantiation
+// (highest-probability root cause of the load-screen stall).
+constexpr std::uint16_t kTahMarkerClassTag      = 263;
 constexpr std::uint16_t kTahSensorClassTag      = 324;  // §5.2: 18 intros
+// 14c-I-7 Change 2: SoundSource emission added; §1.3 common-range tag 131,
+// 7 intros / CTF in TAH survey. Body encoder lives in tah_class_encoders.cpp
+// (write_sound_source_body); mission walker enqueues one intro per
+// SoundSource node when the scene model exposes them.
+constexpr std::uint16_t kTahSoundSourceClassTag = 131;
+// 14c-I-7 Change 5: emission infrastructure for tags 896 / 32 / 65 so a
+// follow-up spec can wire them into mission walks without re-touching the
+// orchestrator. NOT wired into scope_always_objects() in this spec —
+// per-tag mission-object identification awaits R-7.1.
+constexpr std::uint16_t kTahTag896 = 896;  // 21 intros / CTF (TAH survey)
+constexpr std::uint16_t kTahTag32  = 32;   // 14 intros / CTF (TAH survey)
+constexpr std::uint16_t kTahTag65  = 65;   // 10 intros / CTF (TAH survey)
+
+// 14c-I-7 Change 6 — UNRESOLVED. R-7 §5.5 reports the per-class
+// data-file-id bit width should be `ceil(log2(group_size + 1))` (the same
+// formula `tah_datablock_encoder::block_id_ref_width` already implements
+// for catalogue block references), not the hardcoded 8 bits used at:
+//   * `tah_class_encoders.hpp::kDefaultDfWBits = 8` (defaulted into every
+//     body writer's `datafile_id_width` parameter).
+//   * `ghost_encoder.cpp` StaticShape `shape_data_file_id` literal 8.
+// The plumbing already exists (body writers take a width arg); the fix
+// requires propagating each ghost class's catalogue group_size from
+// `build_mission_catalogue()` into the intro emission loop and forwarding
+// it to the body writer. Currently all orchestrator-emitted intros use
+// `data_file_id = 0`, so the width mismatch is bit-alignment-only and
+// does not corrupt referenced indices — but it does shift every
+// subsequent field in the body and could be the residual structural
+// blocker even after Changes 1–5. Tracked for a follow-up.
 
 std::uint16_t class_tag_for(ScopeAlwaysIntro::Kind kind)
 {
@@ -138,6 +173,10 @@ std::uint16_t class_tag_for(ScopeAlwaysIntro::Kind kind)
         case ScopeAlwaysIntro::Kind::Marker:      return kTahMarkerClassTag;
         case ScopeAlwaysIntro::Kind::Item:        return kTahItemFlagClassTag;
         case ScopeAlwaysIntro::Kind::Sensor:      return kTahSensorClassTag;
+        case ScopeAlwaysIntro::Kind::SoundSource: return kTahSoundSourceClassTag;
+        case ScopeAlwaysIntro::Kind::Tag896:      return kTahTag896;
+        case ScopeAlwaysIntro::Kind::Tag32:       return kTahTag32;
+        case ScopeAlwaysIntro::Kind::Tag65:       return kTahTag65;
     }
     return kTahStaticShapeClassTag;
 }
@@ -159,9 +198,25 @@ PendingIntro::Kind writer_kind_for(ScopeAlwaysIntro::Kind kind)
             // emit it as a Marker until we have an explicit Sensor
             // encoder; the catalogue still needs the SensorData ref.
             return PendingIntro::Kind::Marker;
+        case ScopeAlwaysIntro::Kind::SoundSource:
+            // 14c-I-7 Change 2: SoundSource has no shape-layer body in
+            // TRIBES-GHOST-CLASSES.md §1.3 — emit via the marker writer
+            // until a dedicated SoundSource writer lands.
+            return PendingIntro::Kind::Marker;
         case ScopeAlwaysIntro::Kind::StaticShape:
         case ScopeAlwaysIntro::Kind::Turret:
         case ScopeAlwaysIntro::Kind::Item:
+            return PendingIntro::Kind::Static;
+        case ScopeAlwaysIntro::Kind::Tag896:
+        case ScopeAlwaysIntro::Kind::Tag32:
+        case ScopeAlwaysIntro::Kind::Tag65:
+            // 14c-I-7 Change 5: emission paths only — body schema awaits
+            // R-7.1. Fall back to the static-shape writer so that if these
+            // get wired into a mission walk before R-7.1 lands, the wire
+            // is at least well-formed; the body will need fixing later.
+            // TODO(14c-I-7-mission-map): wire to per-tag mission objects
+            // and choose the correct writer kind once R-7.1 documents the
+            // body schema.
             return PendingIntro::Kind::Static;
     }
     return PendingIntro::Kind::Static;

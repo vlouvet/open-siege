@@ -349,6 +349,17 @@ build_mission_catalogue(
                 need_item = true; break;
             case dts_viewer::ScopeAlwaysIntro::Kind::Sensor:
                 need_sensor = true; break;
+            case dts_viewer::ScopeAlwaysIntro::Kind::SoundSource:
+                // 14c-I-7 Change 2: SoundSource intros consume group-1
+                // SoundData entries (already always shipped) — no
+                // group-toggle needed.
+                break;
+            case dts_viewer::ScopeAlwaysIntro::Kind::Tag896:
+            case dts_viewer::ScopeAlwaysIntro::Kind::Tag32:
+            case dts_viewer::ScopeAlwaysIntro::Kind::Tag65:
+                // 14c-I-7 Change 5: emission paths only — the per-tag
+                // catalogue group is UNRESOLVED until R-7.1.
+                break;
         }
     }
 
@@ -359,9 +370,21 @@ build_mission_catalogue(
     // body references these).
     build_sound_profiles(out);
 
-    // Group 1 — SoundData; cap at 16 entries to stay in cap1 envelope.
-    // The full 153-entry dump would blow past 2.6 kB. Real-server
-    // missions ship the actual referenced subset (TODO(14c-I-7-R)).
+    // Group 1 — SoundData.
+    //
+    // 14c-I-7 Change 3 — PARTIALLY UNRESOLVED. R-7 §5.3 reads cap1's
+    // catalogue header as `group_size = 153` on every group-1 record and
+    // recommends "sentinel-fill past the populated prefix to 153 total
+    // records" so the receiver's slot table matches the advertised size.
+    // Implementing that literal interpretation (16 populated + 137
+    // sentinel) BLOWS THE ENVELOPE BUDGET — selftest measured:
+    //   non-last packet sizes [202..385] (cap1 window: [200..245])
+    //   total 3042 B (cap1 window: [1800..2600])
+    // So we ship the SAME shape as I-6 here: 16 populated records all
+    // advertising group_size=153. Whether 153 physical records are
+    // required is UNRESOLVED until R-7.1 decodes the per-group bodies
+    // and the sentinel-encoding subsection (§5) shows whether a compact
+    // sentinel exists that doesn't cost 33 bits each.
     {
         const std::uint8_t kFullGroupSize = 153;
         const std::uint8_t kProfileGroupSize = 10;
@@ -373,9 +396,8 @@ build_mission_catalogue(
             f.wavFileName = buf;
             f.priority = 0.5f;
             f.profileIndex = 4;
-            // group_size in the wire record is the ACTUAL full count
-            // (so the client pre-sizes its receive array correctly);
-            // we emit only the first 16 blocks but advertise 153.
+            // group_size advertises the full count (153) on every record
+            // so the client pre-sizes its receive array correctly.
             out.push_back(make_sound_data(kFullGroupSize, i,
                                           kProfileGroupSize, f));
         }
