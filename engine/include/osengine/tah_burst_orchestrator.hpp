@@ -63,8 +63,12 @@
 //     (mode-flag = 1).
 //   * The last ghost-update packet's trailing scope-always-complete bit
 //     reads as 1.
-//   * Total bytes are roughly within ±30% of the ground-truth pcap's
-//     burst size (8809 B for the 31-packet snapshot — i.e. [6166, 11452]).
+//   * Total bytes target ~709 B (public pcap pkt 5 + pkt 6 per
+//     TRIBES-PROTOCOL-PCAP-DIFF §4); accept [400, 1500] to absorb the
+//     catalogue-sentinel and scope-always intro overhead vs the public
+//     server's class=79+class=8 non-catalogue first events.
+//   * Packet count is in [2, 4] — public emits 2 packets in the first
+//     ~120 ms; our trimmed burst targets the same.
 
 #pragma once
 

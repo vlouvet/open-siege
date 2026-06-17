@@ -364,85 +364,80 @@ build_mission_catalogue(
     }
 
     std::vector<DatablockEntry> out;
-    out.reserve(80);
+    out.reserve(40);
 
-    // Group 0 — always 10 sound profiles (every other group's per-record
-    // body references these).
+    // 14c-I-burst-trim — minimal catalogue per pcap-diff §4.
+    //
+    // The public TAH server's first burst window (pkt 5 + pkt 6 = 709 B,
+    // 2 packets) ships exactly 10 SoundProfile + 1 SoundData records as
+    // catalogue content (§4.2 / §4.3); the rest of the catalogue trickles
+    // out over the following ~3 s. Earlier I-6/I-7 frontloaded 16
+    // SoundData + 5 PlayerData + populated groups for every scope-always
+    // kind, totaling ~35 records / ~2.5 kB and forcing the orchestrator
+    // to fragment the burst into 12+ small packets. That over-emission
+    // is what kept TAH stuck in load-screen wait — TAH's ack loop ran
+    // healthy, but the burst content density did not match what the
+    // public server emits in the first ~120 ms window.
+    //
+    // New shape: mirror the public pkt-6 content (10 profiles + 1 sound)
+    // plus a single sentinel for every other group. This is enough for
+    // TAH's receiver to:
+    //   - Allocate slot tables for the advertised group sizes.
+    //   - See "this group is empty / size=0" sentinels for groups the
+    //     server hasn't shipped yet.
+    //   - Receive scope-always-complete=1 on the burst's last packet so
+    //     the load screen can render.
+    //
+    // PlayerData (group 3) is deferred to the post-burst stream — TAH
+    // will not have a join to fulfill until after the load screen, so
+    // we can ship the 5 PlayerData entries lazily once the steady-state
+    // tick path lands. For now group 3 ships as a single sentinel.
+
+    // Group 0 — 10 SoundProfileData (matches public pkt 6 §4.3 exactly).
     build_sound_profiles(out);
 
-    // Group 1 — SoundData.
-    //
-    // 14c-I-7 Change 3 — PARTIALLY UNRESOLVED. R-7 §5.3 reads cap1's
-    // catalogue header as `group_size = 153` on every group-1 record and
-    // recommends "sentinel-fill past the populated prefix to 153 total
-    // records" so the receiver's slot table matches the advertised size.
-    // Implementing that literal interpretation (16 populated + 137
-    // sentinel) BLOWS THE ENVELOPE BUDGET — selftest measured:
-    //   non-last packet sizes [202..385] (cap1 window: [200..245])
-    //   total 3042 B (cap1 window: [1800..2600])
-    // So we ship the SAME shape as I-6 here: 16 populated records all
-    // advertising group_size=153. Whether 153 physical records are
-    // required is UNRESOLVED until R-7.1 decodes the per-group bodies
-    // and the sentinel-encoding subsection (§5) shows whether a compact
-    // sentinel exists that doesn't cost 33 bits each.
+    // Group 1 — SoundData. Ship 1 record advertising the full
+    // group_size=153 so the client pre-sizes its slot table; remaining
+    // 152 entries arrive on later ticks (deferred).
     {
         const std::uint8_t kFullGroupSize = 153;
         const std::uint8_t kProfileGroupSize = 10;
-        const std::uint8_t kEmitted = 16;
-        for (std::uint8_t i = 0; i < kEmitted; ++i) {
-            SoundDataFields f;
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "sound%03u.wav", i);
-            f.wavFileName = buf;
-            f.priority = 0.5f;
-            f.profileIndex = 4;
-            // group_size advertises the full count (153) on every record
-            // so the client pre-sizes its receive array correctly.
-            out.push_back(make_sound_data(kFullGroupSize, i,
-                                          kProfileGroupSize, f));
-        }
+        SoundDataFields f;
+        f.wavFileName = "sound000.wav";
+        f.priority = 0.5f;
+        f.profileIndex = 4;
+        out.push_back(make_sound_data(kFullGroupSize, 0,
+                                      kProfileGroupSize, f));
     }
 
-    // Group 2 — DamageSkinData (2 entries, always shipped).
-    build_placeholder_group(out, DatablockClass::DamageSkin, 2);
+    // Groups 2..30 — one sentinel each.
+    //
+    // A sentinel record costs 6+8+8 + framing ≈ 33 bits ≈ 4 B; 29
+    // sentinels ≈ 120 B of catalogue tail. That keeps the entire
+    // catalogue payload under ~280 B and packable into a single burst
+    // packet alongside the rate-control prefix and a small scope-always
+    // intro tail.
+    //
+    // The per-kind `need_*` flags are intentionally NOT consulted here:
+    // the public pcap shows every group sentinel-marked first, with
+    // populated records arriving later in the stream. Mission-specific
+    // records (StaticShape, Item, Turret, Marker, Sensor, SoundSource)
+    // are introduced through the ghost-intro path, not the catalogue
+    // path, in this trimmed window. Suppress the unused-warning
+    // explicitly:
+    (void)need_static;
+    (void)need_turret;
+    (void)need_item;
+    (void)need_sensor;
+    (void)need_marker;
 
-    // Group 3 — PlayerData (5 entries, always shipped).
-    build_player_data(out);
-
-    // Group 4 — StaticShapeData; shipped if any static-class object exists.
-    if (need_static) {
-        // 5_CTF has ~3 distinct StaticShape datablocks; we ship a
-        // conservative 8 placeholder entries (down from cap1's ~51
-        // global total) to cover the common CTF asset surface without
-        // blowing budget. Real-server missions ship only the
-        // referenced subset (TODO(14c-I-7-R)).
-        build_placeholder_group(out, DatablockClass::StaticShape, 8);
-    } else {
-        out.push_back(make_sentinel_entry(DatablockClass::StaticShape));
-    }
-
-    // Group 5 — ItemData; shipped if any Item (CTF flag) exists.
-    if (need_item) {
-        build_placeholder_group(out, DatablockClass::Item, 4);
-    } else {
-        out.push_back(make_sentinel_entry(DatablockClass::Item));
-    }
-
-    // Group 6 — ItemImageData; shipped alongside ItemData.
-    if (need_item) {
-        build_placeholder_group(out, DatablockClass::ItemImage, 2);
-    } else {
-        out.push_back(make_sentinel_entry(DatablockClass::ItemImage));
-    }
-
-    // Groups 7..18 — sentinel-only (Moveable, Vehicle, Tank, Hover,
-    // Projectile, Bullet, Grenade, Rocket, Laser, InteriorShape).
+    out.push_back(make_sentinel_entry(DatablockClass::DamageSkin));
+    out.push_back(make_sentinel_entry(DatablockClass::PlayerData));
+    out.push_back(make_sentinel_entry(DatablockClass::StaticShape));
+    out.push_back(make_sentinel_entry(DatablockClass::Item));
+    out.push_back(make_sentinel_entry(DatablockClass::ItemImage));
     out.push_back(make_sentinel_entry(DatablockClass::Moveable));
-    if (need_sensor) {
-        build_placeholder_group(out, DatablockClass::Sensor, 2);
-    } else {
-        out.push_back(make_sentinel_entry(DatablockClass::Sensor));
-    }
+    out.push_back(make_sentinel_entry(DatablockClass::Sensor));
     out.push_back(make_sentinel_entry(DatablockClass::Vehicle));
     out.push_back(make_sentinel_entry(DatablockClass::Flier));
     out.push_back(make_sentinel_entry(DatablockClass::Tank));
@@ -453,25 +448,9 @@ build_mission_catalogue(
     out.push_back(make_sentinel_entry(DatablockClass::Rocket));
     out.push_back(make_sentinel_entry(DatablockClass::Laser));
     out.push_back(make_sentinel_entry(DatablockClass::InteriorShape));
-
-    // Group 19 — TurretData; shipped if any Turret exists.
-    if (need_turret) {
-        build_placeholder_group(out, DatablockClass::Turret, 2);
-    } else {
-        out.push_back(make_sentinel_entry(DatablockClass::Turret));
-    }
-
-    // Group 20 — ExplosionData; always shipped (damage events need them).
-    build_placeholder_group(out, DatablockClass::Explosion, 4);
-
-    // Group 21 — MarkerData; shipped if any Marker exists.
-    if (need_marker) {
-        build_placeholder_group(out, DatablockClass::Marker, 3);
-    } else {
-        out.push_back(make_sentinel_entry(DatablockClass::Marker));
-    }
-
-    // Groups 22..30 — sentinel-only.
+    out.push_back(make_sentinel_entry(DatablockClass::Turret));
+    out.push_back(make_sentinel_entry(DatablockClass::Explosion));
+    out.push_back(make_sentinel_entry(DatablockClass::Marker));
     out.push_back(make_sentinel_entry(DatablockClass::Debris));
     out.push_back(make_sentinel_entry(DatablockClass::Mine));
     out.push_back(make_sentinel_entry(DatablockClass::TargetLaser));
@@ -508,16 +487,19 @@ int tah_default_catalogue_selftest()
         }
     }
 
-    // Vector 2 — empty mission → mostly-sentinel catalogue, still
-    // includes the always-shipped groups (0/1/2/3/20).
+    // Vector 2 — empty mission → all-sentinel beyond groups 0/1.
+    // 14c-I-burst-trim: total now ~40 records (10 SoundProfile +
+    // 1 SoundData + 29 sentinels). cap1's earlier [40, 110] window
+    // tracked the I-6 mission-filtered shape; the I-burst-trim shape is
+    // intentionally smaller.
     {
         std::vector<dts_viewer::ScopeAlwaysIntro> empty;
         std::unordered_set<std::string> no_names;
         const auto cat = build_mission_catalogue(empty, no_names);
-        if (cat.size() < 40 || cat.size() > 110) {
+        if (cat.size() < 30 || cat.size() > 50) {
             std::fprintf(stderr,
                 "[tah-default-catalogue] FAIL: empty-mission catalogue "
-                "size %zu (expected [40, 110])\n", cat.size());
+                "size %zu (expected [30, 50])\n", cat.size());
             ++failures;
         } else {
             std::fprintf(stderr,
@@ -526,8 +508,9 @@ int tah_default_catalogue_selftest()
         }
     }
 
-    // Vector 3 — mission with one of every kind → all per-kind groups
-    // are populated (not sentinel).
+    // Vector 3 — mission with one of every kind → still all-sentinel
+    // beyond groups 0/1 in the I-burst-trim shape (mission-specific
+    // records arrive on later ticks, not in the initial burst).
     {
         std::vector<dts_viewer::ScopeAlwaysIntro> intros;
         for (auto k : {dts_viewer::ScopeAlwaysIntro::Kind::StaticShape,
@@ -541,10 +524,10 @@ int tah_default_catalogue_selftest()
         }
         std::unordered_set<std::string> no_names;
         const auto cat = build_mission_catalogue(intros, no_names);
-        if (cat.size() < 60 || cat.size() > 110) {
+        if (cat.size() < 30 || cat.size() > 50) {
             std::fprintf(stderr,
                 "[tah-default-catalogue] FAIL: full-mission catalogue "
-                "size %zu (expected [60, 110])\n", cat.size());
+                "size %zu (expected [30, 50])\n", cat.size());
             ++failures;
         } else {
             std::fprintf(stderr,

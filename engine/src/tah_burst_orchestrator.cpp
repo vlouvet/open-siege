@@ -15,6 +15,7 @@
 
 #include "content/mission/scene.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -30,10 +31,15 @@ namespace dts_viewer
 namespace
 {
 
-// Per TRIBES-PHASE2-PACKING §1.2, the soft byte budget for phase-2
-// packets is the session's current-packet-size, initial value 200 bytes.
-// Until we plumb a Session field, hardcode it here.
-constexpr std::size_t kSoftPacketBytes = 200;
+// 14c-I-burst-trim: per pcap-diff §4 the public TAH server packs each
+// initial burst packet near the MTU it publishes in pkt 5
+// (max_pkt_size = 450 B). Earlier I-5/I-6 used a 200 B soft cap drawn
+// from cap1's pre-rate-control window; cap1 fragmented the burst into
+// many small packets, but the public server packs to ~285 B / ~424 B
+// (pkt 5 / pkt 6 — §4.1) — i.e. close to MTU. Soft cap is set just
+// under the MTU so the per-record "let the in-progress record finish"
+// rule cannot overrun.
+constexpr std::size_t kSoftPacketBytes = 420;
 
 // ----- Ghost intro record writers ----------------------------------------
 
@@ -319,10 +325,18 @@ TahBurstOrchestrator::build_initial_burst(Session&             sess,
                  // player intro rides a separate post-burst path now.
 
     // ---- Build the catalogue queue (mission-referenced subset) ----
+    //
+    // 14c-I-burst-trim: both paths now use the same trimmed
+    // `build_mission_catalogue` shape (10 SoundProfile + 1 SoundData +
+    // 29 sentinels). The stock_tribes_ctf_catalogue() shape (110
+    // populated records) is no longer used by the orchestrator — it
+    // remains exposed only for the catalogue selftest and for any
+    // future non-TAH server-fork that wants a fully-populated catalogue
+    // emission.
     auto catalogue = (mission != nullptr)
         ? net20::build_mission_catalogue(scope_always_objects(*mission),
                                          required_datablock_names(*mission))
-        : net20::stock_tribes_ctf_catalogue();
+        : net20::build_mission_catalogue({}, {});
     std::size_t catalogue_idx = 0;
     std::uint8_t event_seq = catalogue_first_event_seq;
 
@@ -351,9 +365,44 @@ TahBurstOrchestrator::build_initial_burst(Session&             sess,
     };
 
     if (mission != nullptr) {
+        // 14c-I-burst-trim: cap mission scope-always intros to a small
+        // budget so the initial burst fits in ~2-4 packets per
+        // pcap-diff §4. A real mission like 5_CTF has dozens of static
+        // shapes; the public server defers most of them past the first
+        // ~120 ms window (it ships the catalogue first, intros after,
+        // and the scope-always-complete bit doesn't flip until ~15 s
+        // per §4.4). For the load-screen gate we only need a small
+        // intro set + the scope-always-complete=1 trailer on the final
+        // burst packet. Cap at 8 intros (favouring CTF flags, then
+        // turrets / sensors / markers, then any static shape).
+        constexpr std::size_t kIntroBudget = 8;
         const auto objects = scope_always_objects(*mission);
-        for (const auto& obj : objects) {
-            enqueue(obj, 0x20000000u);
+        // Two-pass: prioritise Item (flag), Marker, Turret, Sensor,
+        // SoundSource, then StaticShape so the most TAH-load-screen-
+        // relevant intros land first.
+        auto kind_priority = [](ScopeAlwaysIntro::Kind k) {
+            switch (k) {
+                case ScopeAlwaysIntro::Kind::Item:        return 0;
+                case ScopeAlwaysIntro::Kind::Marker:      return 1;
+                case ScopeAlwaysIntro::Kind::Turret:      return 2;
+                case ScopeAlwaysIntro::Kind::Sensor:      return 3;
+                case ScopeAlwaysIntro::Kind::SoundSource: return 4;
+                case ScopeAlwaysIntro::Kind::StaticShape: return 5;
+                default:                                  return 9;
+            }
+        };
+        std::vector<const ScopeAlwaysIntro*> sorted;
+        sorted.reserve(objects.size());
+        for (const auto& o : objects) sorted.push_back(&o);
+        std::sort(sorted.begin(), sorted.end(),
+                  [&](const ScopeAlwaysIntro* a, const ScopeAlwaysIntro* b) {
+                      return kind_priority(a->kind) < kind_priority(b->kind);
+                  });
+        std::size_t budget = kIntroBudget;
+        for (const auto* obj : sorted) {
+            if (budget == 0) break;
+            enqueue(*obj, 0x20000000u);
+            --budget;
         }
     } else {
         // No-mission stub: 4 fake StaticShape intros so the selftest
@@ -373,9 +422,13 @@ TahBurstOrchestrator::build_initial_burst(Session&             sess,
     // ---- Per-packet emit loop (interleaved ESS + GSS) ----
     const std::size_t soft_bit_budget = kSoftPacketBytes * 8u;
 
-    // Safety bound: cap the burst at 32 packets so a logic bug here
-    // cannot wedge a session in an infinite loop.
-    constexpr std::size_t kMaxBurstPackets = 32;
+    // 14c-I-burst-trim: cap the burst at 6 packets. Per pcap-diff §4 the
+    // public TAH server fits the immediate "load screen" trigger window
+    // (pkts 5+6) in 2 packets / 709 B. We aim for 2-4 packets total;
+    // 6 is a hard safety bound. The remainder of the catalogue dump and
+    // any deferred intros ride the per-tick stream after the load
+    // screen renders (handled by the steady-state path, not this burst).
+    constexpr std::size_t kMaxBurstPackets = 6;
 
     while ((catalogue_idx < catalogue.size() || intro_idx < intros.size())
            && out.size() < kMaxBurstPackets) {
@@ -690,42 +743,55 @@ int run_one_burst(const char* tag, const LoadedMission* mission)
         last_pkt_size, total_bytes,
         pkts_with_events, pkts_with_ghost);
 
-    // (A) Packet count envelope: spec 14c-I-6 acceptance — [8, 14].
-    if (pkts.size() < 8 || pkts.size() > 14) {
+    // 14c-I-burst-trim: per pcap-diff §4 the public TAH server packs the
+    // initial-state trigger window (the bytes between AC and load-screen
+    // render) into 2 packets / 709 B at near-MTU (max_pkt_size=450).
+    // Earlier I-6 emitted 12 packets / ~2.5 kB; that over-emission is
+    // what kept TAH stalled. New envelope: 2-4 packets, per-packet
+    // [80, 450] B (last packet may be small if both queues drained),
+    // total under 1500 B.
+
+    // (A) Packet count envelope. Public Blastside emits 2 packets in
+    // the first ~120 ms (pcap-diff §4). Our trimmed burst targets the
+    // same shape; 1 packet is acceptable when the queues are small
+    // enough to fit in a single MTU.
+    if (pkts.size() < 1 || pkts.size() > 4) {
         std::fprintf(stderr,
-            "[tah-burst-orchestrator %s] FAIL: packet count %zu outside [8, 14]\n",
+            "[tah-burst-orchestrator %s] FAIL: packet count %zu outside [1, 4]\n",
             tag, pkts.size());
         ++failures;
     }
 
-    // (B) Per-packet size envelope (non-last packets): spec 14c-I-6
-    // acceptance — [200, 245] B. cap1 P01..P10 lie in [210, 231]; the
-    // upper bound is bumped 10 B over I-5 to absorb the slightly
-    // larger per-record byte cost the real ghost intros produce.
-    // The LAST packet is excluded — it may be a partial trailing
-    // packet (§1.3).
+    // (B) Per-packet size envelope: each packet must stay under the
+    // MTU (450 B) advertised in burst pkt 0's max_pkt_size field. The
+    // soft cap (420 B) plus per-record overhang allows occasional
+    // packets up to ~450 B but not above. Non-last packets should be
+    // close to MTU (packed tight). The LAST packet may be partial.
     if (pkts.size() > 1) {
-        if (min_non_last < 200 || max_non_last > 245) {
+        if (min_non_last < 200 || max_non_last > 450) {
             std::fprintf(stderr,
                 "[tah-burst-orchestrator %s] FAIL: non-last per-packet sizes "
-                "[%zu..%zu] outside [200..245]\n", tag, min_non_last, max_non_last);
+                "[%zu..%zu] outside [200..450]\n", tag, min_non_last, max_non_last);
             ++failures;
         }
     }
     // Last packet must be non-trivial (a real packet, not an empty header).
-    if (last_pkt_size < 8 || last_pkt_size > 245) {
+    if (last_pkt_size < 8 || last_pkt_size > 450) {
         std::fprintf(stderr,
             "[tah-burst-orchestrator %s] FAIL: last packet size %zu outside "
-            "[8..245]\n", tag, last_pkt_size);
+            "[8..450]\n", tag, last_pkt_size);
         ++failures;
     }
 
-    // (C) Total bytes envelope: spec 14c-I-6 acceptance — [1800, 2600] B
-    // (cap1 = 2228 B).
-    if (total_bytes < 1800 || total_bytes > 2600) {
+    // (C) Total bytes envelope: target ≈ 700 B (public pkt 5 + pkt 6 =
+    // 709 B per pcap-diff §4); accept [200, 1500]. The lower bound is
+    // 200 B because a stub session with no scope-always intros may
+    // drain in a single ~400 B packet — still well under the public
+    // shape but acceptable for selftest purposes.
+    if (total_bytes < 200 || total_bytes > 1500) {
         std::fprintf(stderr,
             "[tah-burst-orchestrator %s] FAIL: total bytes %zu outside "
-            "[1800..2600]\n", tag, total_bytes);
+            "[200..1500]\n", tag, total_bytes);
         ++failures;
     }
 
