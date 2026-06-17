@@ -590,6 +590,39 @@ void ServerListener::run()
                     const bool ok = impl_->socket.send_to(
                         peer, tah_reply, sizeof(tah_reply));
                     if (ok) sess->last_outbound_ms = now_ms;
+                    // 14c-PhaseA-fix4: this TAH variant does NOT send the
+                    // §7.4 62B ClientReady (its post-AC traffic is just
+                    // pure-acks + idle move-stream packets — no ESS-bearing
+                    // DataPacket). Per the public pcap walk the catalogue
+                    // burst is what triggers TAH's load-screen → in-game
+                    // transition, so we push Phase 1 + the catalogue
+                    // unsolicited immediately after AC. Gated on `was_new`
+                    // and `!ghost_burst_sent` so RC retransmits don't
+                    // re-fire.
+                    if (ok && was_new && cfg_.enable_canned_burst
+                        && !sess->ghost_burst_sent) {
+                        sess->ghost_burst_sent = true;
+                        std::size_t total_sent = 0;
+                        std::size_t pkt_count = 0;
+                        auto p1 = build_phase1_reply(*sess, now_ms);
+                        if (impl_->socket.send_to(peer, p1.data(), p1.size())) {
+                            total_sent += p1.size();
+                            ++pkt_count;
+                        }
+                        auto cat = build_catalogue_burst(*sess, now_ms);
+                        for (const auto& p : cat) {
+                            if (impl_->socket.send_to(peer, p.data(), p.size())) {
+                                total_sent += p.size();
+                                ++pkt_count;
+                            }
+                        }
+                        if (pkt_count > 0) {
+                            sess->last_outbound_ms = now_ms;
+                            std::fprintf(stderr,
+                                "[listener] (TAH) post-AC phase1+catalogue to slot %u: %zu pkts / %zuB\n",
+                                sess->player_slot, pkt_count, total_sent);
+                        }
+                    }
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.request_connects_received;
                     if (ok) {
