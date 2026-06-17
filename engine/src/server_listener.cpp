@@ -718,11 +718,19 @@ void ServerListener::run()
                     // sends pre-load is the ClientReady, so an ESS-bearing
                     // DataPacket check is sufficient and avoids the
                     // Huffman-decoder dependency.
+                    const bool trigger_ok = is_phase1_trigger_packet(buf);
+                    if (sess->is_tah_session && !sess->ghost_burst_sent) {
+                        char hexbuf[64] = {};
+                        hex_prefix(buf, hexbuf, sizeof(hexbuf));
+                        std::fprintf(stderr,
+                            "[trigger-eval] %zuB from slot %u: is_phase1=%d (hdr: %s)\n",
+                            buf.size(), sess->player_slot, (int)trigger_ok, hexbuf);
+                    }
                     const bool is_tah_clientready =
                         sess->is_tah_session
                         && !sess->ghost_burst_sent
                         && cfg_.enable_canned_burst
-                        && is_phase1_trigger_packet(buf);
+                        && trigger_ok;
                     bool should_send = cfg_.enable_canned_burst
                         && !sess->ghost_burst_sent
                         && !sess->is_tah_session;  // vanilla canned-burst path

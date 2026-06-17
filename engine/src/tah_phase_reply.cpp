@@ -630,8 +630,16 @@ bool is_phase1_trigger_packet(const std::vector<std::uint8_t>& buf)
         (void)r.read_bits(5);
         if (r.fail()) return false;
     }
-    const std::uint32_t ptype = r.read_bits(5);
-    if (r.fail() || ptype != 0) return false;  // DataPacket only
+    const std::uint32_t type_word = r.read_bits(5);
+    if (r.fail()) return false;
+    // 14c-PhaseA-fix2: type_word's low 3 bits are the base packet type;
+    // bits 3 and 4 are the Resend and Ack flags respectively (see
+    // reliable_acks.hpp pkt_type::kAckFlag = 0x10). The public TAH server's
+    // ClientReady arrives as bare type_word=0, but our user's TAH variant
+    // sends type_word=0x18 (DataPacket | Resend | Ack) — same packet, just
+    // with the flags set. Check base_type only.
+    const std::uint32_t base_type = type_word & 0x07u;
+    if (base_type != 0) return false;          // DataPacket only
 
     // Rate-control prefix.
     const bool r0 = r.read_flag();
