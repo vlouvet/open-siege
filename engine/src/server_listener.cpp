@@ -709,11 +709,20 @@ void ServerListener::run()
                     // §4 full catalogue burst ending in IrcChannelData
                     // sentinel — which is what triggers TAH's
                     // dataFinished and the load-screen-completion path.
+                    // 14c-PhaseA-fix: original trigger looked specifically
+                    // for a SimConsoleEvent "SetCLInfo" command in the
+                    // inbound ESS, but TAH's ClientReady prefixes that
+                    // with a Huffman-compressed "zAdminActiveMode" event
+                    // and our parser bails on compressed strings. Per
+                    // §7.4 + pcap, the only ESS-bearing DataPacket TAH
+                    // sends pre-load is the ClientReady, so an ESS-bearing
+                    // DataPacket check is sufficient and avoids the
+                    // Huffman-decoder dependency.
                     const bool is_tah_clientready =
                         sess->is_tah_session
                         && !sess->ghost_burst_sent
                         && cfg_.enable_canned_burst
-                        && is_setclinfo_clientready(buf);
+                        && is_phase1_trigger_packet(buf);
                     bool should_send = cfg_.enable_canned_burst
                         && !sess->ghost_burst_sent
                         && !sess->is_tah_session;  // vanilla canned-burst path

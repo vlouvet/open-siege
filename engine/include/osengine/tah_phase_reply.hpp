@@ -43,7 +43,21 @@ namespace dts_viewer {
 // True iff `buf` is a C->S DataPacket whose ESS contains a
 // SimConsoleEvent with command "SetCLInfo". Stateless — does not
 // modify the session.
+//
+// 14c-PhaseA-fix: this exact match is too strict in practice because
+// TAH's ClientReady prefixes "SetCLInfo" with a "zAdminActiveMode"
+// SimConsoleEvent whose 16-char command is Huffman-compressed on the
+// wire. Our parser bails on compressed strings (no Huffman decoder
+// shipped this phase), so this match never fires. Kept for selftest +
+// future Huffman-decoder retro-fit.
 bool is_setclinfo_clientready(const std::vector<std::uint8_t>& buf);
+
+// True iff `buf` is a C->S DataPacket of ptype=0 with the ESS-present
+// flag set. Coarser trigger that does NOT walk the events. Per spec
+// §7.4 + pcap, the only ESS-bearing DataPacket TAH sends before load-
+// screen completion is the ClientReady, so combined with a one-shot
+// `!ghost_burst_sent` session guard this is a safe Phase 1 trigger.
+bool is_phase1_trigger_packet(const std::vector<std::uint8_t>& buf);
 
 // Build the Phase 1 reply per §7.5 / §8 P1. Mutates `sess.next_send_seq`
 // (bumps once) and `sess.last_outbound_ms`.

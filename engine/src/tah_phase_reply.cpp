@@ -614,6 +614,36 @@ bool is_setclinfo_clientready(const std::vector<std::uint8_t>& buf)
     return parse_for_setclinfo(buf.data(), buf.size());
 }
 
+bool is_phase1_trigger_packet(const std::vector<std::uint8_t>& buf)
+{
+    if (buf.size() < 4) return false;
+    net20::BitReader r(buf.data(), buf.size());
+
+    if (!r.read_flag()) return false;          // vc=1
+    (void)r.read_flag();                       // parity
+    (void)r.read_bits(9);                      // send_seq
+    (void)r.read_bits(5);                      // hrcv
+    for (;;) {                                 // ack-run list
+        const std::uint32_t len = r.read_bits(3);
+        if (r.fail()) return false;
+        if (len == 0) break;
+        (void)r.read_bits(5);
+        if (r.fail()) return false;
+    }
+    const std::uint32_t ptype = r.read_bits(5);
+    if (r.fail() || ptype != 0) return false;  // DataPacket only
+
+    // Rate-control prefix.
+    const bool r0 = r.read_flag();
+    if (r0) { (void)r.read_bits(10); (void)r.read_bits(10); }
+    const bool r1 = r.read_flag();
+    if (r1) { (void)r.read_bits(10); (void)r.read_bits(10); }
+    if (r.fail()) return false;
+
+    // ESS-present flag — the trigger condition.
+    return r.read_flag();
+}
+
 std::vector<std::uint8_t>
 build_phase1_reply(Session& sess, std::uint64_t now_ms)
 {
