@@ -61,6 +61,7 @@ add_library(osengine STATIC
     src/tah_datablock_encoder.cpp
     src/tah_default_catalogue.cpp
     src/tah_ghost_burst.cpp
+    src/tah_phase_reply.cpp
     src/tah_vc_outbound.cpp
     src/session_table.cpp
     src/team_assigner.cpp

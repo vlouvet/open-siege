@@ -25,6 +25,7 @@
 #include <osengine/tah_burst_orchestrator.hpp>
 #include <osengine/tah_class_encoders.hpp>
 #include <osengine/tah_default_catalogue.hpp>
+#include <osengine/tah_phase_reply.hpp>
 #include <osengine/tah_vc_outbound.hpp>
 #include <osengine/team_assigner.hpp>
 #include <osengine/world_tick.hpp>
@@ -95,6 +96,7 @@ void print_usage()
         "  --tah-vc-outbound-selftest  Run per-session VC outbound header selftest and exit\n"
         "  --tah-burst-orchestrator-selftest  Run TAH burst orchestrator selftest and exit\n"
         "  --tah-default-catalogue-selftest  Run TAH default catalogue selftest and exit\n"
+        "  --tah-phase-reply-selftest  Run TAH Phase 1 + catalogue burst + ping selftest and exit\n"
         "  --mission-loader-selftest  Run mission_loader selftest and exit\n"
         "  --help                    This message\n",
         stderr);
@@ -137,6 +139,7 @@ int main(int argc, char** argv)
     bool tah_vc_outbound_selftest_flag = false;
     bool tah_burst_orchestrator_selftest_flag = false;
     bool tah_default_catalogue_selftest_flag = false;
+    bool tah_phase_reply_selftest_flag = false;
     bool mission_loader_selftest_flag = false;
     bool no_listener = false;
     bool no_canned_burst = false;
@@ -168,6 +171,7 @@ int main(int argc, char** argv)
         if (a == "--tah-vc-outbound-selftest") { tah_vc_outbound_selftest_flag = true; continue; }
         if (a == "--tah-burst-orchestrator-selftest") { tah_burst_orchestrator_selftest_flag = true; continue; }
         if (a == "--tah-default-catalogue-selftest") { tah_default_catalogue_selftest_flag = true; continue; }
+        if (a == "--tah-phase-reply-selftest") { tah_phase_reply_selftest_flag = true; continue; }
         if (a == "--mission-loader-selftest") { mission_loader_selftest_flag = true; continue; }
         if (a == "--no-listener") { no_listener = true; continue; }
         if (a == "--no-canned-burst") { no_canned_burst = true; continue; }
@@ -247,6 +251,10 @@ int main(int argc, char** argv)
 
     if (tah_default_catalogue_selftest_flag) {
         return net20::tah_default_catalogue_selftest();
+    }
+
+    if (tah_phase_reply_selftest_flag) {
+        return dts_viewer::tah_phase_reply_selftest();
     }
 
     if (mission_loader_selftest_flag) {

@@ -3,6 +3,7 @@
 #include <osengine/ghost_emitter.hpp>
 #include <osengine/tah_burst_orchestrator.hpp>
 #include <osengine/tah_ghost_burst.hpp>
+#include <osengine/tah_phase_reply.hpp>
 #include <osengine/movecommand.hpp>
 #include <osengine/net_client.hpp>     // spec 29/02b — server_info codec
 #include <osengine/server_world_snapshot.hpp>
@@ -400,11 +401,26 @@ void ServerListener::run()
             // mark the slot for ack-back. Handshake packets handled
             // below have their own ack semantics (the AC reply takes
             // care of the RequestConnect's seq), so we skip them here.
+            //
+            // 14c-PhaseA P5: Ping (ptype=7) packets used to be dropped
+            // silently. We now intercept them here, send a 4-byte
+            // pure-ack reply per spec §6.4, and `continue` so the rest
+            // of the classifier doesn't see the packet.
             if (buf.size() >= 4 && (buf[0] & 1) && impl_->sessions->find(peer)) {
                 net20::ParsedIncomingHeader ph;
-                if (net20::parse_incoming_header(buf.data(), buf.size(), ph)
-                    && ph.base_type != net20::pkt_type::kPing) {
+                if (net20::parse_incoming_header(buf.data(), buf.size(), ph)) {
                     Session* sess = impl_->sessions->find(peer);
+                    if (ph.base_type == net20::pkt_type::kPing) {
+                        // 14c-PhaseA P5 — Ping reply.
+                        impl_->sessions->touch(peer, now_ms);
+                        auto reply = build_ping_reply(*sess, ph.send_seq, now_ms);
+                        if (impl_->socket.send_to(peer, reply.data(), reply.size())) {
+                            sess->last_outbound_ms = now_ms;
+                        }
+                        std::lock_guard<std::mutex> lk(impl_->mu);
+                        ++impl_->stats.data_packets_received;
+                        continue;
+                    }
                     sess->ack.on_receive(ph.send_seq);
                 }
             }
@@ -610,38 +626,26 @@ void ServerListener::run()
                     continue;
                 }
                 impl_->sessions->touch(peer, now_ms);
-                bool should_send = cfg_.enable_canned_burst
-                    && !sess->ghost_burst_sent;
-                if (should_send) {
+                // 14c-PhaseA: for TAH sessions, the 4-byte pure-ack
+                // (07 08 09 80) is the connection-layer ack of our
+                // AcceptConnect (spec §7.3). It is NOT the cue for the
+                // Phase 1 / catalogue burst — that's the ClientReady
+                // SetCLInfo DataPacket (§7.4), handled in the
+                // non-movecmd branch below. Vanilla sessions still get
+                // the captured ghost-burst on the first data packet for
+                // back-compat.
+                const bool should_send_vanilla =
+                    cfg_.enable_canned_burst
+                    && !sess->ghost_burst_sent
+                    && !sess->is_tah_session;
+                if (should_send_vanilla) {
                     sess->ghost_burst_sent = true;
                     std::size_t total_sent = 0;
                     std::size_t pkt_count = 0;
-                    if (sess->is_tah_session) {
-                        // Spec 26/14c-I-4 — synthesise the TAH initial-
-                        // state dump per docs/clean-room-specs/TRIBES-
-                        // INITIAL-BURST.md. The orchestrator produces
-                        // per-session-correct VC headers (so retransmits
-                        // and acks work) and the scope-always-complete
-                        // bit on the last packet, which the previous
-                        // canned-byte replay (kTahFirstGhostBurst[]) did
-                        // not — TAH stayed stuck in "loading" because
-                        // the bit was tied to the captured session's
-                        // state and never satisfied the new client.
-                        TahBurstOrchestrator orch;
-                        auto burst = orch.build_initial_burst(
-                            *sess, impl_->loaded_mission, now_ms);
-                        for (auto& p : burst) {
-                            if (impl_->socket.send_to(peer, p.data(), p.size())) {
-                                total_sent += p.size();
-                                ++pkt_count;
-                            }
-                        }
-                    } else {
-                        if (impl_->socket.send_to(peer, kFirstGhostBurstTemplate,
-                                                  sizeof(kFirstGhostBurstTemplate))) {
-                            total_sent = sizeof(kFirstGhostBurstTemplate);
-                            pkt_count = 1;
-                        }
+                    if (impl_->socket.send_to(peer, kFirstGhostBurstTemplate,
+                                              sizeof(kFirstGhostBurstTemplate))) {
+                        total_sent = sizeof(kFirstGhostBurstTemplate);
+                        pkt_count = 1;
                     }
                     if (pkt_count > 0) sess->last_outbound_ms = now_ms;
                     std::lock_guard<std::mutex> lk(impl_->mu);
@@ -649,9 +653,8 @@ void ServerListener::run()
                     if (pkt_count > 0) {
                         impl_->stats.ghost_bursts_sent += pkt_count;
                         std::fprintf(stderr,
-                            "[listener] DataPacket from %s:%u (slot %u, %s), replied ghost burst (%zu pkts / %zuB)\n",
+                            "[listener] DataPacket from %s:%u (slot %u, vanilla), replied ghost burst (%zu pkts / %zuB)\n",
                             peer.host.c_str(), peer.port, sess->player_slot,
-                            sess->is_tah_session ? "TAH" : "vanilla",
                             pkt_count, total_sent);
                     } else {
                         impl_->last_error = impl_->socket.last_error();
@@ -699,34 +702,37 @@ void ServerListener::run()
                     // stays in "waiting for ghost burst" forever and
                     // we time out.
                     impl_->sessions->touch(peer, now_ms);
+                    // 14c-PhaseA P1+P2: detect the TAH ClientReady packet
+                    // (carries a SimConsoleEvent "SetCLInfo") and reply
+                    // with the spec §7.5 Phase 1 packet (TeamAdds +
+                    // PlayerAdd + SVInfo + MODInfo) followed by the spec
+                    // §4 full catalogue burst ending in IrcChannelData
+                    // sentinel — which is what triggers TAH's
+                    // dataFinished and the load-screen-completion path.
+                    const bool is_tah_clientready =
+                        sess->is_tah_session
+                        && !sess->ghost_burst_sent
+                        && cfg_.enable_canned_burst
+                        && is_setclinfo_clientready(buf);
                     bool should_send = cfg_.enable_canned_burst
-                        && !sess->ghost_burst_sent;
-                    if (should_send) {
+                        && !sess->ghost_burst_sent
+                        && !sess->is_tah_session;  // vanilla canned-burst path
+                    if (is_tah_clientready) {
                         sess->ghost_burst_sent = true;
                         std::size_t total_sent = 0;
                         std::size_t pkt_count = 0;
-                        if (sess->is_tah_session) {
-                            // Spec 26/14c-I-4 — see comment on the other
-                            // TAH-burst-emit site above. Same orchestrator
-                            // path used here for the non-movecmd-fallback
-                            // case (TAH's progression events arrive via
-                            // arbitrarily-shaped DataPackets, not the
-                            // canonical pure-ack the first-data path
-                            // expects).
-                            TahBurstOrchestrator orch;
-                            auto burst = orch.build_initial_burst(
-                                *sess, impl_->loaded_mission, now_ms);
-                            for (auto& p : burst) {
-                                if (impl_->socket.send_to(peer, p.data(), p.size())) {
-                                    total_sent += p.size();
-                                    ++pkt_count;
-                                }
-                            }
-                        } else {
-                            if (impl_->socket.send_to(peer, kFirstGhostBurstTemplate,
-                                                      sizeof(kFirstGhostBurstTemplate))) {
-                                total_sent = sizeof(kFirstGhostBurstTemplate);
-                                pkt_count = 1;
+                        // Phase 1 reply.
+                        auto p1 = build_phase1_reply(*sess, now_ms);
+                        if (impl_->socket.send_to(peer, p1.data(), p1.size())) {
+                            total_sent += p1.size();
+                            ++pkt_count;
+                        }
+                        // Full catalogue burst.
+                        auto cat = build_catalogue_burst(*sess, now_ms);
+                        for (const auto& p : cat) {
+                            if (impl_->socket.send_to(peer, p.data(), p.size())) {
+                                total_sent += p.size();
+                                ++pkt_count;
                             }
                         }
                         if (pkt_count > 0) sess->last_outbound_ms = now_ms;
@@ -735,10 +741,28 @@ void ServerListener::run()
                         if (pkt_count > 0) {
                             impl_->stats.ghost_bursts_sent += pkt_count;
                             std::fprintf(stderr,
-                                "[listener] non-movecmd DataPacket %zuB from %s:%u (slot %u, %s), replied ghost burst (%zu pkts / %zuB)\n",
+                                "[listener] TAH ClientReady from %s:%u (slot %u): replied phase1+catalogue (%zu pkts / %zuB)\n",
+                                peer.host.c_str(), peer.port,
+                                sess->player_slot, pkt_count, total_sent);
+                        }
+                    } else if (should_send) {
+                        sess->ghost_burst_sent = true;
+                        std::size_t total_sent = 0;
+                        std::size_t pkt_count = 0;
+                        if (impl_->socket.send_to(peer, kFirstGhostBurstTemplate,
+                                                  sizeof(kFirstGhostBurstTemplate))) {
+                            total_sent = sizeof(kFirstGhostBurstTemplate);
+                            pkt_count = 1;
+                        }
+                        if (pkt_count > 0) sess->last_outbound_ms = now_ms;
+                        std::lock_guard<std::mutex> lk(impl_->mu);
+                        ++impl_->stats.data_packets_received;
+                        if (pkt_count > 0) {
+                            impl_->stats.ghost_bursts_sent += pkt_count;
+                            std::fprintf(stderr,
+                                "[listener] non-movecmd DataPacket %zuB from %s:%u (slot %u, vanilla), replied ghost burst (%zu pkts / %zuB)\n",
                                 buf.size(), peer.host.c_str(), peer.port,
                                 sess->player_slot,
-                                sess->is_tah_session ? "TAH" : "vanilla",
                                 pkt_count, total_sent);
                         }
                     } else {
