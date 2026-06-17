@@ -406,6 +406,20 @@ void ServerListener::run()
                     && ph.base_type != net20::pkt_type::kPing) {
                     Session* sess = impl_->sessions->find(peer);
                     sess->ack.on_receive(ph.send_seq);
+                    // 14c-I-osgb-gate — release the burst-ack gate the
+                    // moment the peer's incoming "highest acked of mine"
+                    // (mod 32) catches up to the burst's last seq (also
+                    // mod 32). The 9-bit send_seq compresses to 5 bits
+                    // here; we only compare residues because the burst
+                    // is short (≤ 4 packets) so wrap-around is not
+                    // ambiguous within the ack window.
+                    if (sess->ghost_burst_sent && !sess->ghost_burst_acked) {
+                        const std::uint8_t last_mod32 = static_cast<std::uint8_t>(
+                            sess->burst_last_send_seq & 0x1Fu);
+                        if (ph.peer_highest_acked_of_ours_mod32 == last_mod32) {
+                            sess->ghost_burst_acked = true;
+                        }
+                    }
                 }
             }
 
@@ -627,6 +641,13 @@ void ServerListener::run()
                         // not — TAH stayed stuck in "loading" because
                         // the bit was tied to the captured session's
                         // state and never satisfied the new client.
+                        //
+                        // 14c-I-osgb-gate — block the per-tick OSGB
+                        // emitter from firing into TAH's burst-ack
+                        // window. Cleared when the peer's incoming
+                        // header acks the burst's last seq (see the
+                        // VC-decode path above).
+                        sess->ghost_burst_acked = false;
                         TahBurstOrchestrator orch;
                         auto burst = orch.build_initial_burst(
                             *sess, impl_->loaded_mission, now_ms);
@@ -636,6 +657,12 @@ void ServerListener::run()
                                 ++pkt_count;
                             }
                         }
+                        // Capture the seq used in the burst's last
+                        // packet. Orchestrator bumps next_send_seq once
+                        // per emitted packet, so the last-used seq is
+                        // (next_send_seq - 1) mod 512.
+                        sess->burst_last_send_seq = static_cast<std::uint16_t>(
+                            (sess->next_send_seq + 0x200u - 1u) & 0x1FFu);
                     } else {
                         if (impl_->socket.send_to(peer, kFirstGhostBurstTemplate,
                                                   sizeof(kFirstGhostBurstTemplate))) {
@@ -713,6 +740,11 @@ void ServerListener::run()
                             // arbitrarily-shaped DataPackets, not the
                             // canonical pure-ack the first-data path
                             // expects).
+                            //
+                            // 14c-I-osgb-gate — see the other burst
+                            // site; gate the per-tick OSGB until the
+                            // peer acks the burst's last seq.
+                            sess->ghost_burst_acked = false;
                             TahBurstOrchestrator orch;
                             auto burst = orch.build_initial_burst(
                                 *sess, impl_->loaded_mission, now_ms);
@@ -722,6 +754,8 @@ void ServerListener::run()
                                     ++pkt_count;
                                 }
                             }
+                            sess->burst_last_send_seq = static_cast<std::uint16_t>(
+                                (sess->next_send_seq + 0x200u - 1u) & 0x1FFu);
                         } else {
                             if (impl_->socket.send_to(peer, kFirstGhostBurstTemplate,
                                                       sizeof(kFirstGhostBurstTemplate))) {
@@ -826,10 +860,32 @@ void ServerListener::run()
             && (impl_->tick_counter % static_cast<std::uint64_t>(cfg_.ghost_emit_tick_div)) == 0)
         {
             auto active = impl_->sessions->active_sessions();
-            // Drop emitters whose session no longer exists.
+            // 14c-I-osgb-gate — filter the emit set:
+            //   (a) sessions whose initial burst is sent but not yet
+            //       acked by the peer must NOT receive per-tick OSGB —
+            //       TAH's parser rejects unsolicited DataPackets that
+            //       arrive in the burst-ack window, surfacing as
+            //       "invalid packet" in the client UI.
+            //   (b) sessions whose peer has been silent for >5 s are
+            //       treated as stale and skipped, even if the reaper
+            //       hasn't dropped them yet. Catches the "fan-out to a
+            //       dead-but-not-yet-reaped session" failure mode
+            //       observed in our-burst-trim-2026-06-16.pcap.
+            std::vector<Session*> emit_targets;
+            emit_targets.reserve(active.size());
+            for (auto* s : active) {
+                if (!s) continue;
+                if (s->ghost_burst_sent && !s->ghost_burst_acked) continue;
+                if (now_ms - s->last_seen_ms > 5000) continue;
+                emit_targets.push_back(s);
+            }
+            // Drop emitters whose session no longer exists OR is now
+            // gated/stale. (Skipping emit for a session keeps the
+            // emitter in the map otherwise; we want it freed so a
+            // post-ack/post-quiet recovery starts clean.)
             for (auto it = impl_->emitters.begin(); it != impl_->emitters.end(); ) {
                 bool alive = false;
-                for (auto* s : active) {
+                for (auto* s : emit_targets) {
                     if (s && s->peer.host == it->first.host
                         && s->peer.port == it->first.port) {
                         alive = true; break;
@@ -839,6 +895,10 @@ void ServerListener::run()
                 else ++it;
             }
             // Build the snapshot once; share by const-ref with every emitter.
+            // Snapshot still carries the FULL active set as "world" — a
+            // gated peer can still appear as a ghost in OTHER peers'
+            // emissions; we only suppress the OUTBOUND emit for gated
+            // peers (handled below).
             ServerWorldSnapshot world;
             world.tick = impl_->tick_counter;
             world.server_time_ms = now_ms;
@@ -863,7 +923,7 @@ void ServerListener::run()
             for (auto& kv : impl_->emitters) {
                 records_before_total += kv.second->stats().records_emitted;
             }
-            for (auto* s : active) {
+            for (auto* s : emit_targets) {
                 EmitterKey key{s->peer.host, s->peer.port};
                 auto it = impl_->emitters.find(key);
                 if (it == impl_->emitters.end()) {

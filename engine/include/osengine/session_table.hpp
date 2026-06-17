@@ -49,6 +49,17 @@ struct Session
     std::uint16_t next_send_seq = 1;       // server replies start at seq 1
     std::uint16_t last_acked_recv_seq = 0;
     bool          ghost_burst_sent = false;
+    // 14c-I-osgb-gate — true once the peer has acked the last seq we
+    // sent in the burst (TAH burst path only). The per-tick OSGB emitter
+    // skips any session with ghost_burst_sent && !ghost_burst_acked, so
+    // we don't pump per-tick ghosts into TAH's burst-ack window. Vanilla
+    // sessions (canned single-packet burst, no orchestrator) default to
+    // true so they're never gated.
+    bool          ghost_burst_acked   = true;
+    // Last send_seq (mod 512) used in the burst's final packet. Compared
+    // mod 32 against the peer's incoming bits-11..15 "highest acked of
+    // mine" field to decide when to flip ghost_burst_acked.
+    std::uint16_t burst_last_send_seq = 0;
     // 26/10b follow-up — set on session allocate when the inbound
     // RequestConnect was a TAH (Groove/TribesNext) shape. Drives the
     // canned-burst selection: TAH gets the captured TAH-server burst

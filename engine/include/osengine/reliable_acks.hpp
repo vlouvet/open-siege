@@ -174,6 +174,10 @@ struct ParsedIncomingHeader {
     std::uint8_t  base_type;      // type_word & 0x07
     bool          is_ack;         // (type_word & 0x10) != 0
     bool          is_resend;      // (type_word & 0x08) != 0
+    // 14c-I-osgb-gate — bits 11..15 of the incoming header: the peer's
+    // "highest acked of mine (mod 32)". Used by the listener to
+    // determine when the peer has acknowledged the initial burst.
+    std::uint8_t  peer_highest_acked_of_ours_mod32;
 };
 // Returns true on success. Mirrors the ghost_stream decoder's VC header walk
 // but exposes the parsed seq + type to the caller (the ghost stream parser
