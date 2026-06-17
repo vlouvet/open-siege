@@ -517,6 +517,34 @@ void ServerListener::run()
                     const bool ok = impl_->socket.send_to(
                         peer, groove_reply, sizeof(groove_reply));
                     if (ok) sess->last_outbound_ms = now_ms;
+                    // 14c-PhaseA-fix5: push Phase 1 + catalogue unsolicited
+                    // right after Groove AC too — TAH variants that demote
+                    // to Groove shape (e.g. after a prior session failed)
+                    // still expect server-driven content delivery.
+                    if (ok && was_new && cfg_.enable_canned_burst
+                        && !sess->ghost_burst_sent) {
+                        sess->ghost_burst_sent = true;
+                        std::size_t total_sent = 0;
+                        std::size_t pkt_count = 0;
+                        auto p1 = build_phase1_reply(*sess, now_ms);
+                        if (impl_->socket.send_to(peer, p1.data(), p1.size())) {
+                            total_sent += p1.size();
+                            ++pkt_count;
+                        }
+                        auto cat = build_catalogue_burst(*sess, now_ms);
+                        for (const auto& p : cat) {
+                            if (impl_->socket.send_to(peer, p.data(), p.size())) {
+                                total_sent += p.size();
+                                ++pkt_count;
+                            }
+                        }
+                        if (pkt_count > 0) {
+                            sess->last_outbound_ms = now_ms;
+                            std::fprintf(stderr,
+                                "[listener] (Groove) post-AC phase1+catalogue to slot %u: %zu pkts / %zuB\n",
+                                sess->player_slot, pkt_count, total_sent);
+                        }
+                    }
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.request_connects_received;
                     if (ok) {
