@@ -660,6 +660,50 @@ void ServerListener::run()
                         impl_->last_error = impl_->socket.last_error();
                     }
                 } else {
+                    // 14c-PhaseA-fix3: for TAH sessions, the
+                    // `looks_like_first_data_packet` classifier catches
+                    // the post-AC packets BEFORE the movecommand/non-
+                    // movecommand split at line 670+. The Phase 1 trigger
+                    // eval lives in that lower branch, which means TAH's
+                    // ClientReady (or whatever post-AC ESS-bearing packet
+                    // arrives) never gets a chance to fire it. Run the
+                    // trigger eval here too so TAH sessions can progress.
+                    if (sess->is_tah_session && !sess->ghost_burst_sent) {
+                        const bool trigger_ok = is_phase1_trigger_packet(buf);
+                        char hexbuf[64] = {};
+                        hex_prefix(buf, hexbuf, sizeof(hexbuf));
+                        std::fprintf(stderr,
+                            "[trigger-eval@615] %zuB from slot %u: is_phase1=%d (hdr: %s)\n",
+                            buf.size(), sess->player_slot, (int)trigger_ok, hexbuf);
+                        if (trigger_ok && cfg_.enable_canned_burst) {
+                            sess->ghost_burst_sent = true;
+                            std::size_t total_sent = 0;
+                            std::size_t pkt_count = 0;
+                            auto p1 = build_phase1_reply(*sess, now_ms);
+                            if (impl_->socket.send_to(peer, p1.data(), p1.size())) {
+                                total_sent += p1.size();
+                                ++pkt_count;
+                            }
+                            auto cat = build_catalogue_burst(*sess, now_ms);
+                            for (const auto& p : cat) {
+                                if (impl_->socket.send_to(peer, p.data(), p.size())) {
+                                    total_sent += p.size();
+                                    ++pkt_count;
+                                }
+                            }
+                            if (pkt_count > 0) sess->last_outbound_ms = now_ms;
+                            std::lock_guard<std::mutex> lk(impl_->mu);
+                            ++impl_->stats.data_packets_received;
+                            if (pkt_count > 0) {
+                                impl_->stats.ghost_bursts_sent += pkt_count;
+                                std::fprintf(stderr,
+                                    "[listener@615] TAH ClientReady from %s:%u (slot %u): replied phase1+catalogue (%zu pkts / %zuB)\n",
+                                    peer.host.c_str(), peer.port,
+                                    sess->player_slot, pkt_count, total_sent);
+                            }
+                            continue;
+                        }
+                    }
                     std::lock_guard<std::mutex> lk(impl_->mu);
                     ++impl_->stats.data_packets_received;
                     // Quiet: subsequent DataPackets are normal client
