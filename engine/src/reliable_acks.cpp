@@ -184,8 +184,7 @@ bool parse_incoming_header(const std::uint8_t* data, std::size_t length,
     if (vc_flag != 1) return false;  // Discovery datagram
     /*parity*/   (void)read_bits(1);
     out.send_seq = static_cast<std::uint16_t>(read_bits(9));
-    out.peer_highest_acked_of_ours_mod32 =
-        static_cast<std::uint8_t>(read_bits(5) & 0x1Fu);
+    /*highest*/ (void)read_bits(5);
 
     // Walk ack run list looking for the 0-length terminator.
     for (;;) {

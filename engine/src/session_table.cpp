@@ -49,12 +49,6 @@ Session* SessionTable::allocate(const studio::content::net::Endpoint& peer,
     s.next_send_seq = 1;
     s.last_acked_recv_seq = 0;
     s.ghost_burst_sent = false;
-    // 14c-I-osgb-gate — default to "acked" so non-TAH paths (which
-    // never flip ghost_burst_sent through the orchestrator) are not
-    // blocked by the OSGB gate. TAH burst path clears this to false
-    // before sending and re-raises it when the peer acks the last seq.
-    s.ghost_burst_acked = true;
-    s.burst_last_send_seq = 0;
     auto [ins_it, _] = by_peer_.emplace(peer, std::move(s));
     return &ins_it->second;
 }
