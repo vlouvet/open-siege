@@ -48,25 +48,6 @@ constexpr std::uint8_t kGrooveAcceptConnectTemplate[18] = {
     0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x80, 0x01, 0x01,
 };
 
-// 18-byte TribesAfterHope AcceptConnect template — discovered 2026-05-24
-// by probing a real TAH dedicated server (127.0.0.1:28001) with the
-// 53-byte 0x05-leading "browser-ping" packet and capturing its reply.
-// Wire shape:
-//   05 00 09 60  <nonce 3B>  08 <parity> 08 00 00 00 08 00 80 01 01
-// Differences vs the Groove template above:
-//   * Byte 0 = 0x05 (Groove had 0x07).
-//   * Byte 7 = 0x08 (Groove had 0x00).
-//   * Byte 8 = parity bit derived from request byte 10:
-//       request[10] == 0x18 -> reply[8] = 0x02
-//       request[10] == 0x58 -> reply[8] = 0x01
-//     other values: unverified; default to 0x02.
-constexpr std::uint8_t kTahAcceptConnectTemplate[18] = {
-    0x05, 0x00, 0x09, 0x60,
-    0x00, 0x00, 0x00,                // <- nonce slot (bytes 4..6)
-    0x08, 0x02,                       // <- byte 8 overwritten per request
-    0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x80, 0x01, 0x01,
-};
-
 // First-ghost-burst template captured from the same handshake (third
 // packet, server->client, 223 bytes, type byte 0x0b = data_with_payload
 // in VC framing). Sent back to the client when we observe its first
@@ -252,19 +233,41 @@ void build_groove_accept_connect_reply(const std::uint8_t nonce[3],
     out[6] = nonce[2];
 }
 
+// 14c-I-pcap-diff (TRIBES-PROTOCOL-PCAP-DIFF.md §2.5) — public TAH
+// server's 16-byte AcceptConnect form. The public server emits:
+//
+//   byte 0  = 0x05 | (parity_bit << 1)   where parity_bit = nonce[0] & 1
+//   byte 1  = 0x00 (fresh session — see §2.3 note re mid-session reconnect)
+//   byte 2  = 0x09
+//   byte 3  = 0x60
+//   bytes 4..6 = nonce echo
+//   byte 7  = separator_byte echo (RC byte at total_size - 39)
+//   byte 8  = (separator_byte & 0x07) << 1
+//   bytes 9..15 = { 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00 }
+//
+// Replaces the prior 18-byte form (with trailing 0x80 0x01 0x01) which
+// TAH silently rejected at the application layer.
 void build_tah_accept_connect_reply(const std::uint8_t nonce[3],
-                                    std::uint8_t      request_parity_byte,
-                                    std::uint8_t      out[18])
+                                    std::uint8_t      separator_byte,
+                                    std::uint8_t      out[16])
 {
-    std::memcpy(out, kTahAcceptConnectTemplate, 18);
-    out[4] = nonce[0];
-    out[5] = nonce[1];
-    out[6] = nonce[2];
-    // Mirror the TAH server's behaviour: parity byte 8 of the AC
-    // reflects request byte 10 (0x18 -> 0x02, 0x58 -> 0x01).
-    if      (request_parity_byte == 0x58) out[8] = 0x01;
-    else if (request_parity_byte == 0x18) out[8] = 0x02;
-    else                                  out[8] = 0x02;  // default
+    const std::uint8_t parity_bit = static_cast<std::uint8_t>(nonce[0] & 0x01u);
+    out[0]  = static_cast<std::uint8_t>(0x05u | (parity_bit << 1));
+    out[1]  = 0x00;
+    out[2]  = 0x09;
+    out[3]  = 0x60;
+    out[4]  = nonce[0];
+    out[5]  = nonce[1];
+    out[6]  = nonce[2];
+    out[7]  = separator_byte;
+    out[8]  = static_cast<std::uint8_t>((separator_byte & 0x07u) << 1);
+    out[9]  = 0x08;
+    out[10] = 0x00;
+    out[11] = 0x00;
+    out[12] = 0x00;
+    out[13] = 0x08;
+    out[14] = 0x00;
+    out[15] = 0x00;
 }
 
 namespace
@@ -441,24 +444,11 @@ void ServerListener::run()
                             "[listener] RequestConnect from %s:%u -> slot %u, replied AcceptConnect (nonce %02x%02x%02x)\n",
                             peer.host.c_str(), peer.port, sess->player_slot,
                             sess->nonce[0], sess->nonce[1], sess->nonce[2]);
-                        // Spec 29/02b — publish mission/slot/team to the
-                        // new client right after AcceptConnect. Skip when
-                        // no mission is set (listener selftest path).
-                        if (was_new && !impl_->mission_name.empty()) {
-                            ServerInfo si;
-                            si.mission_short_name = impl_->mission_name;
-                            si.player_slot = sess->player_slot;
-                            si.team_raw = static_cast<std::uint8_t>(sess->team);
-                            si.server_tick = static_cast<std::uint32_t>(
-                                impl_->tick_counter);
-                            const auto si_bytes = encode_server_info(
-                                si, sess->next_send_seq, /*parity*/ false);
-                            impl_->socket.send_to(peer, si_bytes.data(),
-                                                  si_bytes.size());
-                            sess->next_send_seq = static_cast<std::uint16_t>(
-                                (sess->next_send_seq + 1) & 0x1FFu);
-                            if (sess->next_send_seq == 0) sess->next_send_seq = 1;
-                        }
+                        // 14c-I-pcap-diff §3 — the public TAH server emits
+                        // no server_info packet after AC. Removed here for
+                        // wire-parity; mission-name publish belongs in the
+                        // scope-always burst.
+                        (void)was_new;
                     } else {
                         impl_->last_error = impl_->socket.last_error();
                         std::fprintf(stderr,
@@ -519,21 +509,10 @@ void ServerListener::run()
                             "[listener] (Groove) RequestConnect from %s:%u -> slot %u, replied AcceptConnect (nonce %02x%02x%02x)\n",
                             peer.host.c_str(), peer.port, sess->player_slot,
                             sess->nonce[0], sess->nonce[1], sess->nonce[2]);
-                        if (was_new && !impl_->mission_name.empty()) {
-                            ServerInfo si;
-                            si.mission_short_name = impl_->mission_name;
-                            si.player_slot = sess->player_slot;
-                            si.team_raw = static_cast<std::uint8_t>(sess->team);
-                            si.server_tick = static_cast<std::uint32_t>(
-                                impl_->tick_counter);
-                            const auto si_bytes = encode_server_info(
-                                si, sess->next_send_seq, /*parity*/ false);
-                            impl_->socket.send_to(peer, si_bytes.data(),
-                                                  si_bytes.size());
-                            sess->next_send_seq = static_cast<std::uint16_t>(
-                                (sess->next_send_seq + 1) & 0x1FFu);
-                            if (sess->next_send_seq == 0) sess->next_send_seq = 1;
-                        }
+                        // 14c-I-pcap-diff §3 — public TAH server emits no
+                        // server_info packet after AC; removed here to
+                        // match wire behaviour.
+                        (void)was_new;
                     } else {
                         impl_->last_error = impl_->socket.last_error();
                         std::fprintf(stderr,
@@ -563,18 +542,19 @@ void ServerListener::run()
             }
             else if (std::size_t parity_off = 0, nonce_off = 0;
                      looks_like_tah_request_connect(buf, &parity_off, &nonce_off)) {
-                // Spec 26/10b follow-up — TribesAfterHope connect family
-                // (51B/53B, 0x05/0x07 leading). Per-shape nonce + parity
-                // offsets supplied by the predicate; reply is always the
-                // 18B AC with parity-byte 8 derived from the request's
-                // parity byte.
+                // 14c-I-pcap-diff — TribesAfterHope connect family.
+                // Per-shape nonce + parity offsets supplied by the
+                // predicate; separator byte at (nonce_off + 3) per
+                // TRIBES-PROTOCOL-PCAP-DIFF.md §2.2. Reply is the 16B
+                // AC form the public TAH server emits (§2.5).
                 const std::uint8_t nonce[3] = {
                     buf[nonce_off], buf[nonce_off + 1], buf[nonce_off + 2],
                 };
-                const std::uint8_t req_parity = buf[parity_off];
+                const std::uint8_t req_parity   = buf[parity_off];
+                const std::uint8_t separator    = buf[nonce_off + 3];
                 const bool was_new = impl_->sessions->find(peer) == nullptr;
                 Session* sess = impl_->sessions->allocate(peer, nonce, now_ms);
-                std::uint8_t tah_reply[18];
+                std::uint8_t tah_reply[16];
                 if (sess) {
                     sess->is_tah_session = true;
                     if (was_new) {
@@ -589,7 +569,7 @@ void ServerListener::run()
                             sess->spawn_pos.x, sess->spawn_pos.y, sess->spawn_pos.z,
                             sess->spawn_yaw);
                     }
-                    build_tah_accept_connect_reply(sess->nonce, req_parity, tah_reply);
+                    build_tah_accept_connect_reply(sess->nonce, separator, tah_reply);
                     sess->connect_parity = (tah_reply[0] & 0x02) != 0;
                     const bool ok = impl_->socket.send_to(
                         peer, tah_reply, sizeof(tah_reply));
@@ -599,25 +579,15 @@ void ServerListener::run()
                     if (ok) {
                         ++impl_->stats.accept_connects_sent;
                         std::fprintf(stderr,
-                            "[listener] (TAH) RequestConnect from %s:%u -> slot %u, replied AcceptConnect (nonce %02x%02x%02x parity=%02x)\n",
+                            "[listener] (TAH) RequestConnect from %s:%u -> slot %u, "
+                            "replied AcceptConnect (nonce %02x%02x%02x sep=%02x parity=%02x)\n",
                             peer.host.c_str(), peer.port, sess->player_slot,
                             sess->nonce[0], sess->nonce[1], sess->nonce[2],
-                            req_parity);
-                        if (was_new && !impl_->mission_name.empty()) {
-                            ServerInfo si;
-                            si.mission_short_name = impl_->mission_name;
-                            si.player_slot = sess->player_slot;
-                            si.team_raw = static_cast<std::uint8_t>(sess->team);
-                            si.server_tick = static_cast<std::uint32_t>(
-                                impl_->tick_counter);
-                            const auto si_bytes = encode_server_info(
-                                si, sess->next_send_seq, /*parity*/ false);
-                            impl_->socket.send_to(peer, si_bytes.data(),
-                                                  si_bytes.size());
-                            sess->next_send_seq = static_cast<std::uint16_t>(
-                                (sess->next_send_seq + 1) & 0x1FFu);
-                            if (sess->next_send_seq == 0) sess->next_send_seq = 1;
-                        }
+                            separator, req_parity);
+                        // 14c-I-pcap-diff §3 — the public TAH server emits
+                        // NO server_info ("SINF") packet immediately after
+                        // AC. Mission name publish belongs in the scope-
+                        // always burst per TRIBES-INITIAL-BURST.md §1.1.
                     } else {
                         impl_->last_error = impl_->socket.last_error();
                         std::fprintf(stderr,

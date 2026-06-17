@@ -395,9 +395,41 @@ TahBurstOrchestrator::build_initial_burst(Session&             sess,
         tah_vc::OutboundPacketBuilder b(sess, plan);
         auto& w = b.writer();
 
-        // Rate-control prefix (R0=0, R1=0).
-        w.write_flag(false);
-        w.write_flag(false);
+        // Rate-control prefix per TRIBES-NETPROTO §5.0.1 / §3.4 and
+        // TRIBES-PROTOCOL-PCAP-DIFF.md §4.2/§4.3:
+        //
+        //   bit  0  : R0 (current-rate-changed flag)
+        //   bits 1..10  : (if R0) current update-delay in ms (10 bits)
+        //   bits 11..20 : (if R0) current packet-size in bytes (10 bits)
+        //   bit  next : R1 (max-rate-changed flag)
+        //   bits next..+10 : (if R1) max update-delay (10 bits)
+        //   bits next..+10 : (if R1) max packet-size (10 bits)
+        //
+        // The public TAH server publishes rate-control on the first two
+        // burst packets only (14c-I-pcap-diff §4.2/§4.3):
+        //   Burst packet 0: R1=1, max_update_delay=33 ms, max_pkt_size=450
+        //   Burst packet 1: R0=1, cur_update_delay=66 ms, cur_pkt_size=400
+        // All later packets: both flags 0.
+        const std::size_t pkt_index = out.size();
+        if (pkt_index == 0) {
+            // R0 = 0
+            w.write_flag(false);
+            // R1 = 1, max_update_delay = 33 ms (10 bits), max_pkt_size = 450 B (10 bits)
+            w.write_flag(true);
+            w.write_bits(33u,  10);
+            w.write_bits(450u, 10);
+        } else if (pkt_index == 1) {
+            // R0 = 1, cur_update_delay = 66 ms (10 bits), cur_pkt_size = 400 B (10 bits)
+            w.write_flag(true);
+            w.write_bits(66u,  10);
+            w.write_bits(400u, 10);
+            // R1 = 0
+            w.write_flag(false);
+        } else {
+            // Steady-state burst packet: both rate flags 0.
+            w.write_flag(false);
+            w.write_flag(false);
+        }
 
         // ---- Event sub-stream ----
         const bool any_events = (catalogue_idx < catalogue.size());

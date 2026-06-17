@@ -126,13 +126,21 @@ void build_accept_connect_reply(const std::uint8_t nonce[3],
 void build_groove_accept_connect_reply(const std::uint8_t nonce[3],
                                        std::uint8_t out[18]);
 
-// 18-byte TribesAfterHope AcceptConnect builder (53B RC handler).
-// Per-session nonce at reply offsets 4..6; byte 8 is a parity bit
-// derived from request byte 10 (the parity byte that TAH alternates
-// across retransmits).
+// 16-byte TribesAfterHope AcceptConnect builder — per
+// docs/clean-room-specs/TRIBES-PROTOCOL-PCAP-DIFF.md §2.
+//
+// The public TAH server emits a 16-byte AC whose layout echoes the
+// RequestConnect's separator byte (the byte at offset total-39 of the
+// RC, i.e. nonce_off + 3) and whose connect-parity bit (byte 0 bit 1)
+// is the LSB of nonce[0]. The earlier 18-byte form (kTah*Template,
+// removed in 14c-I-pcap-diff) was rejected silently by TAH at the
+// application layer — the client acked it but never sent ClientReady.
+//
+// Caller responsibility: pass the RC separator byte (buf[nonce_off+3]).
+// See §2.5 for the byte-by-byte construction.
 void build_tah_accept_connect_reply(const std::uint8_t nonce[3],
-                                    std::uint8_t      request_parity_byte,
-                                    std::uint8_t      out[18]);
+                                    std::uint8_t      separator_byte,
+                                    std::uint8_t      out[16]);
 
 // Spec 26/10b — round-trip selftest: replay the captured Groove
 // RequestConnect, assert the listener responds with the correct
